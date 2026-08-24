@@ -1,0 +1,6 @@
+# Config de pnpm 11. No declara un workspace: este repo es independiente.
+allowBuilds:
+  esbuild: true
+  '@sentry/cli': true
+  protobufjs: false
+  '@firebase/util': false

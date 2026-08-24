@@ -1,0 +1,31 @@
+# Dependencias
+node_modules/
+
+# Build
+dist/
+
+# Entorno
+.env
+.env.local
+.env.*.local
+.env.production
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Editor / SO
+.vscode/*
+.idea/
+.DS_Store
+Thumbs.db
+*.pem
+
+# Credenciales
+*.jks
+*.keystore
