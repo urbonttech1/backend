@@ -150,7 +150,7 @@ integrationsRouter.post(
           break;
         }
 
-        // ââ Payment failed â update ride + log for support ââââââââââââââââââââ
+        // ── Payment failed — update ride + log for support ──────────────────
         case 'payment_intent.payment_failed': {
           const pi = event.data.object as Stripe.PaymentIntent;
           const rideId = pi.metadata?.ride_id;
@@ -167,15 +167,60 @@ integrationsRouter.post(
           break;
         }
 
-        // ââ Driver Connected Account updated â sync status in DB ââââââââââââââ
+        // ── Driver Connected Account updated — sync status in DB and process pending payouts ──
         case 'account.updated': {
           const account = event.data.object as Stripe.Account;
           const newStatus = account.details_submitted ? 'active' : 'pending';
-          await supabaseAdmin
+          const { data: updatedProfiles } = await supabaseAdmin
             .from('profiles')
             .update({ stripe_connect_status: newStatus })
-            .eq('stripe_account_id', account.id);
-          log.info(`[STRIPE_WEBHOOK] Account ${account.id} â ${newStatus}`);
+            .eq('stripe_account_id', account.id)
+            .select('id');
+          log.info(`[STRIPE_WEBHOOK] Account ${account.id} → ${newStatus}`);
+
+          // If the account just became active, release any pending ride earnings to the driver
+          if (newStatus === 'active' && updatedProfiles && updatedProfiles.length > 0) {
+            const driverUserId = updatedProfiles[0].id;
+            const { data: pendingRides } = await supabaseAdmin
+              .from('rides')
+              .select('id, driver_earnings, payment_intent_id')
+              .eq('driver_id', driverUserId)
+              .eq('ride_status', 'completed')
+              .is('stripe_transfer_id', null)
+              .not('driver_earnings', 'is', null)
+              .gt('driver_earnings', 0);
+
+            if (pendingRides && pendingRides.length > 0) {
+              log.info(`[STRIPE_WEBHOOK] Releasing ${pendingRides.length} pending payouts for driver ${driverUserId}`);
+              for (const pr of pendingRides) {
+                try {
+                  const payoutCents = Math.round(Number(pr.driver_earnings) * 100);
+                  if (payoutCents > 0) {
+                    const transfer = await stripe.transfers.create({
+                      amount: payoutCents,
+                      currency: 'usd',
+                      destination: account.id,
+                      description: `Driver payout for completed ride ${pr.id}`,
+                      metadata: {
+                        ride_id: pr.id,
+                        driver_id: driverUserId,
+                        type: 'driver_ride_payout_catchup',
+                      },
+                    }, {
+                      idempotencyKey: `driver_catchup_${pr.id}_${account.id}`,
+                    });
+                    await supabaseAdmin.from('rides').update({
+                      stripe_transfer_id: transfer.id,
+                      updated_at: new Date().toISOString(),
+                    }).eq('id', pr.id);
+                    log.info(`[STRIPE_WEBHOOK] Catch-up transfer $${pr.driver_earnings} sent for ride ${pr.id} (transfer: ${transfer.id})`);
+                  }
+                } catch (catchupErr: unknown) {
+                  log.error(`[STRIPE_WEBHOOK] Catch-up transfer failed for ride ${pr.id}: ${errMsg(catchupErr)}`);
+                }
+              }
+            }
+          }
           break;
         }
 
@@ -453,12 +498,18 @@ integrationsRouter.get("/stripe/payment-methods", requireSupabaseAuth, async (re
       .eq('id', req.supabaseUid!)
       .single();
 
-    if (!profile?.stripe_customer_id) return res.json({ methods: [] });
+    if (!profile?.stripe_customer_id) return res.json({ methods: [], defaultPaymentMethodId: null });
 
-    const methods = await stripe.paymentMethods.list({
-      customer: profile.stripe_customer_id,
-      type: 'card',
-    });
+    const [methods, customer] = await Promise.all([
+      stripe.paymentMethods.list({ customer: profile.stripe_customer_id, type: 'card' }),
+      stripe.customers.retrieve(profile.stripe_customer_id),
+    ]);
+
+    let defaultPaymentMethodId: string | null = null;
+    if (!customer.deleted) {
+      const dpm = (customer as Stripe.Customer).invoice_settings?.default_payment_method;
+      if (dpm) defaultPaymentMethodId = typeof dpm === 'string' ? dpm : dpm.id;
+    }
 
     const result = methods.data.map(pm => ({
       id: pm.id,
@@ -469,10 +520,46 @@ integrationsRouter.get("/stripe/payment-methods", requireSupabaseAuth, async (re
       funding: pm.card?.funding,
     }));
 
-    res.json({ methods: result });
+    res.json({ methods: result, defaultPaymentMethodId });
   } catch (error: unknown) {
     log.error(`[STRIPE_LIST_PM]: ${errMsg(error)}`);
     res.status(500).json({ error: 'Could not load payment methods.' });
+  }
+});
+
+// ── Set default payment method ────────────────────────────────────────────────
+// Persists the user's chosen "primary" card on the Stripe customer itself
+// (invoice_settings.default_payment_method), so it survives across screens,
+// sessions and devices instead of living only in a component's local state.
+integrationsRouter.post("/stripe/payment-methods/:pmId/default", requireSupabaseAuth, async (req: Request, res: Response) => {
+  try {
+    const stripe = getStripe();
+    if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
+
+    const { pmId } = req.params;
+    if (!pmId.startsWith('pm_')) return res.status(400).json({ error: 'Invalid payment method ID.' });
+
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('stripe_customer_id')
+      .eq('id', req.supabaseUid!)
+      .single();
+
+    if (!profile?.stripe_customer_id) return res.status(404).json({ error: 'No payment profile found.' });
+
+    const pm = await stripe.paymentMethods.retrieve(pmId);
+    if (pm.customer !== profile.stripe_customer_id) {
+      return res.status(403).json({ error: 'Not your payment method.' });
+    }
+
+    await stripe.customers.update(profile.stripe_customer_id, {
+      invoice_settings: { default_payment_method: pmId },
+    });
+
+    res.json({ success: true, defaultPaymentMethodId: pmId });
+  } catch (error: unknown) {
+    log.error(`[STRIPE_SET_DEFAULT_PM]: ${errMsg(error)}`);
+    res.status(500).json({ error: 'Could not set default payment method.' });
   }
 });
 

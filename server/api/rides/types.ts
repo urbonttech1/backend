@@ -1,41 +1,58 @@
-export type PickupDropoff = string | { address: string; lat: number; lng: number } | null;
+export interface PickupDropoff {
+  address: string;
+  lat: number;
+  lng: number;
+  terminal?: string;
+  gate?: string;
+  airline?: string;
+  flight_number?: string;
+  notes?: string;
+}
 
 export interface RideRow {
   id: string;
-  ride_status: string;
   passenger_id: string;
   driver_id: string | null;
   vehicle_type: string;
-  pickup_address: string;
-  destination_address?: string;
-  pickup_lat: number | null;
-  pickup_lng: number | null;
-  destination_lat?: number | null;
-  destination_lng?: number | null;
-  payment_intent_id: string | null;
-  payment_method?: string;
-  accepted_at: string | null;
-  completed_at?: string | null;
-  updated_at: string;
-  created_at?: string;
-  scheduled_at: string | null;
   pickup: PickupDropoff;
   dropoff: PickupDropoff;
-  driver_location: { lat: number; lng: number } | null;
-  fare?: number | null;
-  tip_amount?: number | null;
+  pickup_address?: string | null;
+  pickup_lat?: number | null;
+  pickup_lng?: number | null;
+  fare: number | string;
+  distance: number | string;
+  duration_minutes: number;
+  payment_method: string;
+  payment_intent_id?: string | null;
   notes?: string | null;
+  scheduled_at?: string | null;
+  ride_status: string;
+  accepted_at?: string | null;
+  completed_at?: string | null;
+  cancelled_at?: string | null;
   cancel_reason?: string | null;
-  promo_code?: string | null;
-  surge_multiplier?: number | null;
-  booking_type?: string;
-  guest_name?: string | null;
-  guest_phone?: string | null;
-  hourly_hours?: number | null;
+  rating?: number | null;
+  created_at: string;
+  updated_at: string;
+  pickup_pin?: string | null;
+  pin_verified_at?: string | null;
+  valet_session_id?: string | null;
+  valet_car_photo_url?: string | null;
+  valet_odometer_reading?: number | null;
+  valet_fuel_level?: string | null;
+  valet_keys_tag?: string | null;
+  valet_parking_bay?: string | null;
+  valet_fee?: number | string | null;
+  valet_ticket_number?: string | null;
+  valet_vehicle_brand?: string | null;
+  valet_vehicle_model?: string | null;
+  valet_vehicle_color?: string | null;
+  valet_license_plate?: string | null;
 }
 
 export interface DriverStats {
+  driver_id: string;
   consecutive_trips: number;
   total_earned: number;
+  last_updated: string;
 }
-

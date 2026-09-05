@@ -284,6 +284,15 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
       })();
     }
 
+    // Multi-instance room routing: each authenticated user and driver joins their dedicated room
+    if (userId) {
+      socket.join(`user:${userId}`);
+      if (userRole === 'driver' || userRole === 'chauffeur') {
+        socket.join(`driver:${userId}`);
+        registerDriverSocket(userId, socket.id);
+      }
+    }
+
     // ── Ride room management ─────────────────────────────────────────────────
 
     socket.on('join:ride', async (rideId: string) => {
@@ -315,6 +324,19 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
           socket.emit('ride:status_changed', catchUpPayload);
           socket.emit('ride:status_update', catchUpPayload);
           log.info({ socketId: socket.id, rideId, status: snap.ride_status }, 'catch-up status emitted on room join');
+
+          // ── Private chat room ──────────────────────────────────────────────
+          // `ride:${rideId}` above is intentionally joinable by anyone who knows
+          // the ride's UUID — it's what powers the public "track my ride" share
+          // link (GPS + status only, no login required, by design). Chat is NOT
+          // meant to be link-shareable, so only join the chat room for sockets
+          // whose authenticated userId actually matches this ride's passenger,
+          // driver, or an admin. The public tracking page connects with no
+          // userId, so it's naturally excluded here — no client changes needed.
+          const isParticipant = !!userId && (userId === snap.passenger_id || userId === snap.driver_id);
+          if (isParticipant || userRole === 'admin') {
+            await socket.join(`ride-chat:${rideId}`);
+          }
         }
       } catch (err: any) {
         log.warn({ err: err?.message, rideId }, 'catch-up status fetch failed');
@@ -323,6 +345,7 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
 
     socket.on('leave:ride', async (rideId: string) => {
       await socket.leave(`ride:${rideId}`);
+      await socket.leave(`ride-chat:${rideId}`);
       log.info({ socketId: socket.id, userId, rideId }, 'left ride room');
     });
 
@@ -561,12 +584,12 @@ export function broadcastRideStatus(rideId: string, status: string, extra: Recor
   // works reliably on a single server instance.
   const driverId = (extra.driverId as string | undefined) ?? '';
   if (driverId) {
+    // Deliver to driver's room (propagates to all instances via Redis adapter)
+    io.to(`driver:${driverId}`).emit('ride:status_changed', payload);
     const driverSocketId = driverSocketMap.get(driverId);
     if (driverSocketId) {
-      io.to(driverSocketId).emit('ride:status_changed', payload);
       log.info({ rideId, status, driverId, driverSocketId }, 'direct driver socket delivery');
-    } else {
-      log.warn({ rideId, status, driverId }, 'driver not in driverSocketMap — direct delivery skipped (driver may be on another instance or disconnected)');
+      io.sockets.sockets.get(driverSocketId)?.join(`ride-chat:${rideId}`);
     }
 
     // ── Terminal state cleanup ─────────────────────────────────────────────────
@@ -595,7 +618,12 @@ export function broadcastChatMessage(rideId: string, msg: {
   createdAt: string;
 }): void {
   if (!io) return;
-  io.to(`ride:${rideId}`).emit('chat:new_message', { rideId, ...msg });
+  // Private room — only sockets whose authenticated userId matched this
+  // ride's passenger/driver (or an admin) get joined to this room. See the
+  // join:ride handler above. Do NOT switch this back to the public
+  // `ride:${rideId}` room — that one is intentionally joinable by anyone
+  // with the ride's UUID (public tracking links) and must never carry chat.
+  io.to(`ride-chat:${rideId}`).emit('chat:new_message', { rideId, ...msg });
 }
 
 export function getIO(): SocketIOServer | null {
@@ -802,6 +830,8 @@ async function dispatchByDistance(
     for (const c of cands) {
       if (notifiedIds.has(c.driverId)) continue;
       io.to(c.socketId).emit('ride:new_request', payload);
+      // Multi-instance delivery: ensures driver on any Cloud Run instance receives dispatch
+      io.to(`driver:${c.driverId}`).emit('ride:new_request', payload);
       notifiedIds.add(c.driverId);
     }
     bumpRequestCount(cands.map(c => c.driverId).filter(id => notifiedIds.has(id)));
@@ -855,7 +885,9 @@ function dispatchByScore(rideId: string, payload: object) {
       let wave1Count = 0;
       for (const driverId of top) {
         const sid = driverSocketMap.get(driverId);
-        if (sid) { io.to(sid).emit('ride:new_request', payload); wave1Count++; }
+        if (sid) { io.to(sid).emit('ride:new_request', payload); }
+        io.to(`driver:${driverId}`).emit('ride:new_request', payload);
+        wave1Count++;
       }
       log.info({ rideId, wave: 1, tier: top.length, sent: wave1Count }, 'score wave 1');
 
@@ -865,7 +897,9 @@ function dispatchByScore(rideId: string, payload: object) {
         let wave2Count = 0;
         for (const driverId of mid) {
           const sid = driverSocketMap.get(driverId);
-          if (sid) { io.to(sid).emit('ride:new_request', payload); wave2Count++; }
+          if (sid) { io.to(sid).emit('ride:new_request', payload); }
+          io.to(`driver:${driverId}`).emit('ride:new_request', payload);
+          wave2Count++;
         }
         log.info({ rideId, wave: 2, tier: mid.length, sent: wave2Count }, 'score wave 2');
       }, 4000);
@@ -876,7 +910,9 @@ function dispatchByScore(rideId: string, payload: object) {
         let wave3Count = 0;
         for (const driverId of normal) {
           const sid = driverSocketMap.get(driverId);
-          if (sid) { io.to(sid).emit('ride:new_request', payload); wave3Count++; }
+          if (sid) { io.to(sid).emit('ride:new_request', payload); }
+          io.to(`driver:${driverId}`).emit('ride:new_request', payload);
+          wave3Count++;
         }
         log.info({ rideId, wave: 3, tier: normal.length, sent: wave3Count }, 'score wave 3');
       }, 8000);

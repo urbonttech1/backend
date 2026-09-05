@@ -381,7 +381,7 @@ export async function runMigrations() {
     // Using DO...END so it is idempotent (no IF NOT EXISTS for ALTER TABLE ADD CONSTRAINT).
     try {
       await client.query(`
-        DO $ BEGIN
+        DO $$ BEGIN
           IF NOT EXISTS (
             SELECT 1 FROM pg_constraint
             WHERE conname = 'driver_documents_driver_doc_key_unique'
@@ -391,7 +391,7 @@ export async function runMigrations() {
               ADD CONSTRAINT driver_documents_driver_doc_key_unique
               UNIQUE (driver_id, doc_key);
           END IF;
-        END $
+        END $$
       `);
     } catch (constraintErr) {
       logger.warn(`[migrations] driver_documents unique constraint: ${(constraintErr as Error).message}`);
@@ -975,25 +975,17 @@ export async function runMigrations() {
       );
     `);
 
-      // ─── Seed initial admin users ─────────────────────────────────────────────
-      await client.query(`
-        INSERT INTO admin_users (email, name, password_hash, role)
-        VALUES
-          ('owner@urbont.com', 'Owner Urbont', 'a9b9f12ca027d898f96321ece9e5baba:d0655d13fa07080845604ef55a40857e709a94c3fa8f05b03b8170581cf0153de55ca94c0427bc3b30fbba5949966527da247586bb42f144f1bdd5d224fc2909', 'owner'),
-        ('developer@urbont.com', 'Developer Urbont', '71492eff5d17ac5ee1ca5b6e3eb3b0f4:1a30b1efac638dc02e9df4ae195982764ad07023abdd8730b16fe3f983be616ffd4b77b01fd3bf7e98464186db255bd50f65e303c589e3b9e4ba9026904ac0e4', 'developer'),
-        ('soporte@urbont.com', 'Soporte Urbont', '1d822739401a2148d7fe743ba3a29070:3f15b2708f58018a6c407379729501a45186c052e8f94ed6304d7145b677fc949d76ceafc79e48971c1555baafa112152dc477b7d32d7256c600bdfd4718b44a', 'support'),
-        ('operaciones@urbont.com', 'Operaciones Urbont', '9c106a9d8f36b062cf0726f74f4b347f:45b592900e7ac8b9d33f53f721ac6485a4d417ccb8d983be9a7895471383ebb07d804259b94e223a514d7a56c8591ebd5bbfb4b4d85b53bc179a0d3c116ad117', 'operations'),
-        ('analista@urbont.com', 'Analista Urbont', '71810f98f99d8913dfa237b9154f0882:3c0aba6b54e9b8415c59f13f9a70255df47d25e5028a11bb63faf1ff43a7287fd0e6bb933e6be78eabd8aa65f6a673f8bd41cf7038002d15cea23978068cc713', 'analyst')
-        ON CONFLICT (email) DO UPDATE
-          SET password_hash = EXCLUDED.password_hash,
-              name          = EXCLUDED.name,
-              role          = EXCLUDED.role;
-      `);
+      // NOTE: The hardcoded admin_users seed (owner/developer/support/operations/analyst)
+      // was intentionally removed from here. It used ON CONFLICT (email) DO UPDATE and
+      // ran on every server start/deploy, which reset admin passwords/names/roles to
+      // fixed values baked into source control on every restart. Admin accounts must
+      // now be provisioned through a separate, controlled mechanism (manual seeding
+      // script, env-driven bootstrap, or admin panel) — never automatically at startup.
       await safeIndex(`CREATE INDEX IF NOT EXISTS idx_admin_users_email ON admin_users(email)`);
 
     // ─── Rides: Ensure all columns exist (idempotent, Supabase + pool) ─────────
       await client.query(`
-        DO $
+        DO $$
         BEGIN
           IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='rides' AND column_name='ride_status') THEN
             ALTER TABLE rides ADD COLUMN ride_status TEXT DEFAULT 'searching';
@@ -1019,7 +1011,7 @@ export async function runMigrations() {
             ALTER TABLE rides ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
           END IF;
         END
-        $;
+        $$;
       `);
 
     // ─── Driver & Valet Application Intake ───────────────────────────────────
@@ -1089,6 +1081,17 @@ export async function runMigrations() {
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS client_errors_reported_at_idx ON client_errors (reported_at DESC);
+    `);
+
+    // Dedup columns for horizontal scaling & prevent duplicate push notifications.
+    // Backing columns for the atomic compare-and-swap claims in server/jobs/cron.ts
+    // (sendScheduledRideReminders / sendRateReminders). Must exist before those
+    // jobs run or their .eq('reminder_*_sent', false) filters fail.
+    await client.query(`
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS reminder_24h_sent BOOLEAN DEFAULT false;
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS reminder_1h_sent BOOLEAN DEFAULT false;
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS rate_reminder_sent BOOLEAN DEFAULT false;
+      CREATE INDEX IF NOT EXISTS rides_reminders_idx ON rides (ride_status, scheduled_at) WHERE ride_status = 'scheduled';
     `);
 
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions

@@ -82,3 +82,11 @@ docker build -t 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest .
 
 
 docker push 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest
+
+
+aws ecs update-service --cluster urbont --service urbont-api \
+  --force-new-deployment --region us-east-1 --profile urbont
+
+aws ecs describe-services --cluster urbont --services urbont-api \
+  --query 'services[0].deployments[*].{Status:status,Running:runningCount,Pending:pendingCount}' \
+  --output table --region us-east-1 --profile urbont

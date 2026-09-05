@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { createContextLogger } from '../lib/logger';
 
 const log = createContextLogger('CRON');
+import { pool } from '../db/pool';
 import { supabaseAdmin } from '../db/client';
 import { findStaleRides, reassignRide } from '../services/rideReassignment';
 import { notifyAvailableDrivers, getIo } from '../services/socketService';
@@ -379,10 +380,19 @@ async function dispatchScheduledRides() {
 
     for (const ride of (retryRides ?? []) as Array<{ id: string; passenger_id: string | null; scheduled_at: string }>) {
       if (!ride.passenger_id) continue;
+      // Atomic guard: only 1 instance claims the retry
+      const { data: claimed } = await supabaseAdmin
+        .from('rides')
+        .update({ dispatch_35m_sent: true, updated_at: now.toISOString() })
+        .eq('id', ride.id)
+        .eq('dispatch_35m_sent', false)
+        .select('id');
+
+      if (!claimed || claimed.length === 0) continue; // Another instance claimed it
+
       const minutesUntil = Math.round((new Date(ride.scheduled_at).getTime() - now.getTime()) / 60000);
       try {
         await notifyUser(String(ride.passenger_id), passengerNotif.scheduled15min(ride.id, minutesUntil));
-        await supabaseAdmin.from('rides').update({ dispatch_35m_sent: true }).eq('id', ride.id);
         log.info(`[CRON] Retried dispatch notification for ride ${ride.id}`);
       } catch (e) {
         log.error({ err: e, rideId: ride.id }, '[CRON] Retry failed to send dispatch notification');
@@ -395,30 +405,33 @@ async function dispatchScheduledRides() {
 
 // ── Scheduled ride reminders: 24h and 1h before ──────────────────────────────
 // Queries rides still in 'scheduled' status and within reminder windows.
-// Uses a 10-minute window per check; with a 5-min cron this is safe from doubles.
+// Uses atomic database flags (reminder_24h_sent / reminder_1h_sent) to ensure
+// 0 duplicate push notifications across multiple Cloud Run instances.
 async function sendScheduledRideReminders() {
   try {
     const now = Date.now();
 
-    // 24h window: scheduled_at between 23h55m and 24h5m from now
-    const win24hLow  = new Date(now + 23 * 60 * 60 * 1000 + 55 * 60 * 1000).toISOString();
-    const win24hHigh = new Date(now + 24 * 60 * 60 * 1000 +  5 * 60 * 1000).toISOString();
+    // 24h window: scheduled_at between 23h and 25h from now
+    const win24hLow  = new Date(now + 23 * 60 * 60 * 1000).toISOString();
+    const win24hHigh = new Date(now + 25 * 60 * 60 * 1000).toISOString();
 
-    // 1h window: scheduled_at between 55m and 65m from now
-    const win1hLow  = new Date(now + 55 * 60 * 1000).toISOString();
-    const win1hHigh = new Date(now + 65 * 60 * 1000).toISOString();
+    // 1h window: scheduled_at between 45m and 75m from now
+    const win1hLow  = new Date(now + 45 * 60 * 1000).toISOString();
+    const win1hHigh = new Date(now + 75 * 60 * 1000).toISOString();
 
     const [res24h, res1h] = await Promise.all([
       supabaseAdmin
         .from('rides')
         .select('id, passenger_id, scheduled_at')
         .eq('ride_status', 'scheduled')
+        .eq('reminder_24h_sent', false)
         .gte('scheduled_at', win24hLow)
         .lte('scheduled_at', win24hHigh),
       supabaseAdmin
         .from('rides')
         .select('id, passenger_id, scheduled_at')
         .eq('ride_status', 'scheduled')
+        .eq('reminder_1h_sent', false)
         .gte('scheduled_at', win1hLow)
         .lte('scheduled_at', win1hHigh),
     ]);
@@ -426,20 +439,44 @@ async function sendScheduledRideReminders() {
     const format = (iso: string) =>
       new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
+    let count24h = 0;
     for (const ride of (res24h.data ?? []) as Array<{ id: string; passenger_id: string | null; scheduled_at: string }>) {
       if (!ride.passenger_id) continue;
+      // Atomic claim before send
+      const { data: claimed } = await supabaseAdmin
+        .from('rides')
+        .update({ reminder_24h_sent: true, updated_at: new Date().toISOString() })
+        .eq('id', ride.id)
+        .eq('reminder_24h_sent', false)
+        .select('id');
+
+      if (!claimed || claimed.length === 0) continue;
+
+      count24h++;
       const timeLabel = format(ride.scheduled_at);
       notifyUser(String(ride.passenger_id), passengerNotif.scheduled24h(ride.id, timeLabel)).catch(() => {});
     }
 
+    let count1h = 0;
     for (const ride of (res1h.data ?? []) as Array<{ id: string; passenger_id: string | null; scheduled_at: string }>) {
       if (!ride.passenger_id) continue;
+      // Atomic claim before send
+      const { data: claimed } = await supabaseAdmin
+        .from('rides')
+        .update({ reminder_1h_sent: true, updated_at: new Date().toISOString() })
+        .eq('id', ride.id)
+        .eq('reminder_1h_sent', false)
+        .select('id');
+
+      if (!claimed || claimed.length === 0) continue;
+
+      count1h++;
       const timeLabel = format(ride.scheduled_at);
       notifyUser(String(ride.passenger_id), passengerNotif.scheduled1h(ride.id, timeLabel)).catch(() => {});
     }
 
-    const total = (res24h.data?.length ?? 0) + (res1h.data?.length ?? 0);
-    if (total > 0) log.info(`[CRON] Scheduled ride reminders sent: ${res24h.data?.length ?? 0} ×24h, ${res1h.data?.length ?? 0} ×1h`);
+    const total = count24h + count1h;
+    if (total > 0) log.info(`[CRON] Scheduled ride reminders sent: ${count24h} ×24h, ${count1h} ×1h`);
   } catch (err: any) {
     log.error({ err: err }, '[CRON] sendScheduledRideReminders error');
   }
@@ -451,24 +488,38 @@ async function sendRateReminders() {
     const twoHoursAgo  = new Date(Date.now() - 2  * 60 * 60 * 1000).toISOString();
     const threeHrsAgo  = new Date(Date.now() - 3  * 60 * 60 * 1000).toISOString();
 
-    // Completed rides 2–3 hours ago with no passenger rating (30-min window)
+    // Completed rides 2–3 hours ago with no passenger rating and not yet reminded
     const { data: unratedRides, error } = await supabaseAdmin
       .from('rides')
       .select('id, passenger_id, rating')
       .eq('ride_status', 'completed')
+      .eq('rate_reminder_sent', false)
       .is('rating', null)
       .lte('completed_at', twoHoursAgo)
       .gte('completed_at', threeHrsAgo)
       .not('passenger_id', 'is', null);
 
-    if (error) return;
+    if (error || !unratedRides) return;
 
+    let sent = 0;
     for (const ride of (unratedRides ?? []) as Array<{ id: string; passenger_id: string | null }>) {
+      if (!ride.passenger_id) continue;
+      // Atomic claim before sending notification
+      const { data: claimed } = await supabaseAdmin
+        .from('rides')
+        .update({ rate_reminder_sent: true, updated_at: new Date().toISOString() })
+        .eq('id', ride.id)
+        .eq('rate_reminder_sent', false)
+        .select('id');
+
+      if (!claimed || claimed.length === 0) continue;
+
+      sent++;
       notifyUser(String(ride.passenger_id), passengerNotif.rateReminder(ride.id)).catch(() => {});
     }
 
-    if (unratedRides?.length) {
-      log.info(`[CRON] Rate reminders sent to ${unratedRides.length} passenger(s).`);
+    if (sent > 0) {
+      log.info(`[CRON] Rate reminders sent to ${sent} passenger(s).`);
     }
   } catch (err: any) {
     log.error({ err: err }, '[CRON] sendRateReminders error');
@@ -606,7 +657,47 @@ async function checkCancellationPatterns() {
   }
 }
 
-export function startCronJobs() {
+export async function startCronJobs() {
+  // ── Leader Election for Horizontal Scaling (Google Cloud Run 1..10 instances) ──
+  // Acquire a PostgreSQL session-level advisory lock (id: 72728).
+  // Only ONE Cloud Run instance will successfully acquire this lock.
+  // All other instances will log and safely skip all cron jobs, completely eliminating
+  // duplicate push notifications, duplicate retries, and redundant database queries.
+  let leaderClient;
+  try {
+    leaderClient = await pool.connect();
+    const { rows } = await leaderClient.query('SELECT pg_try_advisory_lock(72728) AS acquired');
+    const isLeader = Boolean(rows[0]?.acquired);
+    if (!isLeader) {
+      log.info('[CRON] Another Cloud Run instance is already the active cron leader (lock 72728 held) — skipping crons on this instance.');
+      leaderClient.release();
+      return;
+    }
+    log.info('[CRON] ✓ Acquired cron leader advisory lock (72728). This instance is the active cron coordinator.');
+
+    // Gracefully release lock and client on server shutdown
+    const cleanup = async () => {
+      try {
+        await leaderClient?.query('SELECT pg_advisory_unlock(72728)');
+      } catch { /* ignore */ }
+      try {
+        leaderClient?.release();
+      } catch { /* ignore */ }
+    };
+    process.once('SIGTERM', cleanup);
+    process.once('SIGINT', cleanup);
+
+    leaderClient.on('error', (err) => {
+      log.error({ err }, '[CRON] Leader connection error, releasing client');
+      try { leaderClient?.release(); } catch { /* ignore */ }
+    });
+  } catch (err: unknown) {
+    log.error({ err }, '[CRON] Failed to acquire advisory lock — running crons on this instance as fallback');
+    if (leaderClient) {
+      try { leaderClient.release(); } catch { /* ignore */ }
+    }
+  }
+
   // Run immediately on startup to clear any stale rides before the first driver connects
   cancelExpiredSearchingRides().catch(() => {});
 
@@ -734,30 +825,40 @@ async function checkDocumentExpiry() {
         log.info(`[CRON] Driver ${driverId} suspended — ${docType} expired on ${expiry}`);
 
       } else if (expiry <= in7days && !n7) {
-        // 7-day warning
+        // Atomic claim first before sending push
+        const { data: claimed } = await supabaseAdmin
+          .from('driver_documents')
+          .update({ notified_7d: true, updated_at: now.toISOString() })
+          .eq('id', docId)
+          .eq('notified_7d', false)
+          .select('id');
+
+        if (!claimed || claimed.length === 0) continue;
+
         notifyUser(driverId, {
           title: '⚠️ Document Expiring in 7 Days',
           body:  `Your ${docType} expires on ${expiry}. Upload a renewal now to avoid suspension.`,
           data:  { type: 'document_expiring_7d', doc_id: docId, screen: 'driver_documents' },
         }).catch(() => {});
 
-        await supabaseAdmin.from('driver_documents')
-          .update({ notified_7d: true, updated_at: now.toISOString() })
-          .eq('id', docId);
-
         log.info(`[CRON] Driver ${driverId} notified — ${docType} expires ${expiry} (7d warning)`);
 
       } else if (expiry <= in30days && !n30) {
-        // 30-day warning
+        // Atomic claim first before sending push
+        const { data: claimed } = await supabaseAdmin
+          .from('driver_documents')
+          .update({ notified_30d: true, updated_at: now.toISOString() })
+          .eq('id', docId)
+          .eq('notified_30d', false)
+          .select('id');
+
+        if (!claimed || claimed.length === 0) continue;
+
         notifyUser(driverId, {
           title: '📋 Document Expiring in 30 Days',
           body:  `Your ${docType} expires on ${expiry}. Please renew it soon to continue driving.`,
           data:  { type: 'document_expiring_30d', doc_id: docId, screen: 'driver_documents' },
         }).catch(() => {});
-
-        await supabaseAdmin.from('driver_documents')
-          .update({ notified_30d: true, updated_at: now.toISOString() })
-          .eq('id', docId);
 
         log.info(`[CRON] Driver ${driverId} notified — ${docType} expires ${expiry} (30d warning)`);
       }
