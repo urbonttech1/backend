@@ -1,7 +1,8 @@
 node_modules
 dist
 .git
-.env
+# .env SI entra en la imagen (se copia en la stage de produccion del Dockerfile).
+# La imagen queda con los secretos dentro: mantener el repo de ECR privado.
 .env.local
 *.db
 *.db-shm

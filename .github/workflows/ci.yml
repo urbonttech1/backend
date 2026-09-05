@@ -1,0 +1,55 @@
+name: CI — Type Check & Tests (api)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: TypeScript & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      # El baseline del monorepo ya estaba en 0 para el server; se mantiene
+      # como chequeo duro ahora que es su propio repo.
+      - name: TypeScript check
+        run: pnpm run typecheck
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Build bundle
+        run: pnpm run build
+
+      - name: Confirm bundle exists
+        run: |
+          if [ ! -f "dist/server.js" ]; then
+            echo "::error::dist/server.js no existe — el build de esbuild falló"
+            exit 1
+          fi
+          ls -lh dist/server.js

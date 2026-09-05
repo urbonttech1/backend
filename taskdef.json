@@ -1,0 +1,52 @@
+{
+  "family": "urbont-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::083414536603:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::083414536603:role/urbontApiTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest",
+      "essential": true,
+      "stopTimeout": 15,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "8080" },
+        { "name": "CRON_ENABLED", "value": "true" },
+        {
+          "name": "ALLOWED_ORIGIN",
+          "value": "https://app.urbont.com,https://admin.urbont.com,https://urbont.com,capacitor://localhost"
+        },
+        { "name": "OTP_BYPASS", "value": "" },
+        { "name": "BYPASS_CODE", "value": "" }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "node -e \"fetch('http://localhost:8080/api/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+        ],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 40
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/urbont-api",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "api",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

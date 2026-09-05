@@ -1,15 +1,15 @@
 import { Router, Request, Response } from "express";
-import pg from "pg";
-const { Pool } = pg;
 import Stripe from "stripe";
 import { requireAdminJWT } from "./admin-auth";
 import { supabaseAdmin } from "../db/client";
+import { pool as pgPool } from "../db/pool";
 import { logger } from '../lib/logger';
 
-const pgPool = new Pool({
-  connectionString: process.env.SUPABASE_DB_URL || process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
+// Antes este archivo creaba su propio `new Pool()` con la connection string
+// cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
+// eso todas las queries de acá fallaban con EHOSTUNREACH (host directo de
+// Supabase solo tiene AAAA/IPv6). Reusar el pool compartido, ya corregido,
+// arregla las 27 rutas de este archivo sin tocar el SQL. — 2026-08-28
 
 const _ADMIN_STRIPE_SK = process.env.STRIPE_SECRET_KEY || '';
 

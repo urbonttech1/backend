@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { scrypt, randomBytes, timingSafeEqual } from 'crypto';
 import { promisify } from 'util';
-import { pool } from '../db/pool';
+import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
 
   /* ── Admin login rate limiter (in-memory per IP) ── */
@@ -145,34 +145,79 @@ export const adminAuthRouter = Router();
 adminAuthRouter.post('/login', checkAdminRateLimit, async (req: Request, res: Response) => {
   const clientIp = (req as Request & { _adminIp?: string })._adminIp || req.ip || 'unknown';
   const { email, password } = req.body as { email?: string; password?: string };
+  log.info({ email, ip: clientIp }, '[admin-login] intento recibido');
   if (!email || !password) {
+    log.warn({ email, ip: clientIp }, '[admin-login] rechazado: falta email o password en el body');
     return res.status(400).json({ error: 'Email and password are required.' });
   }
+
+  // ── Bypass de desarrollo ──────────────────────────────────────────────────
+  // Solo para diagnosticar el panel local sin acceso a la DB de producción.
+  // Nunca consulta admin_users — emite un JWT real, firmado con el mismo
+  // ADMIN_JWT_SECRET/JWT_SECRET que usa requireAdminJWT, así que el resto del
+  // panel lo acepta igual que a un login real. Doble candado, igual que el
+  // bypass de OTP: NODE_ENV != production Y una variable explícita, ninguna
+  // de las dos sola alcanza.
+  if (process.env.NODE_ENV !== 'production' && process.env.ADMIN_DEV_BYPASS === 'true') {
+    const devEmail    = process.env.ADMIN_DEV_EMAIL    || 'dev@urbont.local';
+    const devPassword = process.env.ADMIN_DEV_PASSWORD || 'devbypass123';
+    if (email.toLowerCase().trim() === devEmail && password === devPassword) {
+      const user: AdminUser = {
+        id: '00000000-0000-0000-0000-000000000000',
+        email: devEmail, name: 'Dev Bypass', role: 'owner', active: true,
+      };
+      const token = signAdminToken(user);
+      log.warn({ email: devEmail, ip: clientIp }, '[admin-login] DEV BYPASS usado — no se consultó admin_users');
+      return res.json({ token, user });
+    }
+  }
+
   try {
-    const { rows } = await pool.query(
-      'SELECT * FROM admin_users WHERE email = $1 AND active = true',
-      [email.toLowerCase().trim()]
-    );
-    const row = rows[0];
+    // Vía REST API (supabaseAdmin) en vez de pool.query directo — el pool
+    // requiere SUPABASE_DB_URL (connection string de Postgres, no disponible
+    // en este entorno). supabaseAdmin ya usa SUPABASE_SERVICE_ROLE_KEY, que sí
+    // tenemos. Solo el login se movió; el resto de las rutas de este archivo
+    // (CRUD de admin_users) sigue en pool.query — ver comentario 2026-08-28.
+    const { data: row, error: selectErr } = await supabaseAdmin
+      .from('admin_users')
+      .select('*')
+      .eq('email', email.toLowerCase().trim())
+      .eq('active', true)
+      .maybeSingle();
+    if (selectErr) throw selectErr;
     if (!row) {
-        log.warn({ email }, 'Admin login: unknown email');
+        // Diagnóstico: distinguir "no existe ningún admin con ese email" de
+        // "existe pero está inactivo" — la query de arriba no lo diferencia
+        // a propósito (no filtrar por active en la respuesta al cliente),
+        // pero acá sí nos sirve para saber qué está pasando.
+        const { data: anyRow } = await supabaseAdmin
+          .from('admin_users')
+          .select('active')
+          .eq('email', email.toLowerCase().trim())
+          .maybeSingle();
+        if (!anyRow) {
+          log.warn({ email, ip: clientIp }, '[admin-login] FALLO: no existe ninguna fila en admin_users con ese email');
+        } else {
+          log.warn({ email, ip: clientIp, active: anyRow.active }, '[admin-login] FALLO: la fila existe pero active=false');
+        }
         recordAdminFail(clientIp);
         return res.status(401).json({ error: 'Invalid credentials.' });
       }
       const valid = await verifyPassword(password, row.password_hash);
       if (!valid) {
-        log.warn({ email }, 'Admin login: wrong password');
+        log.warn({ email, ip: clientIp, userId: row.id }, '[admin-login] FALLO: password no matchea el hash guardado');
         recordAdminFail(clientIp);
         return res.status(401).json({ error: 'Invalid credentials.' });
       }
+      log.info({ email, ip: clientIp, userId: row.id }, '[admin-login] password OK, emitiendo token');
     clearAdminFail(clientIp);
-    await pool.query('UPDATE admin_users SET last_login = NOW() WHERE id = $1', [row.id]);
+    await supabaseAdmin.from('admin_users').update({ last_login: new Date().toISOString() }).eq('id', row.id);
     const user: AdminUser = { id: row.id, email: row.email, name: row.name, role: row.role, active: row.active };
     const token = signAdminToken(user);
     log.info({ email, role: user.role }, 'Admin login success');
     return res.json({ token, user });
   } catch (err: any) {
-    log.error({ err: err.message }, 'Admin login error');
+    log.error({ err: err.message, email, ip: clientIp }, '[admin-login] EXCEPCIÓN: probable falla de conexión a la DB, no un problema de credenciales');
     return res.status(500).json({ error: 'Login failed. Please try again.' });
   }
 });
@@ -190,10 +235,12 @@ adminAuthRouter.get('/me', (req: Request, res: Response) => {
 // GET /api/admin/auth/users — owner only
 adminAuthRouter.get('/users', requireAdminJWT, requireOwner, async (_req: Request, res: Response) => {
   try {
-    const { rows } = await pool.query(
-      'SELECT id, email, name, role, active, created_at, last_login FROM admin_users ORDER BY created_at ASC'
-    );
-    return res.json({ users: rows });
+    const { data, error } = await supabaseAdmin
+      .from('admin_users')
+      .select('id, email, name, role, active, created_at, last_login')
+      .order('created_at', { ascending: true });
+    if (error) throw error;
+    return res.json({ users: data });
   } catch (err: any) {
     log.error({ err: err.message }, 'List admin users error');
     return res.status(500).json({ error: 'Failed to fetch users.' });
@@ -217,14 +264,14 @@ adminAuthRouter.post('/users', requireAdminJWT, requireOwner, async (req: Reques
   }
   try {
     const hash = await hashPassword(password);
-    const { rows } = await pool.query(
-      `INSERT INTO admin_users (email, name, role, password_hash)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, email, name, role, active, created_at`,
-      [email.toLowerCase().trim(), name.trim(), role, hash]
-    );
+    const { data, error } = await supabaseAdmin
+      .from('admin_users')
+      .insert({ email: email.toLowerCase().trim(), name: name.trim(), role, password_hash: hash })
+      .select('id, email, name, role, active, created_at')
+      .single();
+    if (error) throw error;
     log.info({ email, role }, 'Admin user created');
-    return res.status(201).json({ user: rows[0] });
+    return res.status(201).json({ user: data });
   } catch (err: any) {
     if (err.code === '23505') return res.status(409).json({ error: 'Email already in use.' });
     log.error({ err: err.message }, 'Create admin user error');
@@ -239,21 +286,27 @@ adminAuthRouter.patch('/users/:id', requireAdminJWT, requireOwner, async (req: R
     role?: AdminRole; active?: boolean; password?: string; name?: string;
   };
   try {
+    const updates: Record<string, unknown> = {};
     if (password !== undefined) {
       if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
-      const hash = await hashPassword(password);
-      await pool.query('UPDATE admin_users SET password_hash = $1 WHERE id = $2', [hash, id]);
+      updates.password_hash = await hashPassword(password);
     }
-    if (name !== undefined) await pool.query('UPDATE admin_users SET name = $1 WHERE id = $2', [name.trim(), id]);
-    if (role !== undefined) await pool.query('UPDATE admin_users SET role = $1 WHERE id = $2', [role, id]);
-    if (active !== undefined) await pool.query('UPDATE admin_users SET active = $1 WHERE id = $2', [active, id]);
-    const { rows } = await pool.query(
-      'SELECT id, email, name, role, active, created_at, last_login FROM admin_users WHERE id = $1',
-      [id]
-    );
-    if (!rows[0]) return res.status(404).json({ error: 'User not found.' });
+    if (name !== undefined) updates.name = name.trim();
+    if (role !== undefined) updates.role = role;
+    if (active !== undefined) updates.active = active;
+    if (Object.keys(updates).length > 0) {
+      const { error: updateErr } = await supabaseAdmin.from('admin_users').update(updates).eq('id', id);
+      if (updateErr) throw updateErr;
+    }
+    const { data, error } = await supabaseAdmin
+      .from('admin_users')
+      .select('id, email, name, role, active, created_at, last_login')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'User not found.' });
     log.info({ id, role, active }, 'Admin user updated');
-    return res.json({ user: rows[0] });
+    return res.json({ user: data });
   } catch (err: any) {
     log.error({ err: err.message }, 'Update admin user error');
     return res.status(500).json({ error: 'Failed to update user.' });
@@ -267,7 +320,8 @@ adminAuthRouter.delete('/users/:id', requireAdminJWT, requireOwner, async (req: 
     return res.status(400).json({ error: 'Cannot delete your own account.' });
   }
   try {
-    await pool.query('DELETE FROM admin_users WHERE id = $1', [id]);
+    const { error } = await supabaseAdmin.from('admin_users').delete().eq('id', id);
+    if (error) throw error;
     log.info({ id }, 'Admin user deleted');
     return res.json({ success: true });
   } catch (err: any) {
@@ -293,12 +347,21 @@ adminAuthRouter.post('/reset-password', requireAdminJWT, async (req: Request, re
     return res.status(400).json({ error: 'New password must be at least 8 characters.' });
   }
   try {
-    const { rows } = await pool.query('SELECT password_hash FROM admin_users WHERE id = $1', [req.adminUser!.id]);
-    if (!rows[0]) return res.status(404).json({ error: 'User not found.' });
-    const valid = await verifyPassword(currentPassword, rows[0].password_hash);
+    const { data: row, error: selectErr } = await supabaseAdmin
+      .from('admin_users')
+      .select('password_hash')
+      .eq('id', req.adminUser!.id)
+      .maybeSingle();
+    if (selectErr) throw selectErr;
+    if (!row) return res.status(404).json({ error: 'User not found.' });
+    const valid = await verifyPassword(currentPassword, row.password_hash);
     if (!valid) return res.status(400).json({ error: 'Current password is incorrect.' });
     const hash = await hashPassword(newPassword);
-    await pool.query('UPDATE admin_users SET password_hash = $1 WHERE id = $2', [hash, req.adminUser!.id]);
+    const { error: updateErr } = await supabaseAdmin
+      .from('admin_users')
+      .update({ password_hash: hash })
+      .eq('id', req.adminUser!.id);
+    if (updateErr) throw updateErr;
     log.info({ id: req.adminUser!.id }, 'Admin password reset');
     return res.json({ success: true });
   } catch (err: any) {
