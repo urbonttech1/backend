@@ -378,3 +378,83 @@ app.use('/api/complaints', complaintRouter);
 - **Limpieza:** Las imágenes huérfanas (referencias de BD eliminadas pero archivos en Storage) no se limpian automáticamente. Considera un cron job.
 - **Caché:** Las URLs públicas pueden cachearse en CDN. Si necesitas borrar, usa `signedUrl` en lugar de `publicUrl`.
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Tipos de Imágenes por Bucket
+1. AVATARES (Fotos de Perfil)
+Bucket: avatars
+Endpoint: POST /api/users/avatar
+Ruta guardada: {uid}/avatar_{timestamp}_{randomId}.{ext}
+Límite: 5 MB máx
+Formatos: JPEG, PNG, WebP, HEIC
+URL pública: https://supabase-url/storage/v1/object/public/avatars/{uid}/avatar_...
+Guardado en BD: profiles.avatar_url
+
+2. FOTOS DE VEHÍCULO
+Bucket: avatars (mismo que avatares)
+Endpoint: POST /api/users/vehicle-photo
+Ruta guardada: {uid}/vehicle_{timestamp}.{ext}
+Límite: 5 MB máx
+Formatos: JPEG, PNG, WebP, HEIC
+Guardado en BD: profiles.vehicle.vehicle_photo_url (campo JSON)
+3. DOCUMENTOS DE CONDUCTOR
+Bucket: chauffeur-docs
+Endpoint: POST /api/chauffeur/upload-doc
+Ruta guardada: {uid}/{docKey}.{ext} ⚠️ Determinística (reuploads sobrescriben)
+Límite: 10 MB máx
+Formatos: PDF + imágenes (JPEG, PNG, etc.)
+Tipos de documento:
+LICENSE (Licencia de conducir)
+ID_CARD (Cédula/Pasaporte)
+REGISTRATION (Registro del vehículo)
+INSURANCE (Póliza de seguro)
+VEHICLE_INSPECTION (Inspección técnica)
+Guardado en BD: Tabla driver_documents con campos:
+storage_url (URL pública)
+image_url (igual que storage_url)
+file_name (nombre sanitizado)
+status (pending → pending_review automáticamente)
+🔐 Acceso
+URLs públicas — No requieren autenticación
+Upload: Requiere requireSupabaseAuth (estar logueado)
+Visualización: Cualquiera con la URL puede acceder
+Resumen Rápido
+Tipo
+Bucket
+Ruta
+Límite
+Uso
+Avatar
+avatars
+{uid}/avatar_*
+5 MB
+Foto perfil usuario
+Vehículo
+avatars
+{uid}/vehicle_*
+5 MB
+Foto vehículo
+Documentos
+chauffeur-docs
+{uid}/{docKey}
+10 MB
+Licencia, cédula, etc.
+
