@@ -4,7 +4,8 @@ import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
 import { z } from 'zod';
 import { validate } from '../middleware/validation';
-import nodemailer from 'nodemailer';
+import { sendEmail, isEmailConfigured } from '../services/mailer';
+import { emailShell, section, row, badge, brand, FONT } from '../services/emailLayout';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -21,7 +22,7 @@ const ticketSchema = z.object({
 
 // ── Email helper ──────────────────────────────────────────────────────────────
 
-async function sendAdminEmail(ticket: {
+export async function sendAdminEmail(ticket: {
   id: string;
   category: string;
   subject: string;
@@ -31,23 +32,16 @@ async function sendAdminEmail(ticket: {
   userName: string;
   userPhone: string;
 }): Promise<void> {
-  const adminEmail  = process.env.ADMIN_EMAIL;
-  const smtpHost    = process.env.SMTP_HOST;
-  const smtpPort    = parseInt(process.env.SMTP_PORT || '587');
-  const smtpUser    = process.env.SMTP_USER;
-  const smtpPass    = process.env.SMTP_PASS;
+  const adminEmail = process.env.ADMIN_EMAIL;
 
-  if (!adminEmail || !smtpHost || !smtpUser || !smtpPass) {
-    log.warn({ ticketId: ticket.id }, 'SMTP not configured — admin email skipped');
+  if (!adminEmail) {
+    log.warn({ ticketId: ticket.id }, 'ADMIN_EMAIL not set — admin notification skipped');
     return;
   }
-
-  const transporter = nodemailer.createTransport({
-    host:   smtpHost,
-    port:   smtpPort,
-    secure: smtpPort === 465,
-    auth:   { user: smtpUser, pass: smtpPass },
-  });
+  if (!isEmailConfigured()) {
+    log.warn({ ticketId: ticket.id }, 'No email provider configured — admin notification skipped');
+    return;
+  }
 
   const categoryLabel: Record<string, string> = {
     lost_item:    'Lost Item',
@@ -59,52 +53,48 @@ async function sendAdminEmail(ticket: {
   };
 
   const priorityColors: Record<string, string> = {
-    low: '#6B7280', normal: '#3B82F6', high: '#F59E0B', urgent: '#EF4444',
+    low: brand.slate, normal: brand.navyMid, high: brand.amber, urgent: brand.red,
   };
 
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
-      <div style="background: #001F3F; padding: 24px; border-radius: 8px 8px 0 0;">
-        <h1 style="color: #ffffff; margin: 0; font-size: 20px;">URBONT Support Ticket</h1>
-        <p style="color: #94a3b8; margin: 4px 0 0; font-size: 13px;">Ticket #${ticket.id.slice(-8).toUpperCase()}</p>
-      </div>
-      <div style="background: #f8fafc; padding: 24px; border: 1px solid #e2e8f0;">
-        <table style="width: 100%; border-collapse: collapse;">
-          <tr>
-            <td style="padding: 8px 0; color: #6B7280; width: 140px; font-size: 13px;">Priority</td>
-            <td style="padding: 8px 0;">
-              <span style="background: ${priorityColors[ticket.priority]}22; color: ${priorityColors[ticket.priority]}; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase;">${ticket.priority}</span>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #6B7280; font-size: 13px;">Category</td>
-            <td style="padding: 8px 0; font-weight: 500;">${categoryLabel[ticket.category] || ticket.category}</td>
-          </tr>
-          <tr>
-            <td style="padding: 8px 0; color: #6B7280; font-size: 13px;">User</td>
-            <td style="padding: 8px 0;">${ticket.userName} · ${ticket.userPhone}</td>
-          </tr>
-          ${ticket.ride_id ? `<tr><td style="padding: 8px 0; color: #6B7280; font-size: 13px;">Ride ID</td><td style="padding: 8px 0; font-family: monospace;">${ticket.ride_id}</td></tr>` : ''}
-          <tr>
-            <td style="padding: 8px 0; color: #6B7280; font-size: 13px;">Subject</td>
-            <td style="padding: 8px 0; font-weight: 600;">${ticket.subject}</td>
-          </tr>
-        </table>
-        <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 16px 0;" />
-        <p style="color: #6B7280; font-size: 12px; margin: 0 0 8px;">Description</p>
-        <p style="background: #fff; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap;">${ticket.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
-      </div>
-      <div style="background: #e2e8f0; padding: 12px 24px; border-radius: 0 0 8px 8px; font-size: 11px; color: #94a3b8;">
-        URBONT · ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })} ET
-      </div>
-    </div>
+  const content = `
+    ${section(`
+      <table width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding:7px 0;font-family:${FONT};font-size:13px;color:${brand.slate};">Priority</td>
+          <td style="padding:7px 0;text-align:right;">${badge(ticket.priority, priorityColors[ticket.priority] || brand.slate)}</td>
+        </tr>
+        ${row('Category', categoryLabel[ticket.category] || ticket.category, { strong: true })}
+        ${row('User', ticket.userName)}
+        ${row('Phone', ticket.userPhone)}
+        ${ticket.ride_id ? row('Ride ID', ticket.ride_id) : ''}
+      </table>`)}
+
+    ${section(`
+      <p style="margin:0 0 8px;font-family:${FONT};font-size:11px;font-weight:700;
+                letter-spacing:0.08em;text-transform:uppercase;color:${brand.slate};">Subject</p>
+      <p style="margin:0 0 18px;font-family:${FONT};font-size:15px;font-weight:600;
+                color:${brand.navyDeep};line-height:1.45;">${ticket.subject}</p>
+
+      <p style="margin:0 0 8px;font-family:${FONT};font-size:11px;font-weight:700;
+                letter-spacing:0.08em;text-transform:uppercase;color:${brand.slate};">Description</p>
+      <div style="background:${brand.panel};border-radius:12px;padding:16px;
+                  font-family:${FONT};font-size:14px;color:${brand.navyDeep};
+                  line-height:1.6;white-space:pre-wrap;">${ticket.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>`,
+      '20px 30px 4px')}
   `;
 
-  await transporter.sendMail({
-    from:    `"URBONT Support" <${smtpUser}>`,
-    to:      adminEmail,
-    subject: `[${ticket.priority.toUpperCase()}] ${categoryLabel[ticket.category] || ticket.category}: ${ticket.subject}`,
+  const html = emailShell({
+    eyebrow:  'Support Ticket',
+    subtitle: `#${ticket.id.slice(-8).toUpperCase()} · ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })} ET`,
+    content,
+    footerNote: 'Reply to this email to reach the user directly.',
+  });
+
+  await sendEmail({
+    to:       adminEmail,
+    subject:  `[${ticket.priority.toUpperCase()}] ${categoryLabel[ticket.category] || ticket.category}: ${ticket.subject}`,
     html,
+    category: 'support_ticket',
   });
 }
 

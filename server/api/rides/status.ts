@@ -3,6 +3,7 @@ import { requireSupabaseAuth, validateBody } from "../../middleware";
 import { supabaseAdmin } from "../../db/client";
 import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
+import { isEmailConfigured } from "../../services/mailer";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
 import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
@@ -665,8 +666,8 @@ router.post('/:id/send-receipt', requireSupabaseAuth, async (req: Request, res: 
     const { data: ride, error } = await supabaseAdmin
       .from('rides')
       .select(`
-        id, created_at, pickup_address, dropoff_address, fare, distance_miles, duration_minutes,
-        vehicle_type, ride_status,
+        id, created_at, pickup_address, dropoff_address, fare, tip_amount, promo_discount,
+        distance_miles, duration_minutes, vehicle_type, ride_status, stops,
         passenger:profiles!rides_passenger_id_fkey(first_name, last_name, email, phone),
         driver:profiles!rides_driver_id_fkey(first_name, last_name)
       `)
@@ -679,57 +680,33 @@ router.post('/:id/send-receipt', requireSupabaseAuth, async (req: Request, res: 
     const email = passenger?.email;
     if (!email) return res.status(400).json({ error: 'No email on file for passenger' });
 
-    const smtpHost = process.env.SMTP_HOST;
-    const smtpUser = process.env.SMTP_USER;
-    const smtpPass = process.env.SMTP_PASS;
-    const smtpPort = parseInt(process.env.SMTP_PORT || '587');
-    if (!smtpHost || !smtpUser || !smtpPass) {
+    if (!isEmailConfigured()) {
       return res.status(503).json({ error: 'Email not configured' });
     }
 
-    const nodemailer = await import('nodemailer');
-    const transporter = nodemailer.default.createTransport({ host: smtpHost, port: smtpPort, auth: { user: smtpUser, pass: smtpPass } });
-
-    const rideRec = ride as Record<string,unknown>;
-    const fare = typeof rideRec.fare === 'number' ? `${(rideRec.fare as number).toFixed(2)}` : '—';
-    const distMiles = parseFloat(String(rideRec.distance_miles ?? 0));
-    const distMi = distMiles ? `${distMiles.toFixed(1)} mi` : '—';
-    const dur = rideRec.duration_minutes ? `${Math.round(Number(rideRec.duration_minutes))} min` : '—';
-    const rideDate = new Date(String(rideRec.created_at)).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const passengerName = passenger ? `${passenger.first_name} ${passenger.last_name}`.trim() : 'Passenger';
-    const driverName = driver ? `${driver.first_name} ${driver.last_name}`.trim() : 'Your Chauffeur';
-
-    await transporter.sendMail({
-      from: `URBONT <${smtpUser}>`,
-      to: email,
-      subject: `Your URBONT Receipt — ${rideDate}`,
-      html: `
-        <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#001F3F;">
-          <div style="background:#001F3F;padding:32px;border-radius:12px 12px 0 0;text-align:center;">
-            <h1 style="color:#D4A055;margin:0;font-size:28px;letter-spacing:4px;">URBONT</h1>
-            <p style="color:#fff;margin:8px 0 0;opacity:0.7;font-size:13px;">Premium Chauffeur Service</p>
-          </div>
-          <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;">
-            <p style="font-size:16px;margin:0 0 24px;">Hi ${passengerName},<br>Thank you for riding with URBONT. Here is your trip receipt.</p>
-            <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Date</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;">${rideDate}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Chauffeur</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;">${driverName}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Vehicle</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;text-transform:capitalize;">${(ride as Record<string,unknown>).vehicle_type || 'Sedan'}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Pickup</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;max-width:200px;">${(ride as Record<string,unknown>).pickup_address || '—'}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Dropoff</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;max-width:200px;">${(ride as Record<string,unknown>).dropoff_address || '—'}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Distance</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;">${distMi}</td></tr>
-              <tr><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;color:#6b7280;font-size:13px;">Duration</td><td style="padding:10px 0;border-bottom:1px solid #f3f4f6;font-size:13px;text-align:right;">${dur}</td></tr>
-              <tr><td style="padding:12px 0;color:#001F3F;font-weight:bold;font-size:15px;">Total</td><td style="padding:12px 0;font-weight:bold;font-size:18px;color:#D4A055;text-align:right;">${fare}</td></tr>
-            </table>
-            <p style="font-size:12px;color:#9ca3af;margin:0;">Questions? Reply to this email or contact support. Thank you for choosing URBONT.</p>
-          </div>
-          <div style="background:#f9fafb;padding:16px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb;border-top:none;text-align:center;">
-            <p style="font-size:11px;color:#9ca3af;margin:0;">© ${new Date().getFullYear()} URBONT. Premium Chauffeur Service.</p>
-          </div>
-        </div>
-      `,
+    // Same template as the automatic receipt (services/email.ts). This endpoint
+    // used to carry a second, divergent copy, so the layout a passenger got
+    // depended on whether the receipt was automatic or resent from the panel.
+    const rideRec = ride as Record<string, unknown>;
+    const sent = await sendRideReceipt({
+      passengerEmail: email,
+      passengerName:  passenger ? `${passenger.first_name || ''} ${passenger.last_name || ''}`.trim() || 'Passenger' : 'Passenger',
+      driverName:     driver ? `${driver.first_name || ''} ${driver.last_name || ''}`.trim() : 'Your Chauffeur',
+      vehicleType:    String(rideRec.vehicle_type || 'Sedan'),
+      pickupAddress:  String(rideRec.pickup_address || ''),
+      dropoffAddress: String(rideRec.dropoff_address || ''),
+      distanceMiles:  parseFloat(String(rideRec.distance_miles ?? 0)),
+      durationMin:    Math.round(Number(rideRec.duration_minutes ?? 0)),
+      fare:           Number(rideRec.fare ?? 0),
+      tip:            rideRec.tip_amount    != null ? Number(rideRec.tip_amount)    : undefined,
+      discount:       rideRec.promo_discount != null ? Number(rideRec.promo_discount) : undefined,
+      paymentMethod:  'Card on file',
+      rideDate:       new Date(String(rideRec.created_at)).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+      rideId:         String(rideRec.id),
+      stops:          (rideRec.stops as string[]) || [],
     });
 
+    if (!sent) return res.status(502).json({ error: 'Failed to send receipt' });
     res.json({ success: true });
   } catch (err: any) {
     logger.error(`[RIDES] receipt email error:: ${err.message}`);

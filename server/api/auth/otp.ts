@@ -5,12 +5,33 @@ import jwt from 'jsonwebtoken';
 import { otpRateLimiter, recordOtpFailure, validateBody, sanitizeBody } from '../../middleware';
 import { getOrCreateSupabaseUser, getOrCreateSupabaseUserByEmail, createSupabaseSession, supabaseAdmin } from '../../db/client';
 import { sendSmsTwilio, isTwilioConfigured } from '../../services/twilio';
+import { sendEmail, isEmailConfigured } from '../../services/mailer';
+import { emailShell, section, brand, FONT } from '../../services/emailLayout';
 import { verifyFirebasePhoneToken } from '../../services/firebasePhoneAuth';
 import { getAccountStatus } from '../../services/accountSecurity';
 import { jwtSecret } from '../../db/client';
 import { getUserDoc } from '../../db/helpers';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
+
+/** Verification-code email. Exported so it can be rendered without sending. */
+export function otpEmailHtml(code: string): string {
+  return emailShell({
+    eyebrow: 'Verification',
+    content: section(`
+      <p style="margin:0 0 20px;font-family:${FONT};font-size:15px;
+                color:${brand.slate};text-align:center;">Your verification code is:</p>
+      <div style="background:${brand.panel};border-radius:14px;padding:22px;text-align:center;">
+        <span style="font-family:${FONT};font-size:40px;font-weight:700;letter-spacing:0.28em;
+                     color:${brand.navyDeep};">${code}</span>
+      </div>
+      <p style="margin:20px 0 0;font-family:${FONT};font-size:13px;
+                color:${brand.slate};text-align:center;line-height:1.6;">
+        Valid for 10 minutes.</p>`, '28px 30px 8px'),
+    footerNote: 'Never share this code. URBONT will never ask you for it.',
+  });
+}
+
   const log = createContextLogger('OTP');
 
   export const otpRouter = Router();
@@ -128,13 +149,9 @@ function errMsg(e: unknown): string { return e instanceof Error ? e.message : St
     }
 
     const emailKey = `email:${email.toLowerCase()}`;
-    const smtpHost = process.env.SMTP_HOST;
-    const smtpUser = process.env.SMTP_USER;
-    const smtpPass = process.env.SMTP_PASS;
-    const smtpPort = parseInt(process.env.SMTP_PORT || '587');
 
-    if (!smtpHost || !smtpUser || !smtpPass) {
-      log.error('[OTP EMAIL] SMTP env vars missing — SMTP_HOST, SMTP_USER, SMTP_PASS required');
+    if (!isEmailConfigured()) {
+      log.error('[OTP EMAIL] No email provider configured — set SENDGRID_API_KEY, RESEND_API_KEY or SMTP_HOST/USER/PASS');
       return res.status(503).json({ error: 'Email service not configured. Contact support.' });
     }
 
@@ -144,26 +161,16 @@ function errMsg(e: unknown): string { return e instanceof Error ? e.message : St
     log.info(`[OTP EMAIL] Generated code for ${email}`);
 
     try {
-      const nodemailer = await import('nodemailer');
-      const transporter = nodemailer.default.createTransport({ host: smtpHost, port: smtpPort, auth: { user: smtpUser, pass: smtpPass } });
-      await transporter.sendMail({
-        from: `URBONT <${smtpUser}>`,
+      const sent = await sendEmail({
         to: email,
         subject: `Your URBONT verification code: ${code}`,
-        html: `
-          <div style="font-family:sans-serif;max-width:440px;margin:0 auto;color:#001F3F;">
-            <div style="background:#001F3F;padding:24px;border-radius:12px 12px 0 0;text-align:center;">
-              <h1 style="color:#D4A055;margin:0;font-size:24px;letter-spacing:4px;">URBONT</h1>
-              <p style="color:#fff;margin:6px 0 0;opacity:0.6;font-size:12px;">Premium Chauffeur Service</p>
-            </div>
-            <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 12px 12px;text-align:center;">
-              <p style="font-size:15px;color:#374151;margin:0 0 20px;">Your verification code is:</p>
-              <div style="font-size:44px;font-weight:800;letter-spacing:14px;color:#001F3F;margin:0 0 20px;padding:16px;background:#f9fafb;border-radius:8px;">${code}</div>
-              <p style="font-size:12px;color:#9ca3af;margin:0;">Valid for 10 minutes. Never share this code with anyone.</p>
-            </div>
-          </div>
-        `,
+        category: 'otp',
+        html: otpEmailHtml(code),
       });
+      if (!sent) {
+        log.error({ email }, '[OTP EMAIL] Provider rejected the send');
+        return res.status(503).json({ error: 'Failed to send verification email. Please try again.' });
+      }
       log.info(`[OTP EMAIL] Code sent to ${email}`);
       return res.json({ success: true, otpToken });
     } catch (err: unknown) {
