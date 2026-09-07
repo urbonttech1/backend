@@ -29,3 +29,5 @@ Thumbs.db
 # Credenciales
 *.jks
 *.keystore
+
+*temp.md
