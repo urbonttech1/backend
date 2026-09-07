@@ -4,6 +4,8 @@ import { requireAdminJWT } from "./admin-auth";
 import { supabaseAdmin } from "../db/client";
 import { pool as pgPool } from "../db/pool";
 import { logger } from '../lib/logger';
+import { getMemory, getCpu } from '../services/systemMetrics';
+import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
 // cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
@@ -892,38 +894,62 @@ adminRouter.patch("/support/:id", async (req: Request, res: Response) => {
 
 adminRouter.get("/system", async (_req: Request, res: Response) => {
   const uptimeSeconds = Math.floor((Date.now() - serverStartTime) / 1000);
-  const memUsage = process.memoryUsage();
 
-  let dbStatus = 'disconnected';
-  try {
-    await pgPool.query('SELECT 1');
-    dbStatus = 'connected';
-  } catch {}
+  const [memory, cpu, database, supabase, redis] = await Promise.all([
+    getMemory(), getCpu(), checkDatabase(), checkSupabase(), checkRedis(),
+  ]);
 
-  let supabaseStatus = 'disconnected';
-  try {
-    const r = await supabaseAdmin.from('profiles').select('id').limit(1);
-    if (!r.error) supabaseStatus = 'connected';
-  } catch {}
+  // Stripe, Maps, Firebase, Twilio y correo se verificaron de verdad al arrancar
+  // y el resultado quedó guardado: no se pueden repetir en cada consulta porque
+  // esta pantalla refresca cada 15 s y una llamada a Maps se factura.
+  // Ver server/services/integrationChecks.ts.
+  const checks = getIntegrationChecks();
+  const todas = { database, supabase, redis, ...checks };
 
   res.json({
     uptime: uptimeSeconds,
     uptimeFormatted: `${Math.floor(uptimeSeconds / 3600)}h ${Math.floor((uptimeSeconds % 3600) / 60)}m ${uptimeSeconds % 60}s`,
+
     memory: {
-      rss: Math.round(memUsage.rss / 1024 / 1024),
-      heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
-      heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+      // Share of the container limit — the number worth showing on a dashboard.
+      usedMb:  memory.usedMb,
+      limitMb: memory.limitMb,
+      percent: memory.percent,
+      // V8 heap. Diagnostic only: heapUsed/heapTotal sits near 90% by design
+      // because V8 grows the heap on demand, so it is not a capacity signal.
+      heapUsedMb:  memory.heapUsedMb,
+      heapTotalMb: memory.heapTotalMb,
+      // Legacy keys, kept so the existing panel does not break.
+      rss:       memory.usedMb,
+      heapUsed:  memory.heapUsedMb,
+      heapTotal: memory.heapTotalMb,
     },
+
+    cpu: {
+      // Percentage of the allocated vCPU. Null until a second sample exists.
+      percent: cpu.percent,
+      vcpu:    cpu.vcpu,
+    },
+
     nodeVersion: process.version,
     environment: process.env.NODE_ENV || 'development',
-    apiStatus: {
-      database: dbStatus,
-      supabase: supabaseStatus,
-      stripe: process.env.STRIPE_SECRET_KEY ? 'connected' : 'disconnected',
-      google_maps: (process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY) ? 'connected' : 'disconnected',
-      firebase: process.env.FIREBASE_SERVICE_ACCOUNT ? 'connected' : 'disconnected',
-      infobip: process.env.INFOBIP_API_KEY ? 'connected' : 'disconnected',
-    },
+
+    // Estado de cada dependencia. Mismo conjunto de claves que `integrations`.
+    apiStatus: Object.fromEntries(
+      Object.entries(todas).map(([k, v]) => [k, v.status]),
+    ),
+
+    // Detalle completo de cada comprobación, para que el panel muestre al pasar
+    // el cursor qué se validó, cómo y cuánto tardó.
+    integrations: todas,
+
+    // Atajos planos, para renderizar la tarjeta sin recorrer el objeto.
+    verifiedAt: Object.fromEntries(
+      Object.entries(todas).map(([k, v]) => [k, v.verifiedAt]),
+    ),
+    checkDetail: Object.fromEntries(
+      Object.entries(todas).map(([k, v]) => [k, v.summary ?? null]),
+    ),
   });
 });
 

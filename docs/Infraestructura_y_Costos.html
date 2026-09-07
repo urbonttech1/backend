@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Informe — Infraestructura y costos</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+:root{
+  --navy:#0A2438; --slate:#5A6B79; --line:#e3e8ec; --paper:#fff;
+  --ground:#eef1f4; --gold:#B8894A; --red:#C0392B; --amber:#C77D0A; --green:#1E7A54;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.65;color:#22303B;background:var(--ground);font-size:16px;}
+.page{max-width:880px;margin:0 auto;background:var(--paper);padding:64px 68px 72px;
+  box-shadow:0 1px 3px rgba(10,36,56,.10),0 8px 32px rgba(10,36,56,.06);}
+
+.cover{border-bottom:3px solid var(--navy);padding-bottom:28px;margin-bottom:44px;}
+.brand{display:flex;align-items:center;gap:16px;margin-bottom:22px;}
+.brand img{width:52px;height:52px;border-radius:12px;display:block;flex:0 0 52px;}
+.brand-name{font-size:19px;font-weight:200;letter-spacing:.16em;color:var(--navy);
+  text-transform:uppercase;line-height:1;}
+.brand-sub{font-size:11.5px;color:var(--slate);letter-spacing:.04em;margin-top:5px;}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--gold);margin-bottom:12px;}
+.cover h1{font-size:34px;line-height:1.2;color:var(--navy);font-weight:700;
+  letter-spacing:-.02em;margin-bottom:12px;}
+.cover .lede{font-size:17px;color:var(--slate);max-width:62ch;}
+.cover-meta{display:flex;flex-wrap:wrap;gap:28px;margin-top:26px;font-size:13px;color:var(--slate);}
+.cover-meta strong{color:var(--navy);font-weight:600;}
+
+h2{font-size:22px;color:var(--navy);font-weight:700;margin:52px 0 6px;letter-spacing:-.01em;}
+h2 .num{display:inline-block;min-width:34px;color:var(--gold);font-weight:700;}
+h2 + .sub{color:var(--slate);font-size:15px;margin-bottom:22px;max-width:66ch;}
+h3{font-size:17px;color:var(--navy);font-weight:650;margin:32px 0 12px;}
+h4{font-size:15px;color:var(--navy);font-weight:650;margin:22px 0 8px;}
+p{margin-bottom:15px;max-width:72ch;}
+ul,ol{margin:0 0 16px 22px;} li{margin-bottom:9px;max-width:70ch;}
+strong{font-weight:650;color:var(--navy);}
+
+.exec{border:1px solid var(--line);border-top:4px solid var(--navy);border-radius:3px;
+  padding:34px 38px;margin-bottom:12px;background:#fbfcfd;}
+.exec h2{margin:0 0 22px;font-size:15px;letter-spacing:.12em;text-transform:uppercase;}
+.exec-row{display:flex;gap:22px;padding:15px 0;border-top:1px solid var(--line);}
+.exec-row:first-of-type{border-top:none;padding-top:0;}
+.exec-k{flex:0 0 152px;font-size:12px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--slate);padding-top:2px;}
+.exec-v{flex:1;font-size:15.5px;}
+.exec-v p:last-child{margin-bottom:0;}
+
+.pill{display:inline-block;padding:3px 11px;border-radius:11px;font-size:11.5px;
+  font-weight:700;letter-spacing:.03em;vertical-align:middle;}
+.pill-red{background:#fbe9e7;color:var(--red);}
+.pill-green{background:#e4f2eb;color:var(--green);}
+.pill-amber{background:#fdf2e0;color:var(--amber);}
+
+.callout{border-left:3px solid var(--navy);background:#f6f8fa;padding:20px 24px;
+  margin:22px 0;border-radius:0 3px 3px 0;}
+.callout p:last-child{margin-bottom:0;}
+.callout-red{border-left-color:var(--red);background:#fdf4f3;}
+.callout-amber{border-left-color:var(--amber);background:#fdfaf3;}
+.callout-green{border-left-color:var(--green);background:#f4faf7;}
+.callout-title{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  margin-bottom:9px;color:var(--navy);}
+.callout-red .callout-title{color:var(--red);}
+.callout-amber .callout-title{color:var(--amber);}
+.callout-green .callout-title{color:var(--green);}
+
+.tbl-wrap{overflow-x:auto;margin:22px 0;}
+table{width:100%;border-collapse:collapse;font-size:14.5px;}
+th{background:var(--navy);color:#fff;font-weight:600;text-align:left;padding:12px 14px;
+  font-size:13px;letter-spacing:.02em;}
+td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:nth-child(even){background:#fafbfc;}
+.num-cell{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+tr.total td{background:#f2f5f7 !important;font-weight:700;color:var(--navy);
+  border-top:2px solid var(--navy);font-size:15.5px;}
+
+/* Barras de utilización */
+.gauge{margin:18px 0;}
+.gauge-row{display:flex;align-items:center;gap:16px;margin-bottom:12px;}
+.gauge-lbl{flex:0 0 130px;font-size:14px;color:var(--slate);}
+.gauge-bar{flex:1;height:22px;background:#eef1f4;border-radius:4px;overflow:hidden;position:relative;}
+.gauge-fill{height:100%;background:var(--green);border-radius:4px;}
+.gauge-val{flex:0 0 120px;font-size:14px;font-weight:600;color:var(--navy);
+  font-variant-numeric:tabular-nums;}
+
+.split{display:flex;gap:18px;margin:24px 0;flex-wrap:wrap;}
+.split-card{flex:1 1 240px;border:1px solid var(--line);border-radius:3px;padding:20px 22px;}
+.split-card.ok{border-top:3px solid var(--green);}
+.split-card.bad{border-top:3px solid var(--red);}
+.split-card h4{margin-top:0;}
+.split-card p{font-size:14.5px;margin-bottom:0;}
+.big-num{font-size:30px;font-weight:700;color:var(--navy);line-height:1.1;margin-bottom:4px;
+  font-variant-numeric:tabular-nums;}
+
+code{background:#eef1f4;padding:1.5px 6px;border-radius:2px;
+  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:.87em;color:var(--navy);}
+pre{background:#f6f8fa;border-left:3px solid var(--slate);padding:16px 18px;margin:16px 0;
+  border-radius:0 3px 3px 0;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  font-size:12.5px;line-height:1.6;overflow-x:auto;}
+
+.footer{margin-top:56px;padding-top:22px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--slate);text-align:center;}
+.footer p{max-width:none;margin-bottom:4px;}
+
+@media print{
+  body{background:#fff;font-size:11pt;} .page{box-shadow:none;padding:0;max-width:none;}
+  h2{page-break-after:avoid;} table,.callout,.split,.gauge{page-break-inside:avoid;}
+}
+@media (max-width:700px){
+  .page{padding:36px 22px 48px;} .exec{padding:24px 22px;}
+  .exec-row{flex-direction:column;gap:6px;} .exec-k{flex:none;}
+  .cover h1{font-size:26px;} .gauge-row{flex-wrap:wrap;} .gauge-lbl{flex:0 0 100%;}
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ══════════ PORTADA ══════════ -->
+  <div class="cover">
+    <div class="brand">
+      <img src="data:image/png;base64,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hk3tNSl1XNrWlKy8zYdOH7lwpdzFX0Crb249e6Vyz4kLK/YcnbZ2z9BZ6b8bPZsfXoZrEQB40s8HTfn9l3P6xi8flZIZn75r3pYDy3cd2XDgZPaxc3mFl08WVxRfq6mub2rt6NQ/1mubWq5U1YVO9q/Pl+YUXAx1aFXOsYXbDs3MyI1amjU4ac2foxb+y/AEvoULzyEA8L/Q0fyTfhMeHzAplI1nh017/pMZL3ye9PIXs/84dt5r41NejVzwhzFzXxqV/K+fzfzVx9OfHhL/5MC4R/tP7PFutPgtB8KKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApf4H/3NAPLArSUwAAAAASUVORK5CYII=" alt="URBONT">
+      <div>
+        <div class="brand-name">Urbont</div>
+        <div class="brand-sub">Premium Chauffeur Service · Miami</div>
+      </div>
+    </div>
+    <div class="eyebrow">Informe técnico · Uso interno</div>
+    <h1>Infraestructura actual, costo mensual y proyección de crecimiento</h1>
+    <p class="lede">
+      Inventario verificado de lo que URBONT tiene desplegado en AWS, qué se paga hoy por ello,
+      cuánta capacidad queda libre y cómo evoluciona la factura en cada escenario de crecimiento.
+    </p>
+    <div class="cover-meta">
+      <span><strong>Cuenta:</strong> AWS us-east-1</span>
+      <span><strong>Fecha:</strong> 7 de septiembre de 2026</span>
+      <span><strong>Costo actual:</strong> <span class="pill pill-green">~$48 / mes</span></span>
+    </div>
+  </div>
+
+  <!-- ══════════ RESUMEN EJECUTIVO ══════════ -->
+  <div class="exec">
+    <h2>Resumen ejecutivo</h2>
+
+    <div class="exec-row">
+      <div class="exec-k">Qué hay</div>
+      <div class="exec-v">
+        Un contenedor de aplicación y un balanceador de carga. Nada más.
+        <strong>Ningún recurso olvidado ni pagándose de más</strong> — se auditó la cuenta completa.
+      </div>
+    </div>
+
+    <div class="exec-row">
+      <div class="exec-k">Cuánto cuesta</div>
+      <div class="exec-v">
+        <strong>~$48 al mes.</strong> Precio de lista, sin transferencia de datos relevante.
+      </div>
+    </div>
+
+    <div class="exec-row">
+      <div class="exec-k">Cuánto se usa</div>
+      <div class="exec-v">
+        <strong>Menos del 2% de la capacidad contratada.</strong> El servidor está prácticamente
+        en reposo: 1,7% de procesador y 7% de memoria.
+      </div>
+    </div>
+
+    <div class="exec-row">
+      <div class="exec-k">Dónde va el dinero</div>
+      <div class="exec-v">
+        El <strong>balanceador se lleva el 62%</strong> de la factura ($29,57) y es un costo fijo:
+        se paga igual con cero tráfico. El contenedor, que hace todo el trabajo, cuesta la mitad.
+      </div>
+    </div>
+
+    <div class="exec-row">
+      <div class="exec-k">Riesgo principal</div>
+      <div class="exec-v">
+        <span class="pill pill-red">Punto único de falla</span>
+        Hay un solo contenedor. Si se reinicia, el servicio cae por completo durante 60-90 segundos.
+        <strong>No es un problema de capacidad sino de disponibilidad</strong>, y hoy pesa más.
+      </div>
+    </div>
+
+    <div class="exec-row">
+      <div class="exec-k">Límite para crecer</div>
+      <div class="exec-v">
+        Se puede agrandar el contenedor, pero <strong>no se puede duplicar</strong>: el código aún
+        no soporta correr en dos instancias a la vez. Es el techo real, no el presupuesto.
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 1. INVENTARIO ══════════ -->
+  <h2><span class="num">1.</span>Qué hay desplegado</h2>
+  <p class="sub">Inventario obtenido consultando la cuenta de AWS, no de documentación previa.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th style="width:34%">Recurso</th><th style="width:26%">Configuración</th><th>Para qué sirve</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Contenedor de aplicación</strong><br><span style="font-size:13px;color:var(--slate)">ECS Fargate</span></td>
+        <td>1 instancia · ARM64<br>0,5 procesador · 1 GB</td>
+        <td>Ejecuta toda la API: viajes, pagos, mapas, notificaciones.</td>
+      </tr>
+      <tr>
+        <td><strong>Balanceador de carga</strong><br><span style="font-size:13px;color:var(--slate)">Application Load Balancer</span></td>
+        <td>1 unidad · 2 zonas<br>(us-east-1c y 1e)</td>
+        <td>Recibe el tráfico de internet, gestiona el certificado HTTPS y lo reparte.</td>
+      </tr>
+      <tr>
+        <td><strong>Registro de imágenes</strong><br><span style="font-size:13px;color:var(--slate)">ECR</span></td>
+        <td>1 repositorio<br>4 imágenes · 0,37 GB</td>
+        <td>Almacena las versiones de la aplicación listas para desplegar.</td>
+      </tr>
+      <tr>
+        <td><strong>Registros</strong><br><span style="font-size:13px;color:var(--slate)">CloudWatch Logs</span></td>
+        <td>1 grupo<br>retención indefinida</td>
+        <td>Guarda la actividad del servidor para diagnóstico.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Lo que deliberadamente no existe</h3>
+  <p>Confirmado en la auditoría — y cada ausencia representa un ahorro:</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th style="width:40%">Recurso</th><th style="width:16%">Cantidad</th><th>Comentario</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>NAT Gateway</td><td>0</td><td><strong>Ahorro de ~$33/mes.</strong> Decisión consciente del despliegue.</td></tr>
+      <tr><td>Servidores EC2</td><td>0</td><td>Todo corre en contenedores administrados.</td></tr>
+      <tr><td>Base de datos RDS</td><td>0</td><td>La base es Supabase, fuera de AWS y facturada aparte.</td></tr>
+      <tr><td>Caché ElastiCache</td><td>0</td><td>Solo hará falta al correr más de una instancia.</td></tr>
+      <tr><td>Discos EBS</td><td>0</td><td>Sin almacenamiento persistente que mantener.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout callout-green">
+    <div class="callout-title">Resultado de la auditoría</div>
+    <p>
+      <strong>Cero recursos huérfanos.</strong> Las dos direcciones IP que aparecen en la cuenta
+      pertenecen al propio balanceador —una por zona— y no son un gasto olvidado. No hay nada
+      encendido que no se esté usando.
+    </p>
+  </div>
+
+  <!-- ══════════ 2. UTILIZACIÓN ══════════ -->
+  <h2><span class="num">2.</span>Cuánta capacidad se está usando</h2>
+  <p class="sub">Medición de las últimas 24 horas sobre el contenedor en producción.</p>
+
+  <div class="gauge">
+    <div class="gauge-row">
+      <div class="gauge-lbl">Procesador</div>
+      <div class="gauge-bar"><div class="gauge-fill" style="width:1.7%"></div></div>
+      <div class="gauge-val">1,7% promedio</div>
+    </div>
+    <div class="gauge-row">
+      <div class="gauge-lbl">Procesador (pico)</div>
+      <div class="gauge-bar"><div class="gauge-fill" style="width:17.3%;background:var(--amber)"></div></div>
+      <div class="gauge-val">17,3% máximo</div>
+    </div>
+    <div class="gauge-row">
+      <div class="gauge-lbl">Memoria</div>
+      <div class="gauge-bar"><div class="gauge-fill" style="width:7%"></div></div>
+      <div class="gauge-val">7,0% promedio</div>
+    </div>
+  </div>
+
+  <p>
+    La infraestructura está sobredimensionada para el volumen actual, lo cual es razonable en una
+    etapa temprana: <strong>el margen existe para absorber crecimiento sin tocar nada</strong>.
+    Reducirla ahorraría poco —el contenedor es la parte barata— y eliminaría ese margen.
+  </p>
+
+  <!-- ══════════ 3. COSTO ══════════ -->
+  <h2><span class="num">3.</span>Costo mensual detallado</h2>
+  <p class="sub">Precios de lista de us-east-1, sobre 730 horas al mes.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th style="width:46%">Concepto</th><th style="width:30%">Cálculo</th><th class="num-cell">Mensual</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Contenedor — procesador</td><td>0,5 × $0,03238/h × 730</td><td class="num-cell">$11,82</td></tr>
+      <tr><td>Contenedor — memoria</td><td>1 GB × $0,00356/h × 730</td><td class="num-cell">$2,60</td></tr>
+      <tr><td>Balanceador — cargo base</td><td>$0,0225/h × 730</td><td class="num-cell">$16,43</td></tr>
+      <tr><td>Balanceador — capacidad usada</td><td>~1 unidad · tráfico bajo</td><td class="num-cell">$5,84</td></tr>
+      <tr><td>Direcciones IP del balanceador</td><td>2 × $0,005/h × 730</td><td class="num-cell">$7,30</td></tr>
+      <tr><td>Dirección IP del contenedor</td><td>1 × $0,005/h × 730</td><td class="num-cell">$3,65</td></tr>
+      <tr><td>Registro de imágenes</td><td>0,37 GB × $0,10</td><td class="num-cell">$0,04</td></tr>
+      <tr><td>Registros de actividad</td><td>volumen bajo</td><td class="num-cell">~$0,50</td></tr>
+      <tr><td>Transferencia de datos</td><td>bajo los 100 GB sin cargo</td><td class="num-cell">$0,00</td></tr>
+      <tr class="total"><td colspan="2">Total mensual</td><td class="num-cell">~$48</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p style="font-size:14px;color:var(--slate)">
+    Rango realista: <strong>$42 (piso) a $49</strong> según el tráfico del mes. El único componente
+    variable es la capacidad consumida del balanceador.
+  </p>
+
+  <h3>Dos cargos que suelen pasarse por alto</h3>
+  <div class="callout callout-amber">
+    <p>
+      <strong>Direcciones IP públicas — $10,95/mes.</strong> Desde febrero de 2024 AWS cobra por cada
+      dirección IPv4 en uso. Aquí hay tres. Representan casi una cuarta parte de la factura y no
+      figuraban en el estimado original del manual de despliegue.
+    </p>
+    <p style="margin-top:12px">
+      <strong>Capacidad consumida del balanceador — ~$5,84/mes.</strong> Se cobra por encima del
+      cargo base, en función de conexiones y datos procesados. El estimado previo contaba solo la
+      tarifa fija.
+    </p>
+  </div>
+
+  <!-- ══════════ 4. DÓNDE VA EL DINERO ══════════ -->
+  <h2><span class="num">4.</span>El balanceador cuesta más que la aplicación</h2>
+
+  <div class="split">
+    <div class="split-card bad">
+      <h4>Balanceador de carga</h4>
+      <div class="big-num">$29,57</div>
+      <p><strong>62% de la factura.</strong> Base, capacidad y sus dos direcciones IP. Es un costo
+      completamente fijo: no baja aunque no entre un solo viaje.</p>
+    </div>
+    <div class="split-card ok">
+      <h4>Aplicación</h4>
+      <div class="big-num">$18,07</div>
+      <p><strong>38% de la factura.</strong> El contenedor y su dirección IP. Es lo único que crece
+      con el uso, y hoy trabaja al 2% de su capacidad.</p>
+    </div>
+  </div>
+
+  <p>
+    Esta proporción tiene una consecuencia práctica: <strong>reducir el tamaño del contenedor casi
+    no cambia la factura</strong>. Si en algún momento se busca recortar, el objetivo tendría que
+    ser el balanceador, no la aplicación — aunque eliminarlo implica renunciar al certificado HTTPS
+    administrado y al reparto de tráfico, que es lo que permitirá crecer.
+  </p>
+
+  <!-- ══════════ 5. ESCALAMIENTO ══════════ -->
+  <h2><span class="num">5.</span>Cómo se escala</h2>
+  <p class="sub">Qué pasa hoy ante un aumento de tráfico, en qué punto hay que actuar y cuánto cuesta cada paso.</p>
+
+  <div class="callout callout-red">
+    <div class="callout-title">Hoy no escala solo</div>
+    <p>
+      <strong>No hay autoescalado configurado.</strong> Se verificó en la cuenta: cero objetivos y
+      cero políticas de escalado. El número de contenedores está fijo en uno y solo cambia si
+      alguien lo modifica a mano.
+    </p>
+    <p style="margin-top:12px">
+      La consecuencia: ante un pico de tráfico <strong>no se agrega capacidad</strong>. El servicio
+      se vuelve lento y, pasado cierto punto, empieza a rechazar peticiones. Nadie recibe una alerta.
+    </p>
+  </div>
+
+  <h3>Tráfico actual</h3>
+  <p>Medido sobre los últimos siete días:</p>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:40%">Métrica</th><th class="num-cell" style="width:26%">Valor</th><th>Consumo asociado</th></tr></thead>
+    <tbody>
+      <tr><td>Promedio</td><td class="num-cell">0,07 pet/s</td><td>1,7% del procesador</td></tr>
+      <tr><td>Hora pico</td><td class="num-cell">2,49 pet/s</td><td>17,3% del procesador</td></tr>
+      <tr><td>Total de la semana</td><td class="num-cell">18.223</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Cruzando ambas medidas, cada petición por segundo consume aproximadamente un
+    <strong>6% del procesador</strong> asignado. De ahí salen los umbrales de abajo.
+  </p>
+
+  <h3>Las dos formas de crecer</h3>
+  <div class="split">
+    <div class="split-card ok">
+      <h4>Vertical · agrandar el contenedor</h4>
+      <p><strong>Disponible hoy.</strong> Se cambia una línea de configuración y se aplica en
+      minutos. No requiere tocar código. Es el camino inmediato.</p>
+    </div>
+    <div class="split-card bad">
+      <h4>Horizontal · agregar contenedores</h4>
+      <p><strong>Bloqueado.</strong> El código todavía no puede ejecutarse en dos instancias a la
+      vez. Requiere desarrollo previo, no presupuesto.</p>
+    </div>
+  </div>
+
+  <div class="callout callout-red">
+    <div class="callout-title">Por qué el camino horizontal está cerrado</div>
+    <p>
+      Con dos instancias, las tareas programadas se ejecutarían por duplicado. La más grave es la
+      que reasigna viajes abandonados: <strong>asignaría el mismo viaje a dos conductores
+      distintos</strong>. Hay tres obstáculos más de la misma naturaleza, todos por guardar estado
+      en la memoria de un único proceso.
+    </p>
+  </div>
+
+  <h3>Cuándo actuar</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th style="width:26%">Procesador sostenido</th><th style="width:24%">Equivale a</th><th>Qué hacer</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="pill pill-green">bajo 40%</span></td>
+        <td>hasta ~6 pet/s</td>
+        <td>Nada. Es la situación actual, con amplio margen.</td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-amber">40% a 70%</span></td>
+        <td>~6 a 11 pet/s</td>
+        <td>Duplicar el contenedor (paso A). Se aplica en minutos.</td>
+      </tr>
+      <tr>
+        <td><span class="pill pill-red">sobre 70%</span></td>
+        <td>más de 11 pet/s</td>
+        <td>Ya se debería haber escalado. Por encima del 85% empiezan los tiempos de espera.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p style="font-size:14px;color:var(--slate)">
+    Los umbrales se derivan de la medición de arriba y asumen que el perfil de tráfico se mantiene.
+    Son una guía para decidir, no una garantía: conviene confirmarlos con una prueba de carga antes
+    de comprometerse con una fecha.
+  </p>
+
+  <h3>Los pasos, con capacidad y costo</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:16%">Paso</th><th style="width:17%">Configuración</th>
+        <th style="width:13%">Peticiones/s</th><th style="width:16%">Usuarios simultáneos</th>
+        <th class="num-cell" style="width:12%">Costo</th><th>Requisito</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Hoy</strong></td>
+        <td>1 × 0,5 procesador</td>
+        <td>hasta ~11</td>
+        <td>~200</td>
+        <td class="num-cell">$48</td>
+        <td>—</td>
+      </tr>
+      <tr>
+        <td><strong>A</strong></td>
+        <td>1 × 1 procesador</td>
+        <td>hasta ~22</td>
+        <td>200 a 500</td>
+        <td class="num-cell">$63</td>
+        <td><span class="pill pill-green">Configuración</span></td>
+      </tr>
+      <tr>
+        <td><strong>B</strong></td>
+        <td>2 × 0,5 procesador</td>
+        <td>hasta ~22</td>
+        <td>500 a 1.500</td>
+        <td class="num-cell">$78</td>
+        <td><span class="pill pill-red">Desarrollo</span></td>
+      </tr>
+      <tr>
+        <td><strong>C</strong></td>
+        <td>4 × 1 procesador</td>
+        <td>~85</td>
+        <td>varios miles</td>
+        <td class="num-cell">$199</td>
+        <td><span class="pill pill-red">Desarrollo</span></td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Los pasos <strong>A y B cuestan casi lo mismo</strong> ($63 contra $78) y sostienen un tráfico
+    parecido. La diferencia está en otra parte: <strong>B además tolera fallos</strong>. Si un
+    contenedor cae, el otro sigue atendiendo. A no da esa garantía por más grande que sea.
+  </p>
+
+  <div class="callout">
+    <div class="callout-title">El costo por usuario baja al crecer</div>
+    <p>
+      Del paso actual al C, la capacidad de cómputo se multiplica por ocho y la factura solo por
+      cuatro, porque el balanceador —el componente más caro hoy— apenas sube. Crecer mejora la
+      economía por usuario de forma pronunciada.
+    </p>
+  </div>
+
+  <h3>Qué se necesita para automatizarlo</h3>
+  <p>
+    El autoescalado de AWS ajusta el número de contenedores según el uso del procesador, sin
+    intervención humana. <strong>Hoy no se puede activar</strong>: agregar contenedores es
+    justamente lo que el código no soporta. Configurarlo antes de resolver esos obstáculos haría que
+    el sistema se rompa solo bajo carga, que es el peor momento posible.
+  </p>
+  <p>
+    Una vez desbloqueado el paso B, activarlo son unos minutos de configuración y <strong>no tiene
+    costo adicional</strong>: solo se pagan los contenedores que estén encendidos en cada momento.
+  </p>
+
+  <!-- ══════════ 6. RECOMENDACIONES ══════════ -->
+  <h2><span class="num">6.</span>Recomendaciones</h2>
+
+  <div class="callout callout-green">
+    <div class="callout-title">✓ Aplicado el 7 de septiembre de 2026</div>
+    <p>
+      <strong>Retención de registros acotada a 30 días.</strong> Antes estaba en «indefinida», de
+      modo que los registros se acumulaban para siempre y el costo habría crecido mes a mes sin
+      tope. No genera ahorro inmediato —el volumen es mínimo— pero elimina un crecimiento silencioso.
+    </p>
+  </div>
+
+  <h3>Prioridades</h3>
+  <ol>
+    <li>
+      <strong>No reducir la infraestructura.</strong> Recortar el contenedor ahorraría unos pocos
+      dólares y eliminaría todo el margen de crecimiento. La proporción actual es sana.
+    </li>
+    <li>
+      <strong>Tratar la disponibilidad antes que la capacidad.</strong> El riesgo real hoy no es
+      quedarse corto de recursos —se usa el 2%— sino que un único contenedor deje el servicio
+      completamente fuera de línea al reiniciarse.
+    </li>
+    <li>
+      <strong>Resolver los obstáculos del escenario B cuando el crecimiento lo justifique.</strong>
+      Son la única puerta hacia la tolerancia a fallos, y su costo es de desarrollo, no de
+      infraestructura: la diferencia de factura son $30 al mes.
+    </li>
+    <li>
+      <strong>Validar con una prueba de carga</strong> antes de comprometerse con las cifras de
+      capacidad de la sección 5.
+    </li>
+  </ol>
+
+  <!-- ══════════ 7. OPTIMIZACIÓN ══════════ -->
+  <h2><span class="num">7.</span>Optimización de costos</h2>
+  <p class="sub">Qué se puede recortar, cuánto rinde cada opción y por qué conviene esperar.</p>
+
+  <div class="callout">
+    <div class="callout-title">La restricción de fondo</div>
+    <p>
+      <strong>El 61% de la factura es fijo.</strong> El balanceador cuesta $29,57 al mes y se paga
+      igual con cero tráfico. Cualquier ahorro solo puede salir del 38% restante, que son $18. Esto
+      acota de entrada cuánto se puede recortar sin cambiar de arquitectura.
+    </p>
+  </div>
+
+  <h3>Opciones viables</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th style="width:30%">Medida</th><th class="num-cell" style="width:16%">Ahorro/mes</th>
+      <th style="width:14%">Riesgo</th><th>Consideraciones</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Reducir el contenedor</strong><br>
+          <span style="font-size:13px;color:var(--slate)">0,5 → 0,25 procesador, misma memoria</span></td>
+        <td class="num-cell">$5,91</td>
+        <td><span class="pill pill-amber">Medio</span></td>
+        <td>El uso pasaría de 17% a ~35% en los picos: sigue holgado. El riesgo está en el arranque,
+          que ejecuta migraciones con un límite de 40 segundos y podría alargarse. Hay que medirlo
+          después del cambio.</td>
+      </tr>
+      <tr>
+        <td><strong>Plan de ahorro comprometido</strong><br>
+          <span style="font-size:13px;color:var(--slate)">Compute Savings Plan, 1 año</span></td>
+        <td class="num-cell">$2,88</td>
+        <td><span class="pill pill-amber">Medio</span></td>
+        <td>~20% de descuento sobre el cómputo. Ata a doce meses: si se cambia de arquitectura en
+          ese plazo, se sigue pagando capacidad que no se usa.</td>
+      </tr>
+      <tr>
+        <td><strong>Retención de registros</strong><br>
+          <span style="font-size:13px;color:var(--slate)">30 días</span></td>
+        <td class="num-cell">$0</td>
+        <td><span class="pill pill-green">Ninguno</span></td>
+        <td><strong>Ya aplicado.</strong> No ahorra hoy; evita un crecimiento sin tope.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>Aplicando las dos primeras, la factura pasaría de <strong>~$48 a ~$39 al mes</strong>: unos
+  <strong>$105 al año</strong>.</p>
+
+  <h3>Descartadas, y por qué</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead>
+      <tr><th style="width:30%">Medida</th><th class="num-cell" style="width:16%">Ahorro teórico</th>
+      <th>Motivo del descarte</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Capacidad interrumpible</strong><br>
+          <span style="font-size:13px;color:var(--slate)">Fargate Spot</span></td>
+        <td class="num-cell">~$10</td>
+        <td>Hasta 70% de descuento, pero las instancias se interrumpen con dos minutos de aviso. Con
+          <strong>un solo contenedor y estado en memoria</strong>, cada interrupción es una caída del
+          servicio: se pierden los códigos de verificación pendientes y el registro de conductores
+          conectados.</td>
+      </tr>
+      <tr>
+        <td><strong>Quitar la IP pública</strong><br>
+          <span style="font-size:13px;color:var(--slate)">mover a subredes privadas</span></td>
+        <td class="num-cell">$3,65</td>
+        <td>Exigiría un NAT Gateway de ~$33 al mes. <strong>Sale ocho veces más caro de lo que
+          ahorra.</strong></td>
+      </tr>
+      <tr>
+        <td><strong>Reemplazar el balanceador</strong></td>
+        <td class="num-cell">hasta $29</td>
+        <td>Es lo único que movería la aguja de verdad, pero el sistema usa conexiones persistentes
+          y sesiones pegajosas para el seguimiento en vivo, lo que descarta las alternativas más
+          económicas. Cualquier candidata habría que validarla contra ese requisito primero. Es un
+          proyecto, no un ajuste.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout callout-amber">
+    <div class="callout-title">Recomendación: esperar</div>
+    <p>
+      <strong>El ahorro alcanzable no justifica el esfuerzo hoy.</strong> Recortar $105 al año cuesta
+      más en tiempo de ingeniería del que recupera: una sola hora dedicada a evaluar alternativas al
+      balanceador vale más que el ahorro anual completo.
+    </p>
+    <p style="margin-top:12px">
+      Mientras tanto hay pendientes con impacto directo sobre el negocio —notificaciones que no
+      llegan, avisos de soporte que nadie recibe, un único contenedor que deja el servicio fuera de
+      línea al reiniciarse— cuyo retorno es incomparablemente mayor.
+    </p>
+    <p style="margin-top:12px">
+      La cuenta está sana y sin desperdicio: cero recursos huérfanos, sin NAT Gateway, sin base de
+      datos duplicada. <strong>Conviene revisar esto de nuevo cuando la factura supere unos $200
+      mensuales</strong>, momento en que los porcentajes empiezan a representar cifras que importan.
+    </p>
+  </div>
+
+  <div class="footer">
+    <img src="data:image/png;base64,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hk3tNSl1XNrWlKy8zYdOH7lwpdzFX0Crb249e6Vyz4kLK/YcnbZ2z9BZ6b8bPZsfXoZrEQB40s8HTfn9l3P6xi8flZIZn75r3pYDy3cd2XDgZPaxc3mFl08WVxRfq6mub2rt6NQ/1mubWq5U1YVO9q/Pl+YUXAx1aFXOsYXbDs3MyI1amjU4ac2foxb+y/AEvoULzyEA8L/Q0fyTfhMeHzAplI1nh017/pMZL3ye9PIXs/84dt5r41NejVzwhzFzXxqV/K+fzfzVx9OfHhL/5MC4R/tP7PFutPgtB8KKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApQgAAFiKAACApf4H/3NAPLArSUwAAAAASUVORK5CYII=" alt="" style="width:30px;height:30px;border-radius:7px;
+         display:block;margin:0 auto 12px;opacity:.85;">
+    <p><strong>Infraestructura y costos — URBONT API</strong></p>
+    <p>7 de septiembre de 2026 · Documento interno</p>
+    <p style="margin-top:8px">Precios de lista de AWS us-east-1, sujetos a cambio. Contrastar con la facturación real del primer mes.</p>
+  </div>
+
+</div>
+</body>
+</html>

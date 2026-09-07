@@ -51,6 +51,7 @@ import { pool } from "./server/db/pool";
 import { startCronJobs } from "./server/jobs/cron";
 import { sanitizeBody } from "./server/middleware";
 import { runMigrations } from "./server/db/migrations";
+import { runIntegrationChecks } from "./server/services/integrationChecks";
 import { logger } from "./server/lib/logger";
 
 // ── Safety guard: bypass flags must never be active in production ─────────────
@@ -768,11 +769,13 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
       // ── Push notifications ──
       FIREBASE_SERVICE_ACCOUNT:    ok(process.env.FIREBASE_SERVICE_ACCOUNT),
       FIREBASE_VAPID_KEY:          ok(process.env.VITE_FIREBASE_VAPID_KEY),
-      // ── SMS (at least one provider required) ──
-      SMS_PROVIDER:                process.env.INFOBIP_API_KEY  ? 'infobip'
-                                 : process.env.TWILIO_AUTH_TOKEN ? 'twilio'
-                                 : process.env.TELNYX_API_KEY   ? 'telnyx'
-                                 : 'NONE_CONFIGURED',
+      // ── SMS ──
+      // Twilio is the only provider wired up: every SMS goes through
+      // sendSmsTwilio(). This line used to claim a fallback chain of
+      // infobip → twilio → telnyx, but no code existed for the other two, so
+      // setting INFOBIP_API_KEY made the diagnostic report 'infobip' while
+      // messages kept going out through Twilio.
+      SMS_PROVIDER:                process.env.TWILIO_AUTH_TOKEN ? 'twilio' : 'NONE_CONFIGURED',
       // ── Admin panel ──
       ADMIN_SECRET_KEY:            ok(process.env.ADMIN_SECRET_KEY),
     };
@@ -1030,6 +1033,12 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
     if (!process.env.ADMIN_SECRET_KEY) {
       logger.warn('ADMIN_SECRET_KEY not set — admin panel will be inaccessible');
     }
+
+    // Verify external credentials once, after the port is open so a slow check
+    // never delays readiness. Results are cached and surfaced by
+    // GET /api/admin/system. Deliberately not awaited: a failing integration is
+    // a reported status, not a reason to refuse to boot.
+    void runIntegrationChecks();
   });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────

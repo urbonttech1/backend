@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Manual — Escalado de URBONT API</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{--navy:#0A2438;--slate:#5A6B79;--line:#e3e8ec;--paper:#fff;--ground:#eef1f4;
+  --gold:#B8894A;--red:#C0392B;--amber:#C77D0A;--green:#1E7A54;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  line-height:1.65;color:#22303B;background:var(--ground);font-size:16px;}
+.page{max-width:880px;margin:0 auto;background:var(--paper);padding:60px 64px 72px;
+  box-shadow:0 1px 3px rgba(10,36,56,.10),0 8px 32px rgba(10,36,56,.06);}
+
+.cover{border-bottom:3px solid var(--navy);padding-bottom:26px;margin-bottom:40px;}
+.brand{display:flex;align-items:center;gap:14px;margin-bottom:20px;}
+.brand-tile{width:44px;height:44px;border-radius:10px;background:#1A5A7F;color:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:300;flex:0 0 44px;}
+.brand-name{font-size:17px;font-weight:200;letter-spacing:.16em;color:var(--navy);text-transform:uppercase;}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--gold);margin-bottom:10px;}
+.cover h1{font-size:31px;line-height:1.2;color:var(--navy);font-weight:700;letter-spacing:-.02em;margin-bottom:11px;}
+.cover .lede{font-size:16.5px;color:var(--slate);max-width:64ch;}
+.cover-meta{display:flex;flex-wrap:wrap;gap:26px;margin-top:22px;font-size:13px;color:var(--slate);}
+.cover-meta strong{color:var(--navy);font-weight:600;}
+
+h2{font-size:21px;color:var(--navy);font-weight:700;margin:48px 0 6px;letter-spacing:-.01em;}
+h2 .num{display:inline-block;min-width:32px;color:var(--gold);}
+h2+.sub{color:var(--slate);font-size:15px;margin-bottom:20px;max-width:66ch;}
+h3{font-size:16.5px;color:var(--navy);font-weight:650;margin:30px 0 11px;}
+h4{font-size:15px;color:var(--navy);font-weight:650;margin:20px 0 8px;}
+p{margin-bottom:14px;max-width:72ch;}
+ul,ol{margin:0 0 15px 22px;} li{margin-bottom:8px;max-width:70ch;}
+strong{font-weight:650;color:var(--navy);}
+
+.pill{display:inline-block;padding:3px 10px;border-radius:11px;font-size:11.5px;
+  font-weight:700;letter-spacing:.03em;vertical-align:middle;}
+.pill-red{background:#fbe9e7;color:var(--red);}
+.pill-green{background:#e4f2eb;color:var(--green);}
+.pill-amber{background:#fdf2e0;color:var(--amber);}
+
+.callout{border-left:3px solid var(--navy);background:#f6f8fa;padding:18px 22px;margin:20px 0;
+  border-radius:0 3px 3px 0;}
+.callout p:last-child{margin-bottom:0;}
+.callout-red{border-left-color:var(--red);background:#fdf4f3;}
+.callout-amber{border-left-color:var(--amber);background:#fdfaf3;}
+.callout-green{border-left-color:var(--green);background:#f4faf7;}
+.callout-title{font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  margin-bottom:8px;color:var(--navy);}
+.callout-red .callout-title{color:var(--red);}
+.callout-amber .callout-title{color:var(--amber);}
+.callout-green .callout-title{color:var(--green);}
+
+.tbl-wrap{overflow-x:auto;margin:20px 0;}
+table{width:100%;border-collapse:collapse;font-size:14.5px;}
+th{background:var(--navy);color:#fff;font-weight:600;text-align:left;padding:11px 13px;font-size:13px;}
+td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top;}
+tbody tr:last-child td{border-bottom:none;}
+tbody tr:nth-child(even){background:#fafbfc;}
+.num-cell{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+code{background:#eef1f4;padding:1.5px 6px;border-radius:2px;
+  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:.87em;color:var(--navy);}
+pre{background:#0F2B3D;color:#DCE6ED;padding:16px 18px;margin:14px 0;border-radius:5px;
+  font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:12.5px;
+  line-height:1.65;overflow-x:auto;}
+pre code{background:none;padding:0;color:inherit;font-size:inherit;}
+pre .c{color:#7E9CB0;}
+pre .k{color:#E4B363;}
+
+.step{border-left:2px solid var(--line);padding:0 0 4px 24px;margin:20px 0;position:relative;}
+.step:before{content:attr(data-n);position:absolute;left:-13px;top:0;width:24px;height:24px;
+  border-radius:50%;background:var(--navy);color:#fff;font-size:12px;font-weight:700;
+  display:flex;align-items:center;justify-content:center;}
+.step h4{margin-top:0;}
+
+.footer{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--slate);text-align:center;}
+.footer p{max-width:none;margin-bottom:4px;}
+
+@media print{body{background:#fff;font-size:10.5pt;}.page{box-shadow:none;padding:0;max-width:none;}
+  h2{page-break-after:avoid;}pre,table,.callout,.step{page-break-inside:avoid;}
+  pre{background:#f6f8fa;color:#22303B;border:1px solid var(--line);}}
+@media (max-width:700px){.page{padding:32px 20px 44px;}.cover h1{font-size:25px;}
+  .step{padding-left:18px;}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="cover">
+    <div class="brand">
+      <div class="brand-tile">U</div>
+      <div class="brand-name">Urbont</div>
+    </div>
+    <div class="eyebrow">Manual operativo</div>
+    <h1>Escalado de la API</h1>
+    <p class="lede">
+      Cómo aumentar la capacidad del servicio: cuándo hacerlo, qué comandos ejecutar, cómo
+      verificar que funcionó y cómo revertirlo.
+    </p>
+    <div class="cover-meta">
+      <span><strong>Servicio:</strong> urbont-api · cluster urbont</span>
+      <span><strong>Región:</strong> us-east-1 · perfil urbont</span>
+      <span><strong>Actualizado:</strong> 7 sep 2026</span>
+    </div>
+  </div>
+
+  <!-- ══════ 1 ══════ -->
+  <h2><span class="num">1.</span>Punto de partida</h2>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:38%">Parámetro</th><th style="width:26%">Valor actual</th><th>Nota</th></tr></thead>
+    <tbody>
+      <tr><td>Contenedores</td><td>1</td><td>Fijo. No cambia solo.</td></tr>
+      <tr><td>Procesador / memoria</td><td>0,5 vCPU · 1 GB</td><td>Task definition <code>urbont-api:2</code></td></tr>
+      <tr><td>Arquitectura</td><td>ARM64</td><td>Debe coincidir con el <code>--platform</code> del build</td></tr>
+      <tr><td>Autoescalado</td><td><span class="pill pill-red">No configurado</span></td><td>Cero objetivos, cero políticas</td></tr>
+      <tr><td>Despliegue</td><td>100% / 200%</td><td>Sin caída: levanta el nuevo antes de retirar el viejo</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout callout-red">
+    <div class="callout-title">Lo primero que hay que entender</div>
+    <p>
+      <strong>Ante un pico de tráfico no pasa nada automáticamente.</strong> El servicio se satura,
+      responde lento y termina rechazando peticiones. Nadie recibe una alerta. Escalar es hoy una
+      acción manual y hay que decidirla mirando las métricas.
+    </p>
+  </div>
+
+  <!-- ══════ 2 ══════ -->
+  <h2><span class="num">2.</span>Cuándo escalar</h2>
+  <p class="sub">Decisión basada en el uso sostenido del procesador, no en sensaciones.</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:24%">Procesador</th><th style="width:22%">Equivale a</th><th>Acción</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill pill-green">bajo 40%</span></td><td>hasta ~6 pet/s</td>
+        <td>Ninguna. Es la situación actual.</td></tr>
+      <tr><td><span class="pill pill-amber">40% a 70%</span></td><td>~6 a 11 pet/s</td>
+        <td>Escalar vertical (sección 3). Planificarlo, no urge.</td></tr>
+      <tr><td><span class="pill pill-red">sobre 70%</span></td><td>más de 11 pet/s</td>
+        <td>Escalar ya. Por encima del 85% aparecen tiempos de espera.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Consultar el estado actual</h3>
+  <pre><code><span class="c"># Uso del procesador — últimas 24 horas</span>
+aws cloudwatch get-metric-statistics --region us-east-1 --profile urbont \
+  --namespace AWS/ECS --metric-name CPUUtilization \
+  --dimensions Name=ClusterName,Value=urbont Name=ServiceName,Value=urbont-api \
+  --start-time "$(date -u -v-24H '+%Y-%m-%dT%H:%M:%S')" \
+  --end-time "$(date -u '+%Y-%m-%dT%H:%M:%S')" \
+  --period 3600 --statistics Average Maximum \
+  --query 'Datapoints[].{hora:Timestamp,prom:Average,max:Maximum}' --output table</code></pre>
+
+  <p style="font-size:14px;color:var(--slate)">
+    Los umbrales salen de una medición del 7 de septiembre de 2026: con 2,49 pet/s el procesador
+    llegó a 17,3%, o sea unos <strong>6 puntos porcentuales por petición/segundo</strong>. Conviene
+    recalcularlos si cambia el perfil de tráfico.
+  </p>
+
+  <!-- ══════ 3 ══════ -->
+  <h2><span class="num">3.</span>Escalado vertical</h2>
+  <p class="sub">Agrandar el contenedor. Disponible hoy, sin tocar código.</p>
+
+  <h3>Combinaciones válidas</h3>
+  <p>Fargate solo acepta ciertos pares. Un valor fuera de la tabla es rechazado al registrar:</p>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:22%">cpu</th><th style="width:20%">Equivale a</th><th>memory admitida</th></tr></thead>
+    <tbody>
+      <tr><td><code>256</code></td><td>0,25 vCPU</td><td>512, 1024, 2048</td></tr>
+      <tr><td><code>512</code></td><td>0,5 vCPU <span class="pill pill-green">actual</span></td><td>1024 a 4096, de 1024 en 1024</td></tr>
+      <tr><td><code>1024</code></td><td>1 vCPU</td><td>2048 a 8192</td></tr>
+      <tr><td><code>2048</code></td><td>2 vCPU</td><td>4096 a 16384</td></tr>
+      <tr><td><code>4096</code></td><td>4 vCPU</td><td>8192 a 30720</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="step" data-n="1">
+    <h4>Editar <code>taskdef.json</code></h4>
+    <pre><code>{
+  <span class="k">"cpu"</span>: <span class="k">"1024"</span>,      <span class="c">// antes: "512"</span>
+  <span class="k">"memory"</span>: <span class="k">"2048"</span>,   <span class="c">// antes: "1024"</span>
+  ...
+}</code></pre>
+  </div>
+
+  <div class="step" data-n="2">
+    <h4>Registrar la revisión nueva</h4>
+    <pre><code>aws ecs register-task-definition --cli-input-json file://taskdef.json \
+  --region us-east-1 --profile urbont \
+  --query 'taskDefinition.revision' --output text</code></pre>
+    <p>Devuelve el número de revisión. Anotarlo: hace falta en el paso siguiente.</p>
+  </div>
+
+  <div class="step" data-n="3">
+    <h4>Aplicarla al servicio</h4>
+    <pre><code><span class="c"># reemplazar 3 por la revisión que devolvió el paso anterior</span>
+aws ecs update-service --cluster urbont --service urbont-api \
+  --task-definition urbont-api:3 --force-new-deployment \
+  --region us-east-1 --profile urbont</code></pre>
+  </div>
+
+  <div class="step" data-n="4">
+    <h4>Esperar y verificar</h4>
+    <p>Tarda 60 a 120 segundos. Ver la sección 6.</p>
+  </div>
+
+  <div class="callout callout-amber">
+    <div class="callout-title">Al reducir el tamaño, vigilar el arranque</div>
+    <p>
+      El arranque ejecuta migraciones y verifica el esquema antes de aceptar tráfico, con un
+      <code>startPeriod</code> de 40 segundos. Con menos procesador ese arranque se alarga y puede
+      superar el límite, provocando que ECS mate el contenedor y reintente en bucle. Si se baja a
+      <code>256</code>, revisar los registros del primer despliegue.
+    </p>
+  </div>
+
+  <!-- ══════ 4 ══════ -->
+  <h2><span class="num">4.</span>Escalado horizontal</h2>
+  <p class="sub">Agregar contenedores. Bloqueado hasta resolver cuatro obstáculos.</p>
+
+  <div class="callout callout-red">
+    <div class="callout-title">No ejecutar todavía</div>
+    <p>
+      Subir el número de contenedores hoy <strong>rompe el servicio de forma silenciosa</strong>:
+      no falla nada visible, pero los viajes empiezan a asignarse dos veces. Los fallos son
+      intermitentes y no dejan error en los registros.
+    </p>
+  </div>
+
+  <h3>Qué hay que resolver primero</h3>
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:8%">#</th><th style="width:34%">Problema</th><th>Efecto con 2 o más contenedores</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Tareas programadas sin guarda</td>
+        <td>Los 14 trabajos se ejecutan duplicados. El peor: el que reasigna viajes abandonados
+          <strong>los asigna a dos conductores distintos</strong>.</td></tr>
+      <tr><td>2</td><td>Registro de conductores en memoria</td>
+        <td>El conductor conectado al otro contenedor no recibe la oferta de viaje.</td></tr>
+      <tr><td>3</td><td>Límite de peticiones en memoria</td>
+        <td>El límite se multiplica por el número de contenedores.</td></tr>
+      <tr><td>4</td><td>Temporizadores del proceso</td>
+        <td>Reasignaciones pendientes se pierden al reciclar un contenedor.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>El detalle trabajo por trabajo está en <code>docs/CRON_JOBS.md</code> y en el anexo de
+  <code>docs/AWS_ECS_DEPLOY.md</code>.</p>
+
+  <h3>Una vez resueltos</h3>
+
+  <div class="step" data-n="1">
+    <h4>Levantar la caché compartida</h4>
+    <p>Obligatoria: es lo que permite que los contenedores compartan estado.</p>
+    <pre><code>aws elasticache create-cache-cluster \
+  --cache-cluster-id urbont-redis \
+  --engine valkey --cache-node-type cache.t4g.micro \
+  --num-cache-nodes 1 --security-group-ids &lt;SG_TASK&gt; \
+  --region us-east-1 --profile urbont</code></pre>
+    <p>Añadir <code>REDIS_URL</code> al entorno, reconstruir la imagen y desplegar.</p>
+  </div>
+
+  <div class="step" data-n="2">
+    <h4>Subir el número de contenedores</h4>
+    <pre><code>aws ecs update-service --cluster urbont --service urbont-api \
+  --desired-count 2 --region us-east-1 --profile urbont</code></pre>
+  </div>
+
+  <div class="callout callout-green">
+    <div class="callout-title">Ya está preparado para esto</div>
+    <p>
+      El balanceador tiene sesiones pegajosas activadas y un tiempo de espera de 300 segundos,
+      configurados desde el despliegue inicial precisamente para este momento. El seguimiento en
+      vivo seguirá funcionando al repartir el tráfico entre contenedores.
+    </p>
+  </div>
+
+  <!-- ══════ 5 ══════ -->
+  <h2><span class="num">5.</span>Autoescalado</h2>
+  <p class="sub">Que AWS ajuste el número de contenedores sin intervención. Requiere la sección 4 resuelta.</p>
+
+  <div class="callout callout-amber">
+    <div class="callout-title">Requisito previo</div>
+    <p>
+      Activarlo antes de resolver los cuatro obstáculos hace que el sistema
+      <strong>se rompa solo justo cuando llega la carga</strong>, que es el peor momento posible.
+    </p>
+  </div>
+
+  <div class="step" data-n="1">
+    <h4>Registrar el rango permitido</h4>
+    <pre><code>aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/urbont/urbont-api \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 --max-capacity 6 \
+  --region us-east-1 --profile urbont</code></pre>
+    <p><code>min-capacity 2</code> mantiene la tolerancia a fallos incluso sin tráfico.</p>
+  </div>
+
+  <div class="step" data-n="2">
+    <h4>Definir la política</h4>
+    <pre><code>cat &gt; /tmp/scaling.json &lt;&lt;'JSON'
+{
+  "TargetValue": 60.0,
+  "PredefinedMetricSpecification": {
+    "PredefinedMetricType": "ECSServiceAverageCPUUtilization"
+  },
+  "ScaleOutCooldown": 60,
+  "ScaleInCooldown": 300
+}
+JSON
+
+aws application-autoscaling put-scaling-policy \
+  --service-namespace ecs \
+  --resource-id service/urbont/urbont-api \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-name urbont-api-cpu \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration file:///tmp/scaling.json \
+  --region us-east-1 --profile urbont</code></pre>
+  </div>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:30%">Parámetro</th><th style="width:16%">Valor</th><th>Por qué</th></tr></thead>
+    <tbody>
+      <tr><td><code>TargetValue</code></td><td>60%</td>
+        <td>Deja margen para que el contenedor nuevo arranque antes de saturarse.</td></tr>
+      <tr><td><code>ScaleOutCooldown</code></td><td>60 s</td>
+        <td>Crecer rápido: es preferible pagar de más un rato que rechazar peticiones.</td></tr>
+      <tr><td><code>ScaleInCooldown</code></td><td>300 s</td>
+        <td>Reducir lento, para no oscilar entre agregar y quitar contenedores.</td></tr>
+      <tr><td><code>max-capacity</code></td><td>6</td>
+        <td>Tope de gasto. Con 6 contenedores la factura ronda los $270 mensuales.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Comprobar que quedó activo</h3>
+  <pre><code>aws application-autoscaling describe-scaling-policies \
+  --service-namespace ecs --region us-east-1 --profile urbont \
+  --query 'ScalingPolicies[].{politica:PolicyName,recurso:ResourceId}' --output table</code></pre>
+
+  <!-- ══════ 6 ══════ -->
+  <h2><span class="num">6.</span>Verificar</h2>
+
+  <pre><code><span class="c"># Estado del despliegue — debe quedar un solo despliegue PRIMARY</span>
+<span class="c"># con Running igual a Desired y Pending en 0</span>
+aws ecs describe-services --cluster urbont --services urbont-api \
+  --query 'services[0].deployments[*].{Estado:status,Corriendo:runningCount,Pendiente:pendingCount}' \
+  --output table --region us-east-1 --profile urbont
+
+<span class="c"># Que el balanceador vea el contenedor sano</span>
+TG=$(aws elbv2 describe-target-groups --names urbont-api-tg \
+  --query 'TargetGroups[0].TargetGroupArn' --output text \
+  --region us-east-1 --profile urbont)
+aws elbv2 describe-target-health --target-group-arn $TG \
+  --query 'TargetHealthDescriptions[].TargetHealth.State' \
+  --output text --region us-east-1 --profile urbont
+
+<span class="c"># Prueba real de punta a punta</span>
+curl -s https://api.urbont.com/api/healthz</code></pre>
+
+  <p>Si algo queda en <code>Pending</code> más de dos minutos, revisar los eventos del servicio:</p>
+  <pre><code>aws ecs describe-services --cluster urbont --services urbont-api \
+  --query 'services[0].events[:5].message' --output table \
+  --region us-east-1 --profile urbont</code></pre>
+
+  <!-- ══════ 7 ══════ -->
+  <h2><span class="num">7.</span>Revertir</h2>
+
+  <h3>Volver al tamaño anterior</h3>
+  <pre><code><span class="c"># listar revisiones disponibles</span>
+aws ecs list-task-definitions --family-prefix urbont-api --sort DESC \
+  --region us-east-1 --profile urbont
+
+<span class="c"># volver a la anterior</span>
+aws ecs update-service --cluster urbont --service urbont-api \
+  --task-definition urbont-api:2 --force-new-deployment \
+  --region us-east-1 --profile urbont</code></pre>
+
+  <h3>Volver a un solo contenedor</h3>
+  <pre><code>aws ecs update-service --cluster urbont --service urbont-api \
+  --desired-count 1 --region us-east-1 --profile urbont</code></pre>
+
+  <h3>Desactivar el autoescalado</h3>
+  <pre><code>aws application-autoscaling delete-scaling-policy \
+  --service-namespace ecs --policy-name urbont-api-cpu \
+  --resource-id service/urbont/urbont-api \
+  --scalable-dimension ecs:service:DesiredCount \
+  --region us-east-1 --profile urbont</code></pre>
+
+  <div class="callout">
+    <p style="margin-bottom:0">
+      Toda la operación es reversible y sin caída de servicio: la configuración de despliegue
+      (100% mínimo sano, 200% máximo) levanta el contenedor nuevo y espera a que pase el chequeo de
+      salud antes de retirar el anterior.
+    </p>
+  </div>
+
+  <!-- ══════ 8 ══════ -->
+  <h2><span class="num">8.</span>Costo de cada paso</h2>
+
+  <div class="tbl-wrap">
+  <table>
+    <thead><tr><th style="width:16%">Paso</th><th style="width:22%">Configuración</th>
+      <th style="width:16%">Peticiones/s</th><th class="num-cell" style="width:14%">Mensual</th><th>Requisito</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Actual</strong></td><td>1 × 0,5 vCPU</td><td>hasta ~11</td>
+        <td class="num-cell">$48</td><td>—</td></tr>
+      <tr><td><strong>Vertical</strong></td><td>1 × 1 vCPU</td><td>hasta ~22</td>
+        <td class="num-cell">$63</td><td><span class="pill pill-green">Configuración</span></td></tr>
+      <tr><td><strong>Horizontal</strong></td><td>2 × 0,5 vCPU</td><td>hasta ~22</td>
+        <td class="num-cell">$78</td><td><span class="pill pill-red">Desarrollo</span></td></tr>
+      <tr><td><strong>Consolidado</strong></td><td>4 × 1 vCPU</td><td>~85</td>
+        <td class="num-cell">$199</td><td><span class="pill pill-red">Desarrollo</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Vertical y horizontal cuestan parecido y sostienen tráfico parecido. La diferencia real es que
+    <strong>el horizontal tolera fallos</strong>: si un contenedor cae, el otro sigue atendiendo.
+    El vertical no da esa garantía por más grande que sea.
+  </p>
+
+  <p style="font-size:14px;color:var(--slate)">
+    Desglose completo en <code>docs/Infraestructura_y_Costos.html</code>.
+  </p>
+
+  <div class="footer">
+    <p><strong>Manual de escalado — URBONT API</strong></p>
+    <p>7 de septiembre de 2026 · Documento interno</p>
+  </div>
+
+</div>
+</body>
+</html>

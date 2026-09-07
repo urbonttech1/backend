@@ -19,8 +19,12 @@ export const brand = {
   navyDeep: '#0A2438',
   /** Mid blue — bottom of the header gradient, secondary marks. */
   navyMid:  '#1A5A7F',
-  /** Logo tile background, taken from the brand mark. */
-  tile:     '#2E5A78',
+  /**
+   * Logo tile background. Sampled from public/urbont-logo.png, where it covers
+   * 87% of the image — it is exactly navyMid, so the mark and the header
+   * gradient share the same blue by design.
+   */
+  tile:     '#1A5A7F',
   /** Gold accent — eyebrow labels and highlights. */
   gold:     '#D4A055',
   /** Secondary text. */
