@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Correos URBONT - Documentación</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 40px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #001F3F;
+            border-bottom: 3px solid #D4A055;
+            padding-bottom: 10px;
+            margin-top: 0;
+        }
+        h2 {
+            color: #001F3F;
+            margin-top: 30px;
+            border-left: 4px solid #D4A055;
+            padding-left: 15px;
+        }
+        .section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 6px;
+            border-left: 4px solid #3B82F6;
+        }
+        .section h3 {
+            margin-top: 0;
+            color: #001F3F;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th {
+            background: #001F3F;
+            color: white;
+            font-weight: 600;
+        }
+        tr:hover {
+            background: #f9fafb;
+        }
+        .code-block {
+            background: #f3f4f6;
+            border-left: 3px solid #D4A055;
+            padding: 15px;
+            margin: 15px 0;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            border-radius: 4px;
+        }
+        .status-ok {
+            color: #10b981;
+            font-weight: 600;
+        }
+        .status-warning {
+            color: #f59e0b;
+            font-weight: 600;
+        }
+        .status-error {
+            color: #ef4444;
+            font-weight: 600;
+        }
+        ul, ol {
+            line-height: 1.8;
+        }
+        .highlight {
+            background: #fef3c7;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📧 Sistema de Correos - URBONT API</h1>
+        <p><strong>Fecha:</strong> Septiembre 2026</p>
+        <p><strong>Versión:</strong> 1.2.2</p>
+
+        <h2>📋 Resumen Ejecutivo</h2>
+        <p>La plataforma URBONT envía correos electrónicos en <strong>3 escenarios principales</strong>:</p>
+        <ol>
+            <li>Recibos de viaje completado (pasajeros)</li>
+            <li>Notificaciones de soporte (admin)</li>
+            <li>Códigos OTP de verificación (usuarios)</li>
+        </ol>
+
+        <h2>1️⃣ Recibo de Viaje (Trip Receipt)</h2>
+        <div class="section">
+            <h3>Información General</h3>
+            <table>
+                <tr>
+                    <th>Parámetro</th>
+                    <th>Valor</th>
+                </tr>
+                <tr>
+                    <td><strong>Cuándo se envía</strong></td>
+                    <td>Al completar un viaje</td>
+                </tr>
+                <tr>
+                    <td><strong>Destinatario</strong></td>
+                    <td>Email del pasajero</td>
+                </tr>
+                <tr>
+                    <td><strong>Proveedor</strong></td>
+                    <td><span class="status-ok">✓ Resend</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Archivo</strong></td>
+                    <td>server/services/email.ts:123</td>
+                </tr>
+                <tr>
+                    <td><strong>Base de datos</strong></td>
+                    <td>rides.receipt_sent (boolean)</td>
+                </tr>
+            </table>
+
+            <h3>Contenido del Correo</h3>
+            <ul>
+                <li>Encabezado con branding URBONT</li>
+                <li><strong>Ruta:</strong> Pickup → Dropoff (con paradas si aplica)</li>
+                <li><strong>Detalles del conductor:</strong> Nombre y vehículo</li>
+                <li><strong>Métricas del viaje:</strong>
+                    <ul>
+                        <li>Distancia (en millas)</li>
+                        <li>Duración (en minutos)</li>
+                        <li>Método de pago</li>
+                    </ul>
+                </li>
+                <li><strong>Desglose de tarifa:</strong>
+                    <ul>
+                        <li>Tarifa base</li>
+                        <li>Descuento de promo (si aplica)</li>
+                        <li>Propina (si aplica)</li>
+                        <li>Total cobrado</li>
+                    </ul>
+                </li>
+                <li>ID del viaje para referencia</li>
+            </ul>
+
+            <h3>Configuración Requerida</h3>
+            <div class="code-block">RESEND_API_KEY=re_xxxxxxxxxxxxx
+EMAIL_FROM=URBONT &lt;receipts@urbont.app&gt;</div>
+
+            <h3>Comportamiento</h3>
+            <ul>
+                <li>✓ Si RESEND_API_KEY está configurado → se envía automáticamente</li>
+                <li>⚠️ Si no está configurado → se registra warning, pero el viaje se completa normalmente</li>
+            </ul>
+        </div>
+
+        <h2>2️⃣ Tickets de Soporte</h2>
+        <div class="section">
+            <h3>Información General</h3>
+            <table>
+                <tr>
+                    <th>Parámetro</th>
+                    <th>Valor</th>
+                </tr>
+                <tr>
+                    <td><strong>Cuándo se envía</strong></td>
+                    <td>Cuando usuario abre un ticket de soporte</td>
+                </tr>
+                <tr>
+                    <td><strong>Destinatario</strong></td>
+                    <td>Email del administrador (ADMIN_EMAIL)</td>
+                </tr>
+                <tr>
+                    <td><strong>Proveedor</strong></td>
+                    <td><span class="status-warning">⚠ SMTP (nodemailer)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Archivo</strong></td>
+                    <td>server/api/support.ts:30-104</td>
+                </tr>
+            </table>
+
+            <h3>Contenido del Correo</h3>
+            <ul>
+                <li><strong>Categoría del problema:</strong>
+                    <ul>
+                        <li>Lost Item (Artículo perdido)</li>
+                        <li>Driver Issue (Problema con conductor)</li>
+                        <li>Billing (Facturación)</li>
+                        <li>App Issue (Problema con app)</li>
+                        <li>Safety (Seguridad)</li>
+                        <li>Other (Otro)</li>
+                    </ul>
+                </li>
+                <li><strong>Prioridad:</strong> Low, Normal, High, Urgent (con código de color)</li>
+                <li><strong>Datos del usuario:</strong> Nombre y teléfono</li>
+                <li><strong>Asunto y descripción detallada</strong></li>
+                <li><strong>ID del viaje</strong> (si está relacionado con un viaje)</li>
+                <li><strong>Timestamp</strong> en zona horaria America/New_York</li>
+            </ul>
+
+            <h3>Configuración Requerida</h3>
+            <div class="code-block">SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=tu-email@gmail.com
+SMTP_PASS=tu-password-o-app-key
+ADMIN_EMAIL=admin@urbont.com</div>
+
+            <h3>Comportamiento</h3>
+            <ul>
+                <li>✓ Si SMTP está completamente configurado → se envía al admin</li>
+                <li>⚠️ Si faltan variables → warning en logs, ticket se crea pero no se notifica</li>
+            </ul>
+        </div>
+
+        <h2>3️⃣ Código OTP (One-Time Password)</h2>
+        <div class="section">
+            <h3>Información General</h3>
+            <table>
+                <tr>
+                    <th>Parámetro</th>
+                    <th>Valor</th>
+                </tr>
+                <tr>
+                    <td><strong>Cuándo se envía</strong></td>
+                    <td>Usuario solicita código de verificación para login</td>
+                </tr>
+                <tr>
+                    <td><strong>Destinatario</strong></td>
+                    <td>Email del usuario</td>
+                </tr>
+                <tr>
+                    <td><strong>Proveedor</strong></td>
+                    <td><span class="status-warning">⚠ SMTP (nodemailer)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Archivo</strong></td>
+                    <td>server/api/auth/otp.ts:140-160</td>
+                </tr>
+                <tr>
+                    <td><strong>Expiración</strong></td>
+                    <td>10 minutos</td>
+                </tr>
+            </table>
+
+            <h3>Contenido del Correo</h3>
+            <ul>
+                <li>Branding URBONT</li>
+                <li><strong>Código de 6 dígitos</strong> prominente</li>
+                <li>Instrucción de usar el código en la app</li>
+                <li>Aviso de confidencialidad</li>
+                <li>Aviso de expiración (10 minutos)</li>
+            </ul>
+
+            <h3>Configuración Requerida</h3>
+            <p>Mismas variables que Soporte (SMTP completo)</p>
+            <div class="code-block">SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=tu-email@gmail.com
+SMTP_PASS=tu-password-o-app-key</div>
+
+            <h3>Comportamiento</h3>
+            <ul>
+                <li>✓ Si SMTP está configurado → se envía código</li>
+                <li>⚠️ Si SMTP no está → warning, pero login puede continuar (según implementación)</li>
+                <li>El código se almacena en memoria (otpStore) con timestamp de expiración</li>
+            </ul>
+        </div>
+
+        <h2>🔧 Configuración General</h2>
+        <h3>Variables de Entorno (.env)</h3>
+        <div class="code-block"># ── Email ───────────────────────────────────────────────────────────────
+RESEND_API_KEY=re_xxxxxxxxxxxxx
+EMAIL_FROM=URBONT &lt;receipts@urbont.app&gt;
+
+# SMTP (para Soporte y OTP) — dejar vacío si solo usas Resend
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=tu-email@gmail.com
+SMTP_PASS=tu-password-o-app-key
+ADMIN_EMAIL=admin@urbont.com</div>
+
+        <h2>📊 Estado de Implementación</h2>
+        <table>
+            <tr>
+                <th>Tipo de Correo</th>
+                <th>Proveedor</th>
+                <th>Configurado</th>
+                <th>¿Se Envía?</th>
+                <th>Tracking</th>
+            </tr>
+            <tr>
+                <td><strong>Recibos de Viaje</strong></td>
+                <td>Resend</td>
+                <td>Solo si RESEND_API_KEY</td>
+                <td><span class="status-ok">✓ Sí</span></td>
+                <td>rides.receipt_sent</td>
+            </tr>
+            <tr>
+                <td><strong>Soporte</strong></td>
+                <td>SMTP</td>
+                <td>Solo si SMTP completo</td>
+                <td><span class="status-ok">✓ Sí</span></td>
+                <td>support_tickets tabla</td>
+            </tr>
+            <tr>
+                <td><strong>OTP</strong></td>
+                <td>SMTP</td>
+                <td>Solo si SMTP completo</td>
+                <td><span class="status-ok">✓ Sí</span></td>
+                <td>otpStore (memoria)</td>
+            </tr>
+        </table>
+
+        <h2>⚙️ Flujo de Funcionamiento</h2>
+        <div class="section">
+            <h3>Recibo de Viaje</h3>
+            <ol>
+                <li>Viaje marcado como "completed" en rides.ride_status</li>
+                <li>Sistema llama a sendRideReceipt() con datos del viaje</li>
+                <li>Si RESEND_API_KEY existe → envía vía Resend</li>
+                <li>Actualiza rides.receipt_sent = true</li>
+                <li>Si falla → log warning, viaje sigue completado</li>
+            </ol>
+
+            <h3>Ticket de Soporte</h3>
+            <ol>
+                <li>Usuario crea ticket POST /api/support/tickets</li>
+                <li>Ticket se guarda en BD (support_tickets)</li>
+                <li>Sistema llama a sendAdminEmail()</li>
+                <li>Si SMTP está configurado → envía al admin</li>
+                <li>Si falla → log warning, ticket sigue creado</li>
+            </ol>
+
+            <h3>OTP</h3>
+            <ol>
+                <li>Usuario solicita código GET /api/auth/otp?email=...</li>
+                <li>Sistema genera código de 6 dígitos</li>
+                <li>Guarda en otpStore con expiración (10 min)</li>
+                <li>Si SMTP está configurado → envía código por email</li>
+                <li>Usuario verifica código en app antes de expiración</li>
+            </ol>
+        </div>
+
+        <h2>⚠️ Notas Importantes</h2>
+        <ul>
+            <li><strong>Fallos no bloqueantes:</strong> Si SMTP o Resend fallan, el flujo continúa (viaje se completa, ticket se crea, login continúa). Solo se registra warning.</li>
+            <li><strong>Resend vs SMTP:</strong> Resend para recibos (proveedor dedicado), SMTP para notificaciones internas (más económico).</li>
+            <li><strong>OTP en memoria:</strong> Los códigos se almacenan en un Map en memoria. Si el servidor reinicia, se pierden los códigos pendientes.</li>
+            <li><strong>Spam:</strong> No hay rate limiting para envío de OTP. Implementar si se reciben ataques de spam.</li>
+            <li><strong>HTML emails:</strong> Todos los correos son HTML formateados. Clientes de email debe soportar HTML.</li>
+        </ul>
+
+        <div class="footer">
+            <p>Documentación generada para URBONT API v1.2.2</p>
+            <p>Para más información, consultar los archivos de implementación citados en cada sección.</p>
+        </div>
+    </div>
+</body>
+</html>

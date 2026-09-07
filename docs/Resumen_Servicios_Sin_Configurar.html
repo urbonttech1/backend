@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resumen — Servicios sin configurar</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --navy:   #0A2438;
+            --slate:  #5A6B79;
+            --line:   #e3e8ec;
+            --paper:  #ffffff;
+            --ground: #eef1f4;
+            --gold:   #B8894A;
+            --red:    #C0392B;
+            --amber:  #C77D0A;
+            --green:  #1E7A54;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.65; color: #22303B; background: var(--ground); font-size: 16px;
+        }
+
+        .page {
+            max-width: 860px; margin: 0 auto; background: var(--paper);
+            padding: 64px 68px 72px;
+            box-shadow: 0 1px 3px rgba(10,36,56,.10), 0 8px 32px rgba(10,36,56,.06);
+        }
+
+        /* ── Portada ─────────────────────────────────────────── */
+        .cover { border-bottom: 3px solid var(--navy); padding-bottom: 28px; margin-bottom: 44px; }
+        .eyebrow {
+            font-size: 11px; font-weight: 700; letter-spacing: .18em;
+            text-transform: uppercase; color: var(--gold); margin-bottom: 12px;
+        }
+        .cover h1 {
+            font-size: 33px; line-height: 1.2; color: var(--navy);
+            font-weight: 700; letter-spacing: -.02em; margin-bottom: 12px;
+        }
+        .cover .lede { font-size: 17px; color: var(--slate); max-width: 64ch; }
+        .cover-meta {
+            display: flex; flex-wrap: wrap; gap: 28px;
+            margin-top: 26px; font-size: 13px; color: var(--slate);
+        }
+        .cover-meta strong { color: var(--navy); font-weight: 600; }
+
+        /* ── Tipografía ──────────────────────────────────────── */
+        h2 { font-size: 22px; color: var(--navy); font-weight: 700; margin: 52px 0 6px; letter-spacing: -.01em; }
+        h2 .num { display: inline-block; min-width: 34px; color: var(--gold); font-weight: 700; }
+        h2 + .sub { color: var(--slate); font-size: 15px; margin-bottom: 22px; max-width: 66ch; }
+        h3 { font-size: 17px; color: var(--navy); font-weight: 650; margin: 32px 0 12px; }
+        h4 { font-size: 15px; color: var(--navy); font-weight: 650; margin: 22px 0 8px; }
+        p  { margin-bottom: 15px; max-width: 72ch; }
+        ul, ol { margin: 0 0 16px 22px; }
+        li { margin-bottom: 9px; max-width: 70ch; }
+        strong { font-weight: 650; color: var(--navy); }
+
+        /* ── Panel de estado ─────────────────────────────────── */
+        .status-board {
+            border: 1px solid var(--line); border-top: 4px solid var(--red);
+            border-radius: 3px; margin-bottom: 34px; overflow: hidden;
+        }
+        .sb-head {
+            background: #fbfcfd; padding: 18px 26px; border-bottom: 1px solid var(--line);
+        }
+        .sb-head h2 {
+            margin: 0; font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: var(--navy);
+        }
+        .sb-row { display: flex; gap: 20px; padding: 18px 26px; border-bottom: 1px solid var(--line); align-items: flex-start; }
+        .sb-row:last-child { border-bottom: none; }
+        .sb-svc { flex: 0 0 148px; }
+        .sb-svc strong { display: block; font-size: 15.5px; margin-bottom: 4px; }
+        .sb-svc span { font-size: 12.5px; color: var(--slate); }
+        .sb-eff { flex: 1; font-size: 14.5px; }
+        .sb-eff p { margin: 0; max-width: none; }
+
+        /* ── Píldoras ────────────────────────────────────────── */
+        .pill {
+            display: inline-block; padding: 3px 11px; border-radius: 11px;
+            font-size: 11.5px; font-weight: 700; letter-spacing: .03em; vertical-align: middle;
+        }
+        .pill-red   { background: #fbe9e7; color: var(--red); }
+        .pill-green { background: #e4f2eb; color: var(--green); }
+        .pill-amber { background: #fdf2e0; color: var(--amber); }
+
+        /* ── Cajas ───────────────────────────────────────────── */
+        .callout {
+            border-left: 3px solid var(--navy); background: #f6f8fa;
+            padding: 20px 24px; margin: 22px 0; border-radius: 0 3px 3px 0;
+        }
+        .callout p:last-child { margin-bottom: 0; }
+        .callout-red   { border-left-color: var(--red);   background: #fdf4f3; }
+        .callout-amber { border-left-color: var(--amber); background: #fdfaf3; }
+        .callout-green { border-left-color: var(--green); background: #f4faf7; }
+        .callout-title {
+            font-size: 12px; font-weight: 700; letter-spacing: .08em;
+            text-transform: uppercase; margin-bottom: 9px; color: var(--navy);
+        }
+        .callout-red   .callout-title { color: var(--red); }
+        .callout-amber .callout-title { color: var(--amber); }
+        .callout-green .callout-title { color: var(--green); }
+
+        /* ── Tablas ──────────────────────────────────────────── */
+        .tbl-wrap { overflow-x: auto; margin: 22px 0; }
+        table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+        th {
+            background: var(--navy); color: #fff; font-weight: 600;
+            text-align: left; padding: 12px 14px; font-size: 13px; letter-spacing: .02em;
+        }
+        td { padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:nth-child(even) { background: #fafbfc; }
+
+        .sev { font-weight: 700; white-space: nowrap; font-size: 13px; }
+        .sev-crit { color: var(--red); }
+        .sev-high { color: var(--amber); }
+        .sev-med  { color: #8a7a3f; }
+
+        /* ── Lista de variables ──────────────────────────────── */
+        .envlist {
+            background: #f6f8fa; border-left: 3px solid var(--red);
+            padding: 16px 20px; margin: 18px 0; border-radius: 0 3px 3px 0;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: 13px; line-height: 1.9;
+        }
+        .envlist .empty { color: var(--red); font-weight: 700; }
+
+        code {
+            background: #eef1f4; padding: 1.5px 6px; border-radius: 2px;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: .87em; color: var(--navy);
+        }
+
+        .footer {
+            margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--line);
+            font-size: 12.5px; color: var(--slate); text-align: center;
+        }
+        .footer p { max-width: none; margin-bottom: 4px; }
+
+        @media print {
+            body { background: #fff; font-size: 11pt; }
+            .page { box-shadow: none; padding: 0; max-width: none; }
+            h2 { page-break-after: avoid; }
+            table, .callout, .status-board { page-break-inside: avoid; }
+        }
+        @media (max-width: 700px) {
+            .page { padding: 36px 22px 48px; }
+            .sb-row { flex-direction: column; gap: 8px; }
+            .sb-svc { flex: none; }
+            .cover h1 { font-size: 26px; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- ══════════ PORTADA ══════════ -->
+    <div class="cover">
+        <div class="eyebrow">Informe técnico · Uso interno</div>
+        <h1>Tres servicios externos están sin configurar en producción</h1>
+        <p class="lede">
+            Notificaciones, correos y cobros con tarjeta comparten la misma causa: nunca se
+            cargaron sus credenciales en el servidor. Los tres fallan en silencio, sin generar
+            errores ni alertas, y el sistema los reporta como si estuviera sano.
+        </p>
+        <div class="cover-meta">
+            <span><strong>Sistema:</strong> URBONT API v1.2.2</span>
+            <span><strong>Fecha:</strong> Septiembre 2026</span>
+            <span><strong>Verificado:</strong> entorno de producción</span>
+        </div>
+    </div>
+
+    <!-- ══════════ PANEL DE ESTADO ══════════ -->
+    <div class="status-board">
+        <div class="sb-head"><h2>Estado en una mirada</h2></div>
+
+        <div class="sb-row">
+            <div class="sb-svc">
+                <strong>Cobros</strong>
+                <span>Stripe</span>
+                <div style="margin-top:7px"><span class="pill pill-red">Sin configurar</span></div>
+            </div>
+            <div class="sb-eff">
+                <p>Sin pagos con tarjeta, propinas, división de tarifa ni cuentas corporativas.
+                La lógica de cobro existe en el sistema pero no puede ejecutarse.</p>
+            </div>
+        </div>
+
+        <div class="sb-row">
+            <div class="sb-svc">
+                <strong>Notificaciones</strong>
+                <span>Firebase</span>
+                <div style="margin-top:7px"><span class="pill pill-red">Sin configurar</span></div>
+            </div>
+            <div class="sb-eff">
+                <p>Ningún aviso llega al teléfono con la aplicación cerrada. Afecta sobre todo a
+                las ofertas de viaje a conductores y a los recordatorios de reservas.</p>
+            </div>
+        </div>
+
+        <div class="sb-row">
+            <div class="sb-svc">
+                <strong>Correos</strong>
+                <span>Resend + SMTP</span>
+                <div style="margin-top:7px"><span class="pill pill-red">Sin configurar</span></div>
+            </div>
+            <div class="sb-eff">
+                <p>No se envía ningún correo: ni recibos de viaje, ni avisos de soporte al equipo,
+                ni códigos de ingreso por correo.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════ 1. EL PATRÓN ══════════ -->
+    <h2><span class="num">1.</span>No son tres incidentes: es uno con tres consecuencias</h2>
+    <p class="sub">Entender el patrón importa más que la lista, porque señala qué corregir para que no se repita.</p>
+
+    <p>
+        Los tres servicios están escritos, integrados y listos para funcionar. Lo único que falta
+        es <strong>cargar sus credenciales</strong> en la configuración del servidor. No hay código
+        roto, ni proveedores caídos, ni problemas de capacidad.
+    </p>
+
+    <p>
+        El sistema está diseñado para tolerar la ausencia de estas credenciales: cuando detecta que
+        falta una, <strong>desactiva esa función y continúa</strong> en lugar de detenerse. Es una
+        decisión razonable —evita que el servidor se caiga por una integración secundaria—, pero
+        tiene un costo: <strong>nada avisa</strong>. No aparece un error, no se cae nada, ningún
+        usuario ve un mensaje. Solo queda una anotación técnica que nadie revisa de rutina.
+    </p>
+
+    <div class="callout callout-red">
+        <div class="callout-title">El síntoma más elocuente</div>
+        <p>
+            El sistema tiene un control de salud que el balanceador consulta continuamente. Hoy
+            responde <strong>«correcto»</strong>. Y lo hace porque únicamente verifica la base de
+            datos: no comprueba cobros, ni notificaciones, ni correos. Es decir,
+            <strong>el sistema se declara sano mientras tres integraciones están apagadas.</strong>
+        </p>
+    </div>
+
+    <p>
+        Por eso, además de cargar las credenciales, la recomendación de fondo es
+        <strong>ampliar ese control de salud</strong> para que verifique cada integración. Es lo
+        que evita descubrir el próximo caso de casualidad, semanas más tarde.
+    </p>
+
+    <!-- ══════════ 2. COBROS ══════════ -->
+    <h2><span class="num">2.</span>Cobros con tarjeta</h2>
+    <p class="sub">El de mayor impacto económico directo, y el primero que conviene resolver.</p>
+
+    <p>Las tres credenciales de Stripe están vacías, tanto en el entorno local como en producción:</p>
+
+    <div class="envlist">
+        STRIPE_SECRET_KEY=<span class="empty">        (vacía)</span><br>
+        STRIPE_PUBLISHABLE_KEY=<span class="empty">   (vacía)</span><br>
+        STRIPE_WEBHOOK_SECRET=<span class="empty">    (vacía)</span>
+    </div>
+
+    <p>
+        Se confirmó consultando el servidor de producción: la clave que debería viajar a la
+        aplicación para procesar pagos llega vacía.
+    </p>
+
+    <h3>Qué queda sin funcionar</h3>
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr><th style="width:34%">Función</th><th>Situación</th></tr>
+        </thead>
+        <tbody>
+            <tr><td><strong>Pago con tarjeta</strong></td><td>No puede procesarse ningún cobro.</td></tr>
+            <tr><td><strong>Confirmaciones de Stripe</strong></td><td>El sistema no puede recibir la notificación de que un pago se concretó.</td></tr>
+            <tr><td><strong>Propinas</strong></td><td>Deshabilitadas.</td></tr>
+            <tr><td><strong>División de tarifa</strong></td><td>Deshabilitada.</td></tr>
+            <tr><td><strong>Cuentas corporativas</strong></td><td>Deshabilitadas.</td></tr>
+            <tr><td><strong>Comisión al valet</strong></td><td>La transferencia automática del recargo no puede ejecutarse.</td></tr>
+        </tbody>
+    </table>
+    </div>
+
+    <div class="callout callout-amber">
+        <div class="callout-title">Pregunta que define la urgencia</div>
+        <p>
+            <strong>¿URBONT debería estar cobrando con tarjeta hoy?</strong> Si la operación es solo
+            en efectivo por decisión de negocio, esto puede esperar. Si debería estar cobrando,
+            entonces <strong>es la prioridad número uno de este informe</strong>, por encima de las
+            notificaciones: se estaría dejando de facturar.
+        </p>
+        <p>
+            No es una investigación técnica, es una definición del negocio. Conviene responderla
+            antes de asignar esfuerzo al resto.
+        </p>
+    </div>
+
+    <h3>Antecedente registrado</h3>
+    <p>
+        La configuración documenta que la clave anterior estaba mal por partida doble: era una clave
+        <em>pública</em> colocada en el lugar de la <em>privada</em>, y además venía cortada. Al
+        probarla contra Stripe devolvía «clave inválida». Se vaciaron a propósito para evitar
+        confusión. <strong>Hay que obtener las claves correctas desde el panel de Stripe</strong>,
+        no recuperar las anteriores.
+    </p>
+
+    <!-- ══════════ 3. NOTIFICACIONES ══════════ -->
+    <h2><span class="num">3.</span>Notificaciones al teléfono</h2>
+    <p class="sub">Resumen del informe específico de Firebase. El detalle completo está en ese documento.</p>
+
+    <p>
+        Falta una sola credencial —<code>FIREBASE_SERVICE_ACCOUNT</code>— y con ella queda apagado
+        todo el envío de avisos al teléfono. Los cuarenta puntos del sistema que generan
+        notificaciones pasan por un único punto de salida, y ese punto necesita esa credencial.
+    </p>
+
+    <h3>Por qué importa</h3>
+    <p>
+        Cuando el usuario cierra la aplicación, el teléfono le corta la conexión para ahorrar
+        batería. A partir de ahí, el <strong>único</strong> camino para alcanzarlo es el servicio
+        de mensajería del sistema operativo, que es precisamente el que no podemos usar. Con la
+        aplicación abierta los avisos sí llegan, por otra vía.
+    </p>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:34%">Aviso que no llega</th>
+                <th style="width:16%">Gravedad</th>
+                <th>Consecuencia</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Hay un viaje disponible</strong></td>
+                <td class="sev sev-crit">● Crítica</td>
+                <td>El conductor solo se entera si tiene la aplicación abierta en pantalla. Viajes que nadie toma.</td>
+            </tr>
+            <tr>
+                <td><strong>Recordatorio de reserva</strong></td>
+                <td class="sev sev-crit">● Crítica</td>
+                <td>Aumentan las ausencias en viajes programados, con conductor ya asignado.</td>
+            </tr>
+            <tr>
+                <td><strong>Tarifa aumentada por demanda</strong></td>
+                <td class="sev sev-high">● Alta</td>
+                <td>Los conductores no se conectan cuando más falta hacen.</td>
+            </tr>
+            <tr>
+                <td><strong>Cambio de conductor asignado</strong></td>
+                <td class="sev sev-high">● Alta</td>
+                <td>El pasajero espera sin información.</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <p>
+        El riesgo de fondo es que <strong>afecta el lado de la oferta</strong>: un conductor que
+        concluye que «por esta aplicación no entran viajes» deja de conectarse, y recuperarlo
+        cuesta más que retenerlo.
+    </p>
+
+    <div class="callout callout-green">
+        <div class="callout-title">Aspectos que atenúan el impacto</div>
+        <p>
+            <strong>Ningún mensaje se pierde:</strong> todos quedan guardados y aparecen en la
+            aplicación cuando el usuario la abre. Y mientras la aplicación está abierta, los avisos
+            llegan por otro canal que sí funciona. El daño se concentra en lo que caduca rápido y
+            se envía a alguien que, por definición, no está mirando la pantalla.
+        </p>
+    </div>
+
+    <h3>Se evaluó reemplazarlo por OneSignal</h3>
+    <p>
+        <strong>No resuelve el problema.</strong> OneSignal se apoya en el mismo servicio de Google
+        y, al configurarlo, solicita exactamente la misma credencial que hoy falta. Migrar tomaría
+        semanas —incluye publicar versiones nuevas de ambas aplicaciones— y seguiría requiriendo
+        ese archivo. Cargar la credencial toma alrededor de media hora. Tiene sentido evaluar
+        OneSignal más adelante y por otro motivo: campañas de marketing segmentadas.
+    </p>
+
+    <!-- ══════════ 4. CORREOS ══════════ -->
+    <h2><span class="num">4.</span>Correos electrónicos</h2>
+    <p class="sub">Ninguno de los tres tipos de correo que el sistema envía está operativo.</p>
+
+    <p>Todas las credenciales de correo están vacías, y una ni siquiera está declarada:</p>
+
+    <div class="envlist">
+        RESEND_API_KEY=<span class="empty">   (vacía)</span><br>
+        EMAIL_FROM=<span class="empty">       (vacía)</span><br>
+        SMTP_HOST=<span class="empty">        (vacía)</span><br>
+        SMTP_PORT=<span class="empty">        (vacía)</span><br>
+        SMTP_USER=<span class="empty">        (vacía)</span><br>
+        SMTP_PASS=<span class="empty">        (vacía)</span><br>
+        ADMIN_EMAIL<span class="empty">       (no existe en la configuración)</span>
+    </div>
+
+    <h3>Qué se deja de enviar</h3>
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:26%">Correo</th>
+                <th style="width:20%">Destinatario</th>
+                <th>Consecuencia</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Recibo del viaje</strong></td>
+                <td>Pasajero</td>
+                <td>No recibe comprobante de su viaje ni del importe cobrado.</td>
+            </tr>
+            <tr>
+                <td><strong>Aviso de ticket de soporte</strong></td>
+                <td>Equipo interno</td>
+                <td>El reclamo se registra en el sistema, pero <strong>nadie recibe aviso de que llegó</strong>. Quedan sin atender salvo que alguien revise el panel.</td>
+            </tr>
+            <tr>
+                <td><strong>Código de ingreso por correo</strong></td>
+                <td>Usuario</td>
+                <td>Quien intente entrar con su correo no recibe el código. El ingreso por SMS sí funciona.</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <div class="callout callout-amber">
+        <div class="callout-title">El más silencioso de los tres</div>
+        <p>
+            El aviso de soporte es el que más preocupa. Un usuario abre un reclamo, el sistema se lo
+            confirma correctamente, y del otro lado <strong>nadie se entera</strong>. Desde la
+            perspectiva del usuario todo funcionó; simplemente nunca le responden.
+        </p>
+    </div>
+
+    <h3>Situación actual: dos proveedores para tres correos</h3>
+    <p>
+        Los recibos se envían con un proveedor (Resend) y los otros dos correos con un servidor de
+        correo genérico configurado aparte. Son dos integraciones distintas, con dos configuraciones
+        y dos puntos de falla, para una necesidad única.
+    </p>
+    <p>
+        Además, el correo genérico es la opción menos confiable para envíos automáticos: suele tener
+        límites de volumen, mayor probabilidad de terminar en la carpeta de correo no deseado y
+        ningún compromiso de disponibilidad.
+    </p>
+
+    <!-- ══════════ 5. PROPUESTA SENDGRID ══════════ -->
+    <h2><span class="num">5.</span>Propuesta: unificar los correos en un solo proveedor</h2>
+    <p class="sub">Aprovechar que hay que configurarlos de todas formas para dejarlos mejor de lo que estaban.</p>
+
+    <p>
+        Dado que ninguno de los tres correos funciona hoy y hay que configurarlos igual, es un buen
+        momento para <strong>consolidarlos en un único proveedor especializado</strong> en lugar de
+        reactivar dos integraciones separadas. La opción evaluada es <strong>SendGrid</strong>.
+    </p>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:30%"></th>
+                <th style="width:35%">Reactivar lo existente</th>
+                <th>Unificar en SendGrid</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Integraciones a mantener</strong></td>
+                <td>Dos</td>
+                <td><strong>Una</strong></td>
+            </tr>
+            <tr>
+                <td><strong>Confiabilidad de entrega</strong></td>
+                <td>Buena para recibos, baja para el resto</td>
+                <td>Alta y uniforme</td>
+            </tr>
+            <tr>
+                <td><strong>Seguimiento de envíos</strong></td>
+                <td>No hay: no se sabe si llegaron</td>
+                <td>Registro de entregas, aperturas y rebotes</td>
+            </tr>
+            <tr>
+                <td><strong>Esfuerzo</strong></td>
+                <td>Configuración</td>
+                <td>Configuración + medio día de desarrollo</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <h3>Beneficios concretos</h3>
+    <ul>
+        <li><strong>Una sola configuración</strong> para los tres tipos de correo, en lugar de dos que hay que mantener por separado.</li>
+        <li><strong>Mejor tasa de llegada a la bandeja de entrada</strong>, especialmente para los códigos de ingreso, donde terminar en correo no deseado equivale a impedir el acceso.</li>
+        <li><strong>Visibilidad:</strong> saber si un correo llegó, si fue abierto o si la dirección rebotó. Hoy no hay forma de saberlo.</li>
+        <li><strong>Mejora en el código:</strong> actualmente cada tipo de correo arma su propio envío por separado. Unificarlos deja un único punto de mantenimiento y facilita cambiar de proveedor en el futuro.</li>
+    </ul>
+
+    <div class="callout callout-amber">
+        <div class="callout-title">Sobre el costo — verificar antes de decidir</div>
+        <p>
+            El volumen de URBONT es bajo (del orden de cientos a pocos miles de correos mensuales),
+            de modo que cae en los tramos más económicos de cualquier proveedor. <strong>Los planes
+            y tramos gratuitos de SendGrid cambiaron en los últimos años, así que las condiciones
+            deben confirmarse en su sitio al momento de contratar</strong> en lugar de darlas por
+            conocidas. Conviene comparar también con alternativas equivalentes antes de cerrar.
+        </p>
+    </div>
+
+    <p>
+        La propuesta no es urgente en sí misma: <strong>lo urgente es que los correos vuelvan a
+        salir</strong>. Si se prefiere reactivar la configuración existente para resolverlo rápido,
+        es una decisión válida y la unificación puede quedar como una mejora posterior.
+    </p>
+
+    <!-- ══════════ 6. RECOMENDACIÓN ══════════ -->
+    <h2><span class="num">6.</span>Recomendación</h2>
+
+    <h3>Orden sugerido</h3>
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:8%">#</th>
+                <th style="width:34%">Acción</th>
+                <th style="width:20%">Esfuerzo</th>
+                <th>Por qué en ese orden</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>1</strong></td>
+                <td><strong>Definir si se debe cobrar con tarjeta</strong></td>
+                <td>Una conversación</td>
+                <td>Define si Stripe es la prioridad absoluta o puede esperar. No requiere trabajo técnico.</td>
+            </tr>
+            <tr>
+                <td><strong>2</strong></td>
+                <td><strong>Cargar la credencial de notificaciones</strong></td>
+                <td>~30 minutos</td>
+                <td>Mejor relación entre esfuerzo e impacto. Está costando viajes hoy.</td>
+            </tr>
+            <tr>
+                <td><strong>3</strong></td>
+                <td><strong>Configurar Stripe</strong></td>
+                <td>Configuración</td>
+                <td>Si la respuesta al punto 1 es afirmativa, sube al primer lugar.</td>
+            </tr>
+            <tr>
+                <td><strong>4</strong></td>
+                <td><strong>Reactivar los correos</strong></td>
+                <td>Configuración</td>
+                <td>Prioridad en el aviso de soporte: hoy los reclamos quedan sin atender.</td>
+            </tr>
+            <tr>
+                <td><strong>5</strong></td>
+                <td><strong>Ampliar el control de salud</strong></td>
+                <td>Medio día</td>
+                <td>No corrige nada, pero evita que el próximo caso tarde semanas en aparecer.</td>
+            </tr>
+            <tr>
+                <td><strong>6</strong></td>
+                <td><strong>Evaluar la unificación de correos</strong></td>
+                <td>Medio día</td>
+                <td>Mejora, no corrección. Puede esperar.</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <div class="callout">
+        <div class="callout-title">La medida más valiosa a mediano plazo</div>
+        <p>
+            El punto 5 es el que cambia la situación de fondo. Los tres problemas de este informe
+            se descubrieron revisando el sistema manualmente; deberían haber aparecido por sí solos.
+            <strong>Que una integración crítica pueda apagarse sin que nadie se entere es un riesgo
+            en sí mismo</strong>, independiente de cuál sea la integración de turno.
+        </p>
+    </div>
+
+    <div class="footer">
+        <p><strong>Resumen de servicios sin configurar — URBONT API v1.2.2</strong></p>
+        <p>Septiembre 2026 · Documento interno</p>
+    </div>
+
+</div>
+</body>
+</html>

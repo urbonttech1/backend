@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Informe — Google Maps URBONT</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --navy:   #0A2438;
+            --slate:  #5A6B79;
+            --line:   #e3e8ec;
+            --paper:  #ffffff;
+            --ground: #eef1f4;
+            --gold:   #B8894A;
+            --red:    #C0392B;
+            --amber:  #C77D0A;
+            --green:  #1E7A54;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.65;
+            color: #22303B;
+            background: var(--ground);
+            font-size: 16px;
+        }
+
+        .page {
+            max-width: 860px;
+            margin: 0 auto;
+            background: var(--paper);
+            padding: 64px 68px 72px;
+            box-shadow: 0 1px 3px rgba(10,36,56,.10), 0 8px 32px rgba(10,36,56,.06);
+        }
+
+        /* ── Portada ─────────────────────────────────────────── */
+        .cover { border-bottom: 3px solid var(--navy); padding-bottom: 28px; margin-bottom: 44px; }
+        .eyebrow {
+            font-size: 11px; font-weight: 700; letter-spacing: .18em;
+            text-transform: uppercase; color: var(--gold); margin-bottom: 12px;
+        }
+        .cover h1 {
+            font-size: 34px; line-height: 1.2; color: var(--navy);
+            font-weight: 700; letter-spacing: -.02em; margin-bottom: 12px;
+        }
+        .cover .lede { font-size: 17px; color: var(--slate); max-width: 62ch; }
+        .cover-meta {
+            display: flex; flex-wrap: wrap; gap: 28px;
+            margin-top: 26px; font-size: 13px; color: var(--slate);
+        }
+        .cover-meta strong { color: var(--navy); font-weight: 600; }
+
+        /* ── Tipografía ──────────────────────────────────────── */
+        h2 {
+            font-size: 22px; color: var(--navy); font-weight: 700;
+            margin: 52px 0 6px; letter-spacing: -.01em;
+        }
+        h2 .num { display: inline-block; min-width: 34px; color: var(--gold); font-weight: 700; }
+        h2 + .sub { color: var(--slate); font-size: 15px; margin-bottom: 22px; max-width: 66ch; }
+        h3 { font-size: 17px; color: var(--navy); font-weight: 650; margin: 32px 0 12px; }
+        h4 { font-size: 15px; color: var(--navy); font-weight: 650; margin: 22px 0 8px; }
+        p  { margin-bottom: 15px; max-width: 72ch; }
+        ul, ol { margin: 0 0 16px 22px; }
+        li { margin-bottom: 9px; max-width: 70ch; }
+        strong { font-weight: 650; color: var(--navy); }
+
+        /* ── Resumen ejecutivo ───────────────────────────────── */
+        .exec {
+            border: 1px solid var(--line); border-top: 4px solid var(--navy);
+            border-radius: 3px; padding: 34px 38px; margin-bottom: 12px;
+            background: #fbfcfd;
+        }
+        .exec h2 { margin: 0 0 22px; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; }
+        .exec-row { display: flex; gap: 22px; padding: 15px 0; border-top: 1px solid var(--line); }
+        .exec-row:first-of-type { border-top: none; padding-top: 0; }
+        .exec-k {
+            flex: 0 0 150px; font-size: 12px; font-weight: 700;
+            letter-spacing: .06em; text-transform: uppercase; color: var(--slate);
+            padding-top: 2px;
+        }
+        .exec-v { flex: 1; font-size: 15.5px; }
+        .exec-v p:last-child { margin-bottom: 0; }
+
+        /* ── Píldoras ────────────────────────────────────────── */
+        .pill {
+            display: inline-block; padding: 3px 11px; border-radius: 11px;
+            font-size: 11.5px; font-weight: 700; letter-spacing: .03em;
+            vertical-align: middle;
+        }
+        .pill-red   { background: #fbe9e7; color: var(--red); }
+        .pill-green { background: #e4f2eb; color: var(--green); }
+        .pill-amber { background: #fdf2e0; color: var(--amber); }
+
+        /* ── Cajas ───────────────────────────────────────────── */
+        .callout {
+            border-left: 3px solid var(--navy); background: #f6f8fa;
+            padding: 20px 24px; margin: 22px 0; border-radius: 0 3px 3px 0;
+        }
+        .callout p:last-child { margin-bottom: 0; }
+        .callout-red   { border-left-color: var(--red);   background: #fdf4f3; }
+        .callout-amber { border-left-color: var(--amber); background: #fdfaf3; }
+        .callout-green { border-left-color: var(--green); background: #f4faf7; }
+        .callout-title {
+            font-size: 12px; font-weight: 700; letter-spacing: .08em;
+            text-transform: uppercase; margin-bottom: 9px; color: var(--navy);
+        }
+        .callout-red   .callout-title { color: var(--red); }
+        .callout-amber .callout-title { color: var(--amber); }
+        .callout-green .callout-title { color: var(--green); }
+
+        /* ── Tablas ──────────────────────────────────────────── */
+        .tbl-wrap { overflow-x: auto; margin: 22px 0; }
+        table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+        th {
+            background: var(--navy); color: #fff; font-weight: 600;
+            text-align: left; padding: 12px 14px; font-size: 13px; letter-spacing: .02em;
+        }
+        td { padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:nth-child(even) { background: #fafbfc; }
+
+        /* ── Verificación (evidencia) ────────────────────────── */
+        .proof {
+            border: 1px solid var(--line); border-radius: 3px;
+            margin: 22px 0; overflow: hidden;
+        }
+        .proof-head {
+            background: #f6f8fa; padding: 11px 18px; font-size: 12px;
+            font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+            color: var(--slate); border-bottom: 1px solid var(--line);
+        }
+        .proof-body { padding: 6px 18px 10px; }
+        .proof-line {
+            display: flex; gap: 16px; padding: 9px 0;
+            border-bottom: 1px solid #f2f5f7; font-size: 14.5px; align-items: baseline;
+        }
+        .proof-line:last-child { border-bottom: none; }
+        .proof-what { flex: 1 1 auto; }
+        .proof-res {
+            flex: 0 0 auto; font-weight: 700; font-size: 13px;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+        }
+        .res-ok  { color: var(--green); }
+        .res-bad { color: var(--red); }
+
+        /* ── Comparación de dos columnas ─────────────────────── */
+        .split { display: flex; gap: 18px; margin: 24px 0; flex-wrap: wrap; }
+        .split-card {
+            flex: 1 1 260px; border: 1px solid var(--line);
+            border-radius: 3px; padding: 20px 22px;
+        }
+        .split-card.ok  { border-top: 3px solid var(--green); }
+        .split-card.bad { border-top: 3px solid var(--red); }
+        .split-card h4 { margin-top: 0; }
+        .split-card p { font-size: 14.5px; margin-bottom: 0; }
+
+        /* ── Anexo ───────────────────────────────────────────── */
+        .annex { margin-top: 60px; padding-top: 40px; border-top: 3px double var(--line); }
+        .annex-flag {
+            display: inline-block; background: var(--navy); color: #fff;
+            font-size: 11px; font-weight: 700; letter-spacing: .12em;
+            text-transform: uppercase; padding: 5px 13px; border-radius: 2px;
+            margin-bottom: 18px;
+        }
+        code {
+            background: #eef1f4; padding: 1.5px 6px; border-radius: 2px;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: .87em; color: var(--navy);
+        }
+        pre {
+            background: #f6f8fa; border-left: 3px solid var(--slate);
+            padding: 16px 18px; margin: 16px 0; border-radius: 0 3px 3px 0;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: 12.5px; line-height: 1.6; overflow-x: auto;
+        }
+        pre code { background: none; padding: 0; font-size: inherit; }
+
+        .footer {
+            margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--line);
+            font-size: 12.5px; color: var(--slate); text-align: center;
+        }
+        .footer p { max-width: none; margin-bottom: 4px; }
+
+        @media print {
+            body { background: #fff; font-size: 11pt; }
+            .page { box-shadow: none; padding: 0; max-width: none; }
+            h2 { page-break-after: avoid; }
+            table, .callout, .split, .proof { page-break-inside: avoid; }
+            .annex { page-break-before: always; }
+        }
+        @media (max-width: 700px) {
+            .page { padding: 36px 22px 48px; }
+            .exec { padding: 24px 22px; }
+            .exec-row { flex-direction: column; gap: 6px; }
+            .exec-k { flex: none; }
+            .cover h1 { font-size: 27px; }
+            .proof-line { flex-direction: column; gap: 3px; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- ══════════ PORTADA ══════════ -->
+    <div class="cover">
+        <div class="eyebrow">Informe técnico · Uso interno</div>
+        <h1>Google Maps: funciona correctamente, pero la llave de acceso está expuesta</h1>
+        <p class="lede">
+            Revisión del servicio de mapas de URBONT. El servicio opera con normalidad y ninguna
+            función está afectada para los usuarios. El hallazgo es de otra naturaleza: la
+            credencial que autoriza su uso está publicada y cualquiera puede utilizarla a nuestro
+            costo.
+        </p>
+        <div class="cover-meta">
+            <span><strong>Sistema:</strong> URBONT API v1.2.2</span>
+            <span><strong>Fecha:</strong> Septiembre 2026</span>
+            <span><strong>Servicio:</strong> <span class="pill pill-green">Operativo</span></span>
+            <span><strong>Seguridad:</strong> <span class="pill pill-red">Requiere acción</span></span>
+        </div>
+    </div>
+
+    <!-- ══════════ RESUMEN EJECUTIVO ══════════ -->
+    <div class="exec">
+        <h2>Resumen ejecutivo</h2>
+
+        <div class="exec-row">
+            <div class="exec-k">Estado del servicio</div>
+            <div class="exec-v">
+                <span class="pill pill-green">Operativo</span> Verificado contra el sistema en
+                producción. Calcular rutas, estimar tarifas, autocompletar direcciones y ubicar
+                conductores funcionan con normalidad. <strong>Nada está roto para el usuario.</strong>
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">El hallazgo</div>
+            <div class="exec-v">
+                La credencial de acceso a Google Maps <strong>se entrega públicamente</strong> a
+                quien la pida, y <strong>no tiene ninguna restricción de uso</strong>. Ambas cosas
+                fueron comprobadas, no son una sospecha.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Riesgo</div>
+            <div class="exec-v">
+                Financiero, no operativo. Google cobra por consulta y factura al titular de la
+                credencial. Un tercero que la tome puede generar consumo <strong>a cuenta de
+                URBONT</strong>. Es un patrón que se explota de forma automatizada.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Además</div>
+            <div class="exec-v">
+                Seis funciones del servidor que consultan a Google <strong>tampoco piden
+                autenticación</strong>. Aun sin tomar la credencial, un tercero puede usar
+                nuestro sistema como intermediario gratuito hacia Google.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Solución</div>
+            <div class="exec-v">
+                Reemplazar la credencial actual y dividirla en dos, cada una con permisos acotados
+                a su uso. Es trabajo de configuración, <strong>sin cambios en el código ni en las
+                aplicaciones</strong>. Del orden de medio día.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Prioridad</div>
+            <div class="exec-v">
+                <span class="pill pill-amber">Media</span> Importante, pero no urgente: no hay
+                servicio caído ni usuarios afectados. Puede planificarse. Lo que sí conviene hacer
+                de inmediato es <strong>activar alertas de presupuesto</strong> en Google, que
+                toman minutos y acotan el peor escenario.
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════ 1. PARA QUÉ SE USA ══════════ -->
+    <h2><span class="num">1.</span>Para qué usamos Google Maps</h2>
+    <p class="sub">El servicio sostiene buena parte de la experiencia central del producto.</p>
+
+    <p>
+        A diferencia de otros componentes, Google Maps no es un accesorio: sin él la aplicación no
+        podría cotizar un viaje ni guiar a un conductor.
+    </p>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:34%">Función del producto</th>
+                <th>Qué le pide a Google</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Cotizar un viaje</strong></td>
+                <td>Distancia y duración entre origen y destino, para calcular el precio.</td>
+            </tr>
+            <tr>
+                <td><strong>Escribir una dirección</strong></td>
+                <td>Sugerencias mientras el pasajero tipea, acotadas al área de Miami.</td>
+            </tr>
+            <tr>
+                <td><strong>Ubicar en el mapa</strong></td>
+                <td>Traducir direcciones a coordenadas y viceversa.</td>
+            </tr>
+            <tr>
+                <td><strong>Buscar lugares cercanos</strong></td>
+                <td>Puntos de interés próximos, como aeropuertos y hoteles.</td>
+            </tr>
+            <tr>
+                <td><strong>Supervisar el viaje en curso</strong></td>
+                <td>Comparar el recorrido real contra la ruta prevista para detectar desvíos.</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <!-- ══════════ 2. ESTADO ══════════ -->
+    <h2><span class="num">2.</span>Estado del servicio: operativo</h2>
+    <p class="sub">Comprobado directamente sobre el sistema en producción, no sobre el entorno de pruebas.</p>
+
+    <p>
+        Se consultaron las funciones reales de la aplicación y todas respondieron con datos
+        correctos:
+    </p>
+
+    <div class="proof">
+        <div class="proof-head">Verificación en producción · Septiembre 2026</div>
+        <div class="proof-body">
+            <div class="proof-line">
+                <div class="proof-what">Convertir una dirección en coordenadas</div>
+                <div class="proof-res res-ok">CORRECTO</div>
+            </div>
+            <div class="proof-line">
+                <div class="proof-what">Sugerir direcciones mientras se escribe</div>
+                <div class="proof-res res-ok">CORRECTO</div>
+            </div>
+            <div class="proof-line">
+                <div class="proof-what">Obtener la dirección de un punto del mapa</div>
+                <div class="proof-res res-ok">CORRECTO</div>
+            </div>
+            <div class="proof-line">
+                <div class="proof-what">Buscar lugares cercanos</div>
+                <div class="proof-res res-ok">CORRECTO</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="callout callout-green">
+        <div class="callout-title">Conclusión de esta sección</div>
+        <p>
+            <strong>No hay ninguna acción correctiva pendiente sobre el funcionamiento.</strong>
+            Si alguien reporta un problema con mapas, rutas o direcciones, la causa habrá que
+            buscarla en otro lado.
+        </p>
+    </div>
+
+    <!-- ══════════ 3. EL HALLAZGO ══════════ -->
+    <h2><span class="num">3.</span>El hallazgo: la credencial está expuesta y sin límites</h2>
+    <p class="sub">Dos condiciones que por separado serían tolerables, pero juntas abren la puerta.</p>
+
+    <p>
+        Para usar Google Maps hay que identificarse ante Google con una credencial —una clave larga
+        de texto—. Google registra cada consulta hecha con ella y <strong>factura al titular</strong>.
+        Conviene pensarla como una tarjeta corporativa: quien la tenga, gasta a nuestro nombre.
+    </p>
+
+    <h3>Condición 1 · Se entrega a quien la pida</h3>
+    <p>
+        El sistema tiene una dirección pública que devuelve la configuración de la aplicación, y
+        entre esos datos <strong>viene la credencial completa</strong>. No pide usuario ni
+        contraseña. Se comprobó contra el servidor de producción: la credencial llegó entera.
+    </p>
+
+    <h3>Condición 2 · No tiene ninguna restricción</h3>
+    <p>
+        Google permite limitar dónde y para qué puede usarse una credencial: solo desde nuestro
+        sitio web, solo desde nuestras aplicaciones, solo desde ciertas direcciones de internet.
+        <strong>La nuestra no tiene nada de eso configurado.</strong>
+    </p>
+    <p>
+        Se verificó usándola desde una computadora sin relación con URBONT, sin identificarse de
+        ninguna manera. Google aceptó las tres consultas:
+    </p>
+
+    <div class="proof">
+        <div class="proof-head">Prueba de restricciones · desde un equipo externo</div>
+        <div class="proof-body">
+            <div class="proof-line">
+                <div class="proof-what">Calcular una ruta</div>
+                <div class="proof-res res-bad">ACEPTADO</div>
+            </div>
+            <div class="proof-line">
+                <div class="proof-what">Buscar una dirección</div>
+                <div class="proof-res res-bad">ACEPTADO</div>
+            </div>
+            <div class="proof-line">
+                <div class="proof-what">Autocompletar lugares</div>
+                <div class="proof-res res-bad">ACEPTADO</div>
+            </div>
+        </div>
+    </div>
+    <p style="font-size:14px;color:var(--slate)">
+        Una credencial correctamente restringida habría rechazado las tres. Aceptó todas.
+    </p>
+
+    <div class="callout callout-red">
+        <div class="callout-title">Las dos condiciones combinadas</div>
+        <p>
+            Cualquier persona puede pedirle la credencial a nuestro servidor y usarla desde donde
+            quiera, sin límite. <strong>Google nos factura ese consumo.</strong> No hace falta
+            vulnerar nada: la credencial se entrega voluntariamente y funciona sin restricciones.
+        </p>
+    </div>
+
+    <!-- ══════════ 4. POR QUÉ ══════════ -->
+    <h2><span class="num">4.</span>Por qué quedó así</h2>
+    <p class="sub">No fue un descuido puntual, sino la consecuencia de que una misma credencial cumple dos funciones incompatibles.</p>
+
+    <p>La credencial se usa hoy en dos lugares con necesidades opuestas:</p>
+
+    <div class="split">
+        <div class="split-card">
+            <h4>En el servidor</h4>
+            <p>
+                Calcula rutas y busca direcciones. Necesita poder llamar a Google desde nuestra
+                infraestructura.
+            </p>
+        </div>
+        <div class="split-card">
+            <h4>En la aplicación del usuario</h4>
+            <p>
+                Dibuja el mapa en pantalla. Necesita que la credencial viaje hasta el teléfono del
+                pasajero.
+            </p>
+        </div>
+    </div>
+
+    <p>
+        Ahí está el conflicto. Si se restringe para que solo funcione desde nuestras aplicaciones,
+        <strong>dejan de funcionar las consultas del servidor</strong>. Si se restringe para que
+        solo funcione desde nuestro servidor, <strong>deja de funcionar el mapa en los
+        teléfonos</strong>. Como no se puede satisfacer a ambos, quedó sin ninguna restricción.
+    </p>
+
+    <div class="callout">
+        <p style="margin-bottom:0">
+            Por eso la solución no es "ponerle restricciones a la credencial actual" —eso rompería
+            una de las dos funciones—, sino <strong>separarla en dos credenciales</strong>, cada
+            una con los permisos mínimos de su tarea.
+        </p>
+    </div>
+
+    <!-- ══════════ 5. SEGUNDO HALLAZGO ══════════ -->
+    <h2><span class="num">5.</span>Segundo hallazgo: consultas abiertas al público</h2>
+    <p class="sub">Independiente del anterior, y con el mismo efecto sobre la factura.</p>
+
+    <p>
+        Nuestro servidor ofrece funciones que consultan a Google en nombre del usuario: buscar una
+        dirección, calcular una ruta, sugerir lugares. <strong>Seis de ellas no piden
+        autenticación:</strong> cualquiera puede invocarlas sin tener cuenta en URBONT.
+    </p>
+    <p>
+        El efecto es que, aun sin tomar la credencial, un tercero puede usar el sistema de URBONT
+        como intermediario gratuito hacia Google Maps. Cada consulta suya se factura a URBONT igual
+        que una legítima.
+    </p>
+
+    <div class="callout callout-amber">
+        <div class="callout-title">Sobre el límite de consultas existente</div>
+        <p>
+            Existe un tope de 150 consultas por minuto por origen. Ayuda, pero es insuficiente:
+            equivale a más de 200.000 consultas diarias desde un solo origen, y se evade
+            distribuyendo el tráfico. Además <strong>no protege del primer hallazgo</strong>: para
+            llevarse la credencial basta una sola consulta, y a partir de ahí el tercero le habla
+            a Google directamente, donde nuestro límite ya no interviene.
+        </p>
+    </div>
+
+    <!-- ══════════ 6. IMPACTO ══════════ -->
+    <h2><span class="num">6.</span>Qué está en juego</h2>
+    <p class="sub">Dimensionar el riesgo sin exagerarlo ni minimizarlo.</p>
+
+    <p>
+        Google Maps se cobra <strong>por consulta</strong>, en el orden de unos pocos dólares por
+        cada mil, con un tramo mensual sin cargo. Con el uso normal de URBONT el costo es modesto.
+        El problema es que el consumo de un tercero <strong>no tiene techo</strong>: depende de
+        cuánto decida usarla, no de cuántos viajes tengamos.
+    </p>
+
+    <div class="split">
+        <div class="split-card ok">
+            <h4>Escenario probable</h4>
+            <p>
+                Nadie encuentra la credencial y no pasa nada. Es perfectamente posible que este
+                riesgo <strong>nunca se materialice</strong>.
+            </p>
+        </div>
+        <div class="split-card bad">
+            <h4>Escenario adverso</h4>
+            <p>
+                Un rastreador automatizado la encuentra. El consumo se dispara en horas y el
+                importe aparece <strong>en la factura del mes siguiente</strong>, cuando ya se
+                gastó.
+            </p>
+        </div>
+    </div>
+
+    <p>
+        La característica desagradable de este riesgo es que <strong>no avisa mientras ocurre</strong>.
+        No hay caída, ni error, ni usuario que reclame: el servicio sigue funcionando con
+        normalidad mientras el consumo se acumula. Por eso las alertas de presupuesto son la
+        medida más rentable de todas: convierten "nos llegó una factura enorme" en "nos avisaron
+        el primer día".
+    </p>
+
+    <div class="callout">
+        <div class="callout-title">Comparación con el informe de notificaciones</div>
+        <p>
+            Conviene no confundir ambos informes. <strong>El problema de notificaciones es
+            funcional y ya está costando viajes hoy.</strong> Este es financiero y puede no
+            manifestarse nunca. Si hay que elegir por dónde empezar, las notificaciones van
+            primero.
+        </p>
+    </div>
+
+    <!-- ══════════ 7. RECOMENDACIÓN ══════════ -->
+    <h2><span class="num">7.</span>Recomendación</h2>
+
+    <div class="callout callout-green">
+        <div class="callout-title">Hacer hoy · 15 minutos</div>
+        <p>
+            <strong>Activar alertas de presupuesto en la cuenta de Google.</strong> No corrige el
+            problema, pero limita el daño del peor escenario y es lo único que hoy nos avisaría si
+            algo empieza a ocurrir. Debería existir en cualquier caso.
+        </p>
+    </div>
+
+    <h3>Plan de corrección</h3>
+    <ol>
+        <li>
+            <strong>Reemplazar la credencial actual.</strong> Estuvo publicada, así que hay que
+            darla por comprometida aunque no haya indicios de uso indebido.
+        </li>
+        <li>
+            <strong>Crear dos credenciales separadas</strong>, según la tabla siguiente.
+        </li>
+        <li>
+            <strong>Exigir autenticación</strong> en las seis consultas hoy abiertas, o al menos
+            reducirles el límite de uso.
+        </li>
+        <li>
+            <strong>Revisar el consumo histórico</strong> en el panel de Google, para descartar que
+            ya se esté usando de forma indebida.
+        </li>
+    </ol>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:22%"></th>
+                <th style="width:39%">Credencial de aplicación</th>
+                <th>Credencial de servidor</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Dónde vive</strong></td>
+                <td>Viaja al teléfono del usuario. Es pública por necesidad.</td>
+                <td>Solo en nuestro servidor. Nunca sale.</td>
+            </tr>
+            <tr>
+                <td><strong>Restricción</strong></td>
+                <td>Solo desde nuestro sitio y nuestras aplicaciones oficiales.</td>
+                <td>Solo puede usarse para las consultas que el servidor necesita.</td>
+            </tr>
+            <tr>
+                <td><strong>Permisos</strong></td>
+                <td>Únicamente dibujar el mapa.</td>
+                <td>Rutas, direcciones y lugares.</td>
+            </tr>
+            <tr>
+                <td><strong>Si se filtra</strong></td>
+                <td>Sirve de poco: solo funciona desde nuestras aplicaciones.</td>
+                <td>No debería filtrarse: nunca abandona el servidor.</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <div class="callout callout-green">
+        <div class="callout-title">Un punto favorable</div>
+        <p>
+            El servidor ya hace de intermediario para rutas, direcciones y lugares. Eso significa
+            que <strong>la credencial que viaja al teléfono solo necesita permiso para dibujar el
+            mapa</strong> — nada más. Aunque alguien la obtenga, no podrá usarla para las consultas
+            costosas. Es la parte del diseño que juega a favor.
+        </p>
+    </div>
+
+    <!-- ══════════ ANEXO ══════════ -->
+    <div class="annex">
+        <div class="annex-flag">Anexo técnico</div>
+        <h2 style="margin-top:0"><span class="num">A.</span>Detalle para el equipo de desarrollo</h2>
+        <p class="sub">Verificaciones realizadas sobre código y entorno de producción.</p>
+
+        <h3>A.1 — Exposición de la key</h3>
+        <p>
+            <code>GET /api/config</code> se monta sin middleware de autenticación
+            (<code>server/api/config.ts:16</code>) y devuelve <code>googleMapsApiKey</code> en el
+            cuerpo de la respuesta. Confirmado contra el ALB de producción: la key llega completa
+            a un cliente anónimo.
+        </p>
+
+        <h3>A.2 — Ausencia de restricciones</h3>
+        <p>
+            Se invocaron tres APIs con la key desde un equipo externo, sin cabecera
+            <code>Referer</code> ni firma de aplicación:
+        </p>
+        <pre><code>geocode/json                 → status: OK
+directions/json              → status: OK
+place/autocomplete/json      → status: OK</code></pre>
+        <p>
+            Una key con restricción de <em>referrer</em>, de aplicación o de IP habría devuelto
+            <code>REQUEST_DENIED</code>. Se concluye que no tiene restricciones efectivas, y que
+            al menos Geocoding, Directions y Places están habilitadas sobre ella.
+        </p>
+
+        <h3>A.3 — Doble uso de la misma credencial</h3>
+        <p>La key se lee en seis archivos del backend, además de servirse al cliente:</p>
+        <ul>
+            <li><code>server/api/geocode.ts</code> — geocoding directo e inverso, autocompletado, detalles de lugar, direcciones</li>
+            <li><code>server/api/places.ts</code> — búsqueda de lugares cercanos</li>
+            <li><code>server/api/rides/create.ts</code> — cálculo de ruta al cotizar</li>
+            <li><code>server/api/drivers.ts</code> — ruta del conductor</li>
+            <li><code>server/services/rideCheck.ts</code> — detección de desvíos</li>
+            <li><code>server/api/config.ts</code> — entrega al cliente</li>
+        </ul>
+        <p>
+            Todos resuelven contra <code>VITE_GOOGLE_MAPS_API_KEY || GOOGLE_MAPS_API_KEY</code>.
+            Es el origen estructural del problema descrito en la sección 4.
+        </p>
+
+        <h3>A.4 — Endpoints proxy sin autenticación</h3>
+        <div class="tbl-wrap">
+        <table>
+            <thead>
+                <tr><th style="width:48%">Endpoint</th><th>Autenticación</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>GET /api/geocode/directions</code></td><td><span class="pill pill-red">Ninguna</span></td></tr>
+                <tr><td><code>GET /api/geocode/suggest</code></td><td><span class="pill pill-red">Ninguna</span></td></tr>
+                <tr><td><code>GET /api/geocode/reverse</code></td><td><span class="pill pill-red">Ninguna</span></td></tr>
+                <tr><td><code>GET /api/geocode/place</code></td><td><span class="pill pill-red">Ninguna</span></td></tr>
+                <tr><td><code>GET /api/geocode/forward</code></td><td><span class="pill pill-red">Ninguna</span></td></tr>
+                <tr><td><code>GET /api/places/nearby</code></td><td><span class="pill pill-red">Ninguna</span></td></tr>
+                <tr><td><code>GET · POST /api/places/</code></td><td><span class="pill pill-green">requireSupabaseAuth</span></td></tr>
+            </tbody>
+        </table>
+        </div>
+        <p>
+            El limitador general (<code>apiLimiter</code>, 150 req/min por IP sobre <code>/api</code>)
+            aplica, pero no constituye una defensa: permite ~216.000 consultas diarias por IP y no
+            interviene una vez que la key fue extraída.
+        </p>
+
+        <h3>A.5 — Restricción por IP de la key de servidor</h3>
+        <div class="callout callout-amber">
+            <p style="margin-bottom:0">
+                Restringir la key de servidor por IP <strong>no es viable con la arquitectura
+                actual</strong>. Los tasks de ECS corren con <code>assignPublicIp=ENABLED</code> en
+                subredes públicas, de modo que la IP de salida cambia en cada reinicio. Fijarla
+                exigiría un NAT Gateway con IP elástica (~$33/mes), que el documento de despliegue
+                descartó deliberadamente. Alternativa alcanzable: restringir por tipo de API y
+                mantener la key fuera de toda respuesta pública.
+            </p>
+        </div>
+
+        <h3>A.6 — Sobre el Map ID</h3>
+        <p>
+            <code>GOOGLE_MAPS_MAP_ID</code> se entrega junto con la key en <code>/api/config</code>.
+            <strong>No representa un riesgo:</strong> los Map ID están diseñados para ser públicos
+            —identifican un estilo de mapa alojado en Google— y no autorizan consumo facturable.
+            No requiere acción.
+        </p>
+
+        <h3>A.7 — Verificación funcional realizada</h3>
+        <pre><code>GET /api/geocode/forward?q=Brickell City Centre
+    → {"lat":25.7672194,"lng":-80.1926107}
+
+GET /api/geocode/suggest?q=Brickell
+    → [{"description":"Brickell, Miami, FL, USA", ...}]
+
+GET /api/geocode/reverse?lat=25.7617&lng=-80.1918
+    → {"address":"1201 Brickell Ave, Miami, FL 33131, USA"}
+
+GET /api/places/nearby?lat=25.7617&lng=-80.1918&type=airport
+    → {"results":[{"place_id":"...","name":"...","lat":25.763305, ...}]}</code></pre>
+        <p style="font-size:14px;color:var(--slate)">
+            Nota: el parámetro de consulta es <code>q</code>, no <code>address</code> ni
+            <code>input</code>. Usar el nombre equivocado devuelve <code>null</code> o
+            <code>[]</code> sin señalar el error, lo que puede simular una falla inexistente.
+        </p>
+    </div>
+
+    <div class="footer">
+        <p><strong>Informe de Google Maps — URBONT API v1.2.2</strong></p>
+        <p>Septiembre 2026 · Documento interno</p>
+    </div>
+
+</div>
+</body>
+</html>

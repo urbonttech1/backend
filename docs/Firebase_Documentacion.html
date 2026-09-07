@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Informe — Notificaciones URBONT</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --navy:    #0A2438;
+            --slate:   #5A6B79;
+            --line:    #e3e8ec;
+            --paper:   #ffffff;
+            --ground:  #eef1f4;
+            --gold:    #B8894A;
+            --red:     #C0392B;
+            --amber:   #C77D0A;
+            --green:   #1E7A54;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.65;
+            color: #22303B;
+            background: var(--ground);
+            font-size: 16px;
+        }
+
+        .page {
+            max-width: 860px;
+            margin: 0 auto;
+            background: var(--paper);
+            padding: 64px 68px 72px;
+            box-shadow: 0 1px 3px rgba(10,36,56,.10), 0 8px 32px rgba(10,36,56,.06);
+        }
+
+        /* ── Portada ─────────────────────────────────────────── */
+        .cover { border-bottom: 3px solid var(--navy); padding-bottom: 28px; margin-bottom: 44px; }
+        .eyebrow {
+            font-size: 11px; font-weight: 700; letter-spacing: .18em;
+            text-transform: uppercase; color: var(--gold); margin-bottom: 12px;
+        }
+        .cover h1 {
+            font-size: 34px; line-height: 1.2; color: var(--navy);
+            font-weight: 700; letter-spacing: -.02em; margin-bottom: 12px;
+        }
+        .cover .lede { font-size: 17px; color: var(--slate); max-width: 62ch; }
+        .cover-meta {
+            display: flex; flex-wrap: wrap; gap: 28px;
+            margin-top: 26px; font-size: 13px; color: var(--slate);
+        }
+        .cover-meta strong { color: var(--navy); font-weight: 600; }
+
+        /* ── Tipografía ──────────────────────────────────────── */
+        h2 {
+            font-size: 22px; color: var(--navy); font-weight: 700;
+            margin: 52px 0 6px; letter-spacing: -.01em;
+        }
+        h2 .num {
+            display: inline-block; min-width: 34px;
+            color: var(--gold); font-weight: 700;
+        }
+        h2 + .sub { color: var(--slate); font-size: 15px; margin-bottom: 22px; max-width: 66ch; }
+        h3 { font-size: 17px; color: var(--navy); font-weight: 650; margin: 32px 0 12px; }
+        h4 { font-size: 15px; color: var(--navy); font-weight: 650; margin: 22px 0 8px; }
+        p  { margin-bottom: 15px; max-width: 72ch; }
+        ul, ol { margin: 0 0 16px 22px; }
+        li { margin-bottom: 9px; max-width: 70ch; }
+        strong { font-weight: 650; color: var(--navy); }
+
+        /* ── Resumen ejecutivo ───────────────────────────────── */
+        .exec {
+            border: 1px solid var(--line); border-top: 4px solid var(--navy);
+            border-radius: 3px; padding: 34px 38px; margin-bottom: 12px;
+            background: #fbfcfd;
+        }
+        .exec h2 { margin: 0 0 22px; font-size: 15px; letter-spacing: .12em; text-transform: uppercase; }
+        .exec-row { display: flex; gap: 22px; padding: 15px 0; border-top: 1px solid var(--line); }
+        .exec-row:first-of-type { border-top: none; padding-top: 0; }
+        .exec-k {
+            flex: 0 0 150px; font-size: 12px; font-weight: 700;
+            letter-spacing: .06em; text-transform: uppercase; color: var(--slate);
+            padding-top: 2px;
+        }
+        .exec-v { flex: 1; font-size: 15.5px; }
+        .exec-v p:last-child { margin-bottom: 0; }
+
+        /* ── Píldoras de estado ──────────────────────────────── */
+        .pill {
+            display: inline-block; padding: 3px 11px; border-radius: 11px;
+            font-size: 11.5px; font-weight: 700; letter-spacing: .03em;
+            vertical-align: middle;
+        }
+        .pill-red   { background: #fbe9e7; color: var(--red); }
+        .pill-green { background: #e4f2eb; color: var(--green); }
+        .pill-amber { background: #fdf2e0; color: var(--amber); }
+
+        /* ── Cajas de énfasis ────────────────────────────────── */
+        .callout {
+            border-left: 3px solid var(--navy); background: #f6f8fa;
+            padding: 20px 24px; margin: 22px 0; border-radius: 0 3px 3px 0;
+        }
+        .callout p:last-child { margin-bottom: 0; }
+        .callout-red   { border-left-color: var(--red);   background: #fdf4f3; }
+        .callout-amber { border-left-color: var(--amber); background: #fdfaf3; }
+        .callout-green { border-left-color: var(--green); background: #f4faf7; }
+        .callout-title {
+            font-size: 12px; font-weight: 700; letter-spacing: .08em;
+            text-transform: uppercase; margin-bottom: 9px; color: var(--navy);
+        }
+        .callout-red   .callout-title { color: var(--red); }
+        .callout-amber .callout-title { color: var(--amber); }
+        .callout-green .callout-title { color: var(--green); }
+
+        /* ── Tablas ──────────────────────────────────────────── */
+        .tbl-wrap { overflow-x: auto; margin: 22px 0; }
+        table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+        th {
+            background: var(--navy); color: #fff; font-weight: 600;
+            text-align: left; padding: 12px 14px; font-size: 13px;
+            letter-spacing: .02em;
+        }
+        td { padding: 13px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        tbody tr:last-child td { border-bottom: none; }
+        tbody tr:nth-child(even) { background: #fafbfc; }
+
+        .sev { font-weight: 700; white-space: nowrap; font-size: 13px; }
+        .sev-crit { color: var(--red); }
+        .sev-high { color: var(--amber); }
+        .sev-med  { color: #8a7a3f; }
+        .sev-low  { color: var(--green); }
+
+        /* ── Diagrama de cadena ──────────────────────────────── */
+        .chain { margin: 24px 0; border-left: 3px solid var(--red); padding-left: 0; }
+        .chain-step {
+            position: relative; padding: 11px 0 11px 46px; font-size: 14.5px;
+        }
+        .chain-step:before {
+            content: attr(data-n);
+            position: absolute; left: 14px; top: 12px;
+            width: 21px; height: 21px; border-radius: 50%;
+            background: var(--red); color: #fff;
+            font-size: 11px; font-weight: 700;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .chain-step.end:before { background: var(--navy); }
+
+        /* ── Comparación abierta/cerrada ─────────────────────── */
+        .split { display: flex; gap: 18px; margin: 24px 0; flex-wrap: wrap; }
+        .split-card {
+            flex: 1 1 260px; border: 1px solid var(--line);
+            border-radius: 3px; padding: 20px 22px;
+        }
+        .split-card.ok  { border-top: 3px solid var(--green); }
+        .split-card.bad { border-top: 3px solid var(--red); }
+        .split-card h4 { margin-top: 0; }
+        .split-card p { font-size: 14.5px; margin-bottom: 0; }
+
+        /* ── Anexo técnico ───────────────────────────────────── */
+        .annex {
+            margin-top: 60px; padding-top: 40px;
+            border-top: 3px double var(--line);
+        }
+        .annex-flag {
+            display: inline-block; background: var(--navy); color: #fff;
+            font-size: 11px; font-weight: 700; letter-spacing: .12em;
+            text-transform: uppercase; padding: 5px 13px; border-radius: 2px;
+            margin-bottom: 18px;
+        }
+        code {
+            background: #eef1f4; padding: 1.5px 6px; border-radius: 2px;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: .87em; color: var(--navy);
+        }
+        pre {
+            background: #f6f8fa; border-left: 3px solid var(--slate);
+            padding: 16px 18px; margin: 16px 0; border-radius: 0 3px 3px 0;
+            font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+            font-size: 12.5px; line-height: 1.6; overflow-x: auto;
+        }
+        pre code { background: none; padding: 0; font-size: inherit; }
+
+        .footer {
+            margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--line);
+            font-size: 12.5px; color: var(--slate); text-align: center;
+        }
+        .footer p { max-width: none; margin-bottom: 4px; }
+
+        @media print {
+            body { background: #fff; font-size: 11pt; }
+            .page { box-shadow: none; padding: 0; max-width: none; }
+            h2 { page-break-after: avoid; }
+            table, .callout, .split, .chain { page-break-inside: avoid; }
+            .annex { page-break-before: always; }
+        }
+        @media (max-width: 700px) {
+            .page { padding: 36px 22px 48px; }
+            .exec { padding: 24px 22px; }
+            .exec-row { flex-direction: column; gap: 6px; }
+            .exec-k { flex: none; }
+            .cover h1 { font-size: 27px; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- ══════════ PORTADA ══════════ -->
+    <div class="cover">
+        <div class="eyebrow">Informe técnico · Uso interno</div>
+        <h1>Por qué la aplicación no está enviando notificaciones</h1>
+        <p class="lede">
+            Diagnóstico del sistema de avisos de URBONT: qué está apagado, por qué una sola
+            credencial faltante afecta a tantas funciones, qué le cuesta al negocio y qué
+            hace falta para resolverlo.
+        </p>
+        <div class="cover-meta">
+            <span><strong>Sistema:</strong> URBONT API v1.2.2</span>
+            <span><strong>Fecha:</strong> Septiembre 2026</span>
+            <span><strong>Estado:</strong> <span class="pill pill-red">Servicio apagado</span></span>
+        </div>
+    </div>
+
+    <!-- ══════════ RESUMEN EJECUTIVO ══════════ -->
+    <div class="exec">
+        <h2>Resumen ejecutivo</h2>
+
+        <div class="exec-row">
+            <div class="exec-k">Situación</div>
+            <div class="exec-v">
+                La aplicación <strong>no puede enviar ninguna notificación al teléfono</strong> de
+                pasajeros ni de conductores. El sistema que las entrega está apagado porque falta
+                cargar una credencial de acceso.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Causa</div>
+            <div class="exec-v">
+                Un dato de configuración vacío. No es una falla del proveedor, ni del código, ni
+                un problema de capacidad: nunca se cargó la credencial que autoriza a nuestro
+                servidor a usar el servicio de mensajería de Google.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Impacto principal</div>
+            <div class="exec-v">
+                Un conductor solo se entera de que hay un viaje disponible si tiene la aplicación
+                abierta en pantalla. Con el teléfono en el bolsillo <strong>no recibe nada</strong>.
+                Eso significa viajes que nadie toma y pasajeros que terminan cancelando.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Agravante</div>
+            <div class="exec-v">
+                <strong>Falla en silencio.</strong> No genera errores ni alertas. Puede llevar
+                semanas ocurriendo sin que nadie lo note, salvo por la sensación difusa de que
+                "entran pocos viajes".
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Alcance real</div>
+            <div class="exec-v">
+                Acotado. <span class="pill pill-green">Todo lo demás funciona</span>
+                Reservar, pagar, seguir el viaje en el mapa, el chat y el ingreso a la cuenta
+                operan con normalidad. Ningún mensaje se pierde: quedan guardados y aparecen
+                cuando el usuario abre la aplicación.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Solución</div>
+            <div class="exec-v">
+                Descargar un archivo desde el panel de Google y cargarlo en la configuración del
+                servidor. <strong>Aproximadamente 30 minutos de trabajo</strong>, sin cambios en
+                el código ni en las aplicaciones móviles.
+            </div>
+        </div>
+
+        <div class="exec-row">
+            <div class="exec-k">Sobre OneSignal</div>
+            <div class="exec-v">
+                Evaluado. <strong>No resuelve este problema:</strong> OneSignal funciona por encima
+                del mismo servicio de Google y pide exactamente la misma credencial que hoy falta.
+                Migrar tomaría semanas y seguiría requiriendo ese archivo. Tiene sentido más
+                adelante, por otros motivos.
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════ 1. QUÉ ES ══════════ -->
+    <h2><span class="num">1.</span>Qué es Firebase y para qué lo usamos</h2>
+    <p class="sub">Antes del diagnóstico, conviene precisar qué hace exactamente este componente.</p>
+
+    <p>
+        <strong>Firebase</strong> es un conjunto de servicios de Google. URBONT usa únicamente dos
+        de ellos, y ninguno tiene que ver con guardar información: nuestros datos viven en otro
+        proveedor y no están afectados.
+    </p>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:26%">Servicio</th>
+                <th style="width:44%">Para qué se usa</th>
+                <th>Situación</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Mensajería (FCM)</strong></td>
+                <td>Enviar avisos al teléfono: ofertas de viaje, "tu conductor está llegando",
+                    recordatorios de reservas.</td>
+                <td><span class="pill pill-red">Apagado</span></td>
+            </tr>
+            <tr>
+                <td><strong>Verificación telefónica</strong></td>
+                <td>Confirmar que un número de teléfono es real durante el registro.</td>
+                <td><span class="pill pill-amber">Apagado · posiblemente sin uso</span></td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <div class="callout callout-amber">
+        <div class="callout-title">Punto a confirmar con el equipo</div>
+        <p>
+            La aplicación tiene <strong>dos formas distintas</strong> de verificar un teléfono: la de
+            Firebase y una propia, que envía el código por SMS a través de otro proveedor (Twilio) y
+            que sí está funcionando. Si en la práctica se usa la propia, este segundo servicio de
+            Firebase no le hace falta a nadie y el único problema real es el de las notificaciones.
+            Conviene aclararlo antes de dimensionar la urgencia.
+        </p>
+    </div>
+
+    <!-- ══════════ 2. POR QUÉ ROMPE TANTO ══════════ -->
+    <h2><span class="num">2.</span>Por qué un dato faltante afecta a tantas funciones</h2>
+    <p class="sub">Es la pregunta central del informe, y tiene dos explicaciones que se suman.</p>
+
+    <h3>Primera razón: todos los avisos salen por la misma puerta</h3>
+    <p>
+        En el sistema hay alrededor de <strong>cuarenta situaciones distintas</strong> que generan una
+        notificación: un viaje que se confirma, un conductor que llega, un recordatorio, un documento
+        aprobado. Podría pensarse que son cuarenta mecanismos independientes, pero no lo son.
+    </p>
+    <p>
+        Todas terminan pasando por <strong>un único punto de salida</strong>, y ese punto es el que
+        necesita la credencial. Sin ella no se abre, y da igual qué aviso intentaba salir: todos
+        quedan detenidos en el mismo lugar.
+    </p>
+
+    <div class="callout">
+        <p style="margin-bottom:0">
+            Por eso el problema no son "cuarenta funciones rotas", sino
+            <strong>una sola pieza faltante que las bloquea a todas a la vez</strong>. Es también la
+            razón por la que se arregla de una sola vez: al reponer esa pieza, las cuarenta vuelven
+            a funcionar juntas.
+        </p>
+    </div>
+
+    <h3>Segunda razón: con la aplicación cerrada, no hay otro camino</h3>
+    <p>
+        Esta parte no es una decisión de URBONT, sino de cómo funcionan los teléfonos.
+    </p>
+    <p>
+        Cuando el usuario sale de una aplicación, <strong>el teléfono le corta la conexión a
+        internet</strong> para ahorrar batería. Si cada aplicación instalada mantuviera su propia
+        conexión abierta, la batería duraría un par de horas.
+    </p>
+    <p>
+        Para compensarlo, el teléfono mantiene <strong>una sola conexión, compartida por todas las
+        aplicaciones</strong>, administrada por el sistema operativo. En los teléfonos Android esa
+        conexión la opera Google, y es exactamente el servicio que hoy no podemos usar. Funciona
+        como un servicio de correo: nosotros no entregamos el mensaje al teléfono, se lo entregamos
+        a Google para que lo entregue. Y para dejarle un envío hay que estar identificado.
+    </p>
+
+    <div class="split">
+        <div class="split-card ok">
+            <h4>Con la aplicación abierta</h4>
+            <p>
+                Hay conexión directa con nuestro servidor. Los avisos llegan por ese canal y
+                <strong>funcionan con normalidad</strong>, aunque Firebase esté apagado.
+            </p>
+        </div>
+        <div class="split-card bad">
+            <h4>Con la aplicación cerrada o en segundo plano</h4>
+            <p>
+                Esa conexión ya no existe. El único camino es el servicio de Google, que hoy no
+                podemos usar. <strong>No llega nada.</strong>
+            </p>
+        </div>
+    </div>
+
+    <div class="callout callout-red">
+        <div class="callout-title">La consecuencia incómoda</div>
+        <p>
+            Una notificación existe, precisamente, para avisarle a alguien que <em>no</em> está
+            mirando la pantalla. El momento en que más falta hace es justo el momento en que el
+            único canal disponible está apagado.
+        </p>
+    </div>
+
+    <!-- ══════════ 3. QUÉ DEJA DE FUNCIONAR ══════════ -->
+    <h2><span class="num">3.</span>Qué deja de funcionar, y con qué gravedad</h2>
+    <p class="sub">La gravedad no depende de la importancia del mensaje, sino de cuánto dura su utilidad.</p>
+
+    <p>
+        Un dato que cambia la lectura de la tabla: <strong>ningún mensaje se pierde</strong>. El
+        sistema los guarda todos y aparecen en la aplicación cuando el usuario la abre. La pregunta
+        entonces nunca es <em>"¿se perdió?"</em>, sino <strong>"¿todavía sirve cuando lo vea tres
+        horas más tarde?"</strong>. Eso es lo que ordena la lista.
+    </p>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:27%">Aviso</th>
+                <th style="width:15%">Destinatario</th>
+                <th style="width:14%">Gravedad</th>
+                <th>Verlo tarde equivale a…</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Hay un viaje disponible</strong></td>
+                <td>Conductor</td>
+                <td class="sev sev-crit">● Crítica</td>
+                <td>Nada. La oferta vale unos treinta segundos: para cuando lo vea, el viaje ya lo tomó otro o se canceló.</td>
+            </tr>
+            <tr>
+                <td><strong>Recordatorio de reserva</strong><br><span style="font-size:13px;color:var(--slate)">24 h, 1 h y 15 min antes</span></td>
+                <td>Pasajero</td>
+                <td class="sev sev-crit">● Crítica</td>
+                <td>Nada. Un aviso de "tu viaje es en una hora" leído al día siguiente no evitó que el pasajero no se presentara.</td>
+            </tr>
+            <tr>
+                <td><strong>Tarifa aumentada por demanda</strong></td>
+                <td>Conductor</td>
+                <td class="sev sev-high">● Alta</td>
+                <td>Frustración: se entera del incentivo cuando el período de alta demanda ya terminó.</td>
+            </tr>
+            <tr>
+                <td><strong>Se reasignó tu conductor</strong></td>
+                <td>Pasajero</td>
+                <td class="sev sev-high">● Alta</td>
+                <td>Mala experiencia: estuvo esperando sin saber qué estaba pasando.</td>
+            </tr>
+            <tr>
+                <td><strong>Documento aprobado o vencido</strong></td>
+                <td>Conductor</td>
+                <td class="sev sev-med">● Media</td>
+                <td>Poco. Sigue siendo útil cuando lo lea, solo llega con retraso.</td>
+            </tr>
+            <tr>
+                <td><strong>Resumen de ganancias, logros</strong></td>
+                <td>Conductor</td>
+                <td class="sev sev-low">● Baja</td>
+                <td>Nada. Es informativo y no caduca.</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <p>
+        Las dos categorías críticas comparten un rasgo que las vuelve el peor caso posible:
+        <strong>su utilidad caduca en minutos y el destinatario, por definición, no está mirando la
+        aplicación.</strong> Un conductor a la espera de trabajo no tiene el teléfono en la mano —
+        está esperando que le avisen. Un pasajero que reservó para mañana temprano no va a abrir la
+        aplicación por las dudas.
+    </p>
+
+    <h3>Qué sigue funcionando sin problemas</h3>
+    <p>
+        Conviene ser preciso para no sobredimensionar: la aplicación <strong>no está caída</strong>.
+        Sigue operando con normalidad:
+    </p>
+    <ul>
+        <li>Reservar un viaje, pagarlo y completarlo.</li>
+        <li>Seguimiento en vivo en el mapa mientras el viaje ocurre.</li>
+        <li>Toda la comunicación mientras la aplicación está abierta en pantalla.</li>
+        <li>El historial de avisos dentro de la aplicación, que se guarda igual.</li>
+        <li>El ingreso a la cuenta mediante el código por SMS propio.</li>
+    </ul>
+
+    <!-- ══════════ 4. RIESGO DE NEGOCIO ══════════ -->
+    <h2><span class="num">4.</span>Riesgo para el negocio</h2>
+    <p class="sub">El problema no es la molestia de no recibir avisos, sino que afecta el lado de la oferta.</p>
+
+    <h3>La cadena que se rompe</h3>
+    <div class="chain">
+        <div class="chain-step" data-n="1">El conductor guarda el teléfono en el bolsillo, que es lo normal mientras espera.</div>
+        <div class="chain-step" data-n="2">Entra una solicitud de viaje. <strong>No le llega ningún aviso.</strong></div>
+        <div class="chain-step" data-n="3">Nadie acepta el viaje.</div>
+        <div class="chain-step" data-n="4">El sistema intenta reasignarlo a otro conductor, que tampoco recibe el aviso.</div>
+        <div class="chain-step end" data-n="5">El pasajero se cansa de esperar y cancela. <strong>Viaje perdido.</strong></div>
+    </div>
+
+    <p>
+        En la práctica esto significa que <strong>un conductor solo recibe trabajo mientras sostiene
+        el teléfono con la aplicación abierta</strong>. Nadie opera así.
+    </p>
+
+    <h3>El daño se acumula</h3>
+    <p>
+        Lo más costoso no es el viaje perdido en sí, sino el efecto de segundo orden: un conductor
+        que concluye que "por esta aplicación no entran viajes" deja de conectarse. Menos
+        conductores disponibles significa esperas más largas para el pasajero, y esperas más largas
+        significan más cancelaciones. <strong>El deterioro se refuerza a sí mismo</strong> y
+        recuperar conductores que ya se fueron cuesta bastante más que retenerlos.
+    </p>
+
+    <h3>Las reservas anticipadas son el segundo frente</h3>
+    <p>
+        Alguien que reserva con días de anticipación lo hace confiando en que le van a recordar. Sin
+        el aviso previo aumentan las ausencias — y en esos casos ya hay dinero comprometido y un
+        conductor asignado esperando en el punto de encuentro. Es doblemente caro: se pierde el
+        ingreso y se quema el tiempo de un conductor.
+    </p>
+
+    <div class="callout callout-red">
+        <div class="callout-title">Lo más peligroso: no avisa</div>
+        <p>
+            La falla no genera ninguna alerta. No aparece un error en pantalla, no se cae nada, nadie
+            recibe un aviso. Solo queda una anotación técnica en los registros del servidor que nadie
+            revisa de rutina. <strong>Se pueden estar perdiendo viajes durante semanas</strong> antes
+            de que alguien conecte los puntos, y lo más probable es que el problema se atribuya a
+            falta de demanda o a los conductores.
+        </p>
+    </div>
+
+    <!-- ══════════ 5. ONESIGNAL ══════════ -->
+    <h2><span class="num">5.</span>¿Conviene reemplazarlo por OneSignal?</h2>
+    <p class="sub">Se evaluó como alternativa. La conclusión es que resuelve otra cosa, no ésta.</p>
+
+    <p>
+        <strong>OneSignal utiliza el mismo servicio de Google por debajo.</strong> No es un reemplazo
+        de Firebase: es una capa que se apoya en él. Para entregar en teléfonos Android no existe
+        otro camino que el de Google — es el único servicio de mensajería que el sistema operativo
+        acepta.
+    </p>
+    <p>
+        La consecuencia práctica es directa: al configurar OneSignal, <strong>lo primero que pide es
+        exactamente el mismo archivo de credenciales que hoy nos falta</strong>. Migrar para evitar
+        conseguirlo es imposible, porque OneSignal lo va a pedir igual.
+    </p>
+
+    <div class="tbl-wrap">
+    <table>
+        <thead>
+            <tr>
+                <th style="width:36%"></th>
+                <th style="width:32%">Cargar la credencial</th>
+                <th>Migrar a OneSignal</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><strong>Esfuerzo</strong></td>
+                <td><span class="pill pill-green">~30 minutos</span></td>
+                <td><span class="pill pill-red">Semanas</span> Rehacer el envío en el servidor e integrar componentes nuevos en ambas aplicaciones móviles</td>
+            </tr>
+            <tr>
+                <td><strong>¿Necesita la credencial de Google?</strong></td>
+                <td>Sí</td>
+                <td><strong>Sí, exactamente la misma</strong></td>
+            </tr>
+            <tr>
+                <td><strong>¿Requiere publicar versión nueva de la app?</strong></td>
+                <td>No</td>
+                <td>Sí, en ambas tiendas</td>
+            </tr>
+            <tr>
+                <td><strong>¿Resuelve el problema actual?</strong></td>
+                <td>Sí, de inmediato</td>
+                <td>Sí, pero semanas más tarde y por un camino más largo</td>
+            </tr>
+        </tbody>
+    </table>
+    </div>
+
+    <div class="callout callout-green">
+        <div class="callout-title">Una buena noticia para el futuro</div>
+        <p>
+            El sistema está bien construido en este aspecto: los cuarenta puntos que envían
+            notificaciones no hablan directamente con Firebase, sino a través de una capa intermedia.
+            Cambiar de proveedor más adelante implicaría modificar <strong>esa única capa</strong>,
+            no las cuarenta llamadas. La decisión no queda cerrada.
+        </p>
+    </div>
+
+    <h3>Cuándo sí tendría sentido</h3>
+    <p>
+        OneSignal aporta valor por un motivo distinto al que nos ocupa: campañas segmentadas,
+        programación de envíos, pruebas de distintos mensajes y un panel para que marketing envíe
+        notificaciones sin depender del equipo técnico. Son capacidades comerciales, no de
+        infraestructura. <strong>Es una conversación válida, pero posterior y con otro objetivo.</strong>
+    </p>
+
+    <!-- ══════════ 6. RECOMENDACIÓN ══════════ -->
+    <h2><span class="num">6.</span>Recomendación</h2>
+
+    <div class="callout">
+        <div class="callout-title">Acción inmediata</div>
+        <p>
+            <strong>Obtener la credencial de Firebase y cargarla en el servidor.</strong> Es media
+            hora de trabajo, no requiere tocar el código ni publicar versiones nuevas de las
+            aplicaciones, y restablece de una sola vez las cuarenta notificaciones. No hay ninguna
+            razón para postergarlo ni alternativa que lo evite.
+        </p>
+    </div>
+
+    <h3>Pasos</h3>
+    <ol>
+        <li><strong>Descargar la credencial</strong> desde el panel de Firebase. Requiere acceso de administrador a la cuenta de Google del proyecto.</li>
+        <li><strong>Cargarla en la configuración del servidor</strong> y reiniciarlo.</li>
+        <li><strong>Verificar</strong> con la herramienta de diagnóstico que ya existe en el sistema.</li>
+        <li><strong>Probar de punta a punta:</strong> enviar un aviso de prueba y confirmar que llega a un teléfono con la aplicación cerrada.</li>
+    </ol>
+
+    <h3>A resolver después</h3>
+    <ul>
+        <li><strong>Aclarar el método de verificación telefónica.</strong> Si la aplicación usa el propio y no el de Firebase, hay código sin uso que conviene retirar para evitar confusiones futuras.</li>
+        <li><strong>Agregar una alerta.</strong> Que un componente crítico pueda apagarse sin que nadie se entere es un riesgo en sí mismo, independiente de este episodio. Debería avisar.</li>
+        <li><strong>Corregir un error detectado durante la revisión</strong> (ver anexo): el aviso de reasignación de conductor no funciona ni siquiera con Firebase activo.</li>
+        <li><strong>Evaluar OneSignal</strong> cuando exista una necesidad concreta de campañas de marketing.</li>
+    </ul>
+
+    <!-- ══════════ ANEXO ══════════ -->
+    <div class="annex">
+        <div class="annex-flag">Anexo técnico</div>
+        <h2 style="margin-top:0"><span class="num">A.</span>Detalle para el equipo de desarrollo</h2>
+        <p class="sub">Verificaciones realizadas sobre el código y la configuración del entorno actual.</p>
+
+        <h3>A.1 — Origen exacto de la falla</h3>
+        <p>La variable de entorno está declarada pero sin valor:</p>
+        <pre><code>FIREBASE_SERVICE_ACCOUNT=</code></pre>
+        <p>
+            Tanto <code>server/services/fcm.ts</code> como
+            <code>server/services/firebasePhoneAuth.ts</code> la comprueban antes de inicializar el
+            SDK de Firebase Admin. Al encontrarla vacía registran una advertencia y devuelven
+            <code>null</code>:
+        </p>
+        <pre><code>const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+if (!serviceAccountJson) {
+  log.warn('FIREBASE_SERVICE_ACCOUNT not set — push notifications disabled');
+  return null;
+}</code></pre>
+        <p>Y cada función de envío corta de inmediato ante ese <code>null</code>:</p>
+        <pre><code>const fcm = await getMessaging();
+if (!fcm) return false;                     // sendToToken
+if (!fcm) return { sent: 0, failed: 0 };    // sendMulticast</code></pre>
+        <p>
+            Es el embudo descrito en la sección 2: los ~40 puntos de envío pasan por
+            <code>notifyUser()</code> o <code>sendMulticast()</code>, y ambas dependen de
+            <code>getMessaging()</code>. Es un apagado deliberado y silencioso, no una excepción.
+        </p>
+
+        <h3>A.2 — Amortiguadores existentes</h3>
+        <p>Dos mecanismos limitan el daño y explican por qué el impacto es acotado:</p>
+        <ul>
+            <li>
+                <strong>Persistencia independiente de FCM.</strong> <code>notifyUser()</code> llama a
+                <code>persistNotification()</code> <em>antes</em> de intentar el envío, con el
+                comentario explícito <code>regardless of FCM status</code>. Todo queda en la tabla
+                <code>notifications</code> y es visible en la bandeja de la aplicación.
+            </li>
+            <li>
+                <strong>Doble canal en el despacho de viajes.</strong> En
+                <code>server/api/rides/create.ts</code> se invocan en paralelo
+                <code>notifyNearbyDrivers()</code> (FCM) y <code>notifyAvailableDrivers()</code>
+                (Socket.IO). El conductor con sesión activa sigue recibiendo ofertas por websocket.
+            </li>
+        </ul>
+        <p>
+            La excepción es <code>notifyNearbyDrivers()</code>, que envía por FCM
+            <strong>sin persistir</strong>: las ofertas de viaje no quedan registradas en la bandeja.
+            Es coherente con su naturaleza efímera, pero conviene tenerlo presente.
+        </p>
+
+        <h3>A.3 — Error detectado durante la revisión</h3>
+        <div class="callout callout-amber">
+            <div class="callout-title">Independiente del problema de credenciales</div>
+            <p>
+                En <code>server/services/rideReassignment.ts</code>, la función
+                <code>sendReassignPush()</code> consulta la tabla equivocada:
+            </p>
+            <pre style="margin:12px 0 10px"><code>.from('push_subscriptions')   // tabla de Web Push: endpoint, p256dh, auth
+.select('token')              // esta columna no existe en esa tabla
+...
+if (sub.token) sendToToken(sub.token, payload)   // y luego envía por FCM</code></pre>
+            <p>
+                Los tokens de FCM residen en <code>user_push_tokens</code>, no en
+                <code>push_subscriptions</code>. La consulta solicita una columna inexistente, el
+                resultado llega nulo, la guarda <code>if (!tokens?.length) return</code> corta la
+                ejecución y un <code>catch</code> vacío suprime cualquier rastro.
+            </p>
+            <p style="margin-bottom:0">
+                <strong>Consecuencia:</strong> el aviso de reasignación de conductor nunca se envía,
+                ni siquiera con Firebase correctamente configurado. Debe corregirse por separado.
+            </p>
+        </div>
+
+        <h3>A.4 — Estado de las claves de notificación web</h3>
+        <p>
+            El entorno contiene tres variables relacionadas con notificaciones que suelen
+            confundirse entre sí:
+        </p>
+        <div class="tbl-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th style="width:32%">Variable</th>
+                    <th style="width:30%">Función</th>
+                    <th>Estado</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>FIREBASE_SERVICE_ACCOUNT</code></td>
+                    <td>Credencial de servidor para FCM y Phone Auth</td>
+                    <td><span class="pill pill-red">Vacía</span> Bloqueador principal</td>
+                </tr>
+                <tr>
+                    <td><code>VAPID_PUBLIC_KEY</code><br><code>VAPID_PRIVATE_KEY</code></td>
+                    <td>Web Push nativo mediante la librería <code>web-push</code>. No es Firebase.</td>
+                    <td><span class="pill pill-amber">Sin uso real</span> La privada está vacía y, sobre todo, <code>sendPushToUser()</code> no es invocada desde ningún punto del código.</td>
+                </tr>
+                <tr>
+                    <td><code>VITE_FIREBASE_VAPID_KEY</code></td>
+                    <td>Clave que el frontend necesita para obtener tokens FCM en navegador. El backend solo la reporta en sus health checks.</td>
+                    <td><span class="pill pill-amber">Vacía</span> El valor recibido llegó incompleto (86 de 87 caracteres); debe recopiarse desde la consola.</td>
+                </tr>
+            </tbody>
+        </table>
+        </div>
+        <p>
+            Sobre el canal de Web Push: los endpoints <code>/api/push/subscribe</code> y
+            <code>/unsubscribe</code> funcionan y almacenan suscripciones, pero
+            <strong>ninguna parte del sistema les envía nada</strong>, porque
+            <code>sendPushToUser()</code> está exportada y no se importa en ningún archivo.
+            Completar ese par de claves no cambiaría nada mientras el canal siga desconectado.
+        </p>
+
+        <h3>A.5 — Reactivación</h3>
+        <ol>
+            <li>Firebase Console → Project Settings → Service Accounts → <em>Generate New Private Key</em>.</li>
+            <li>Volcar el JSON completo en <code>FIREBASE_SERVICE_ACCOUNT</code>, en una sola línea, y redeployar.</li>
+            <li>Verificar con <code>GET /api/health/firebase</code> que la inicialización acepta las credenciales.</li>
+            <li>Prueba real: enviar una notificación a un dispositivo con la aplicación cerrada.</li>
+        </ol>
+        <p>
+            El identificador de proyecto presente en la configuración del cliente
+            (<code>gen-lang-client-0511522171</code>) coincide con el que espera el diagnóstico
+            interno del servidor, de modo que el proyecto de Firebase es el correcto: solo falta la
+            credencial de servidor correspondiente.
+        </p>
+
+        <h3>A.6 — Alcance verificado</h3>
+        <p>
+            Firebase se utiliza exclusivamente en los dos archivos mencionados. No hay Firestore,
+            Firebase Storage ni Analytics en uso, ni existen <code>google-services.json</code> o
+            <code>GoogleService-Info.plist</code> en este repositorio; de existir, corresponden al
+            proyecto de las aplicaciones móviles.
+        </p>
+    </div>
+
+    <div class="footer">
+        <p><strong>Informe de notificaciones — URBONT API v1.2.2</strong></p>
+        <p>Septiembre 2026 · Documento interno</p>
+    </div>
+
+</div>
+</body>
+</html>
