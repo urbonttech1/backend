@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "URBONT — ciclo de vida de un viaje",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "ruta-principal", "label": "Ruta principal", "focus": ["searching", "confirmed", "arrived", "in_progress", "completed"], "note": "Las cinco fases que recorre un viaje que llega a término." },
+      { "id": "puerta-pin", "label": "La puerta del PIN", "focus": ["arrived", "pin", "in_progress"], "note": "El viaje no puede arrancar mientras el pasajero no confirme el PIN." },
+      { "id": "dinero", "label": "Dónde se mueve el dinero", "focus": ["completed", "capture"], "note": "El cobro se captura al completar, nunca antes." }
+    ]
+  },
+  "lanes": [
+    { "id": "main", "label": "Fases del viaje" },
+    { "id": "control", "label": "Control de inicio" },
+    { "id": "pagos", "label": "Cobro" },
+    { "id": "terminal", "label": "Salida terminal" }
+  ],
+  "states": [
+    { "id": "searching", "type": "start", "label": "Buscando conductor", "sublabel": "ride_status: searching", "lane": "main", "col": 0, "step": "01", "tag": "entrada" },
+    { "id": "confirmed", "type": "active", "label": "Confirmado", "sublabel": "un conductor acepta", "lane": "main", "col": 1, "step": "02", "tag": "accepted_at" },
+    { "id": "arrived", "type": "waiting", "label": "Conductor en el punto", "sublabel": "corre el tiempo de espera", "lane": "main", "col": 2, "step": "03", "tag": "wait_started_at" },
+    { "id": "in_progress", "type": "active", "label": "En curso", "sublabel": "viaje iniciado", "lane": "main", "col": 3, "step": "04", "tag": "started_at" },
+    { "id": "completed", "type": "success", "label": "Completado", "sublabel": "viaje terminado", "lane": "main", "col": 4, "step": "05", "tag": "completed_at" },
+
+    { "id": "pin", "type": "failure", "label": "PIN sin verificar", "sublabel": "409 PIN_REQUIRED", "lane": "control", "col": 0, "tag": "recuperable" },
+    { "id": "capture", "type": "external", "label": "Captura en Stripe", "sublabel": "cobro y reparto 90 / 10", "lane": "pagos", "col": 2 },
+    { "id": "cancelled", "type": "failure", "label": "Cancelado", "sublabel": "cancelled_at", "lane": "terminal", "col": 0, "tag": "terminal" }
+  ],
+  "transitions": [
+    { "id": "acepta", "from": "searching", "to": "confirmed", "label": "acepta", "variant": "emphasis" },
+    { "id": "llega", "from": "confirmed", "to": "arrived", "label": "llega al punto" },
+    { "id": "arranca", "from": "arrived", "to": "in_progress", "label": "PIN verificado", "variant": "emphasis" },
+    { "id": "termina", "from": "in_progress", "to": "completed", "label": "termina", "variant": "emphasis" },
+
+    { "id": "pin-falta", "from": "arrived", "to": "pin", "label": "intenta arrancar sin PIN", "variant": "security" },
+    { "id": "pin-reintento", "from": "pin", "to": "arrived", "label": "el pasajero lo confirma" },
+
+    { "id": "cobra", "from": "completed", "to": "capture", "label": "captura el PaymentIntent" },
+
+    { "id": "cancela-buscando", "from": "searching", "to": "cancelled", "label": "sin conductor", "variant": "security" },
+    { "id": "cancela-confirmado", "from": "confirmed", "to": "cancelled", "label": "cancelan", "variant": "security" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Ruta principal", "items": ["Cinco fases entre la solicitud y el viaje terminado", "Cada transición sella su propia marca de tiempo en la tabla rides"] },
+    { "dot": "violet", "title": "El PIN es una puerta real", "items": ["El PaymentIntent se crea al cotizar con captura manual", "El viaje no pasa a 'en curso' mientras pickup_pin siga presente: la API responde 409 PIN_REQUIRED", "Solo un admin puede saltarse ese control"] },
+    { "dot": "cyan", "title": "El dinero se mueve al final", "items": ["La captura ocurre únicamente al completar, así que un viaje cancelado no cobra nada", "Del importe capturado, el 90% se transfiere al conductor y el 10% queda como comisión de plataforma", "Ahí mismo se escriben payment_status, total_price y platform_fee_amount"] },
+    { "dot": "amber", "title": "Lo que dicen los datos", "items": ["De 66 viajes registrados, 56 terminaron cancelados y 10 completados", "La mediana entre pedir y cancelar es de 63 segundos: la mayoría se cae antes de que nadie se mueva", "El motivo dominante es wrong_pickup, 25 de 56"] },
+    { "dot": "slate", "title": "Un estado más, fuera del carril", "items": ["La tabla admite también 'scheduled', el estado previo de las reservas con fecha futura", "Precede a 'searching' y solo aplica cuando booking_type es una reserva programada"] }
+  ]
+}

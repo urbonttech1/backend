@@ -1,0 +1,352 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "URBONT API — arquitectura de runtime",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "camino-peticion",
+        "label": "Camino de una petición",
+        "focus": [
+          "movil",
+          "alb",
+          "api",
+          "rest"
+        ],
+        "note": "Del cliente al dato: ALB, contenedor Fargate y la API de datos de Supabase."
+      },
+      {
+        "id": "acceso-datos",
+        "label": "Los dos accesos a datos",
+        "focus": [
+          "api",
+          "rest",
+          "pg",
+          "storage"
+        ],
+        "note": "Supabase se usa por dos caminos distintos según lo que necesite cada consulta."
+      },
+      {
+        "id": "integraciones",
+        "label": "Integraciones externas",
+        "focus": [
+          "api",
+          "stripe",
+          "twilio",
+          "sendgrid",
+          "firebase",
+          "maps"
+        ],
+        "note": "Las cinco que el arranque verifica en integrationChecks.ts."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "movil",
+      "type": "external",
+      "label": "App móvil",
+      "sublabel": "pasajero y conductor",
+      "pos": [
+        40,
+        180
+      ],
+      "size": [
+        150,
+        66
+      ]
+    },
+    {
+      "id": "panel",
+      "type": "frontend",
+      "label": "Panel admin",
+      "sublabel": "AWS Amplify",
+      "pos": [
+        40,
+        430
+      ],
+      "size": [
+        150,
+        66
+      ]
+    },
+    {
+      "id": "alb",
+      "type": "cloud",
+      "label": "Load Balancer",
+      "sublabel": "HTTPS :443",
+      "pos": [
+        300,
+        300
+      ],
+      "size": [
+        170,
+        66
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "URBONT API",
+      "sublabel": "ECS Fargate ARM64 :8080",
+      "pos": [
+        570,
+        300
+      ],
+      "size": [
+        180,
+        72
+      ],
+      "tag": "0.5 vCPU · 1 GB"
+    },
+    {
+      "id": "storage",
+      "type": "cloud",
+      "label": "Supabase Storage",
+      "sublabel": "documentos y avatares",
+      "pos": [
+        372,
+        690
+      ],
+      "size": [
+        175,
+        66
+      ]
+    },
+    {
+      "id": "rest",
+      "type": "database",
+      "label": "Supabase PostgREST",
+      "sublabel": "API de datos",
+      "pos": [
+        572,
+        690
+      ],
+      "size": [
+        175,
+        66
+      ]
+    },
+    {
+      "id": "pg",
+      "type": "database",
+      "label": "Supabase Postgres",
+      "sublabel": "conexión directa",
+      "pos": [
+        772,
+        690
+      ],
+      "size": [
+        175,
+        66
+      ]
+    },
+    {
+      "id": "stripe",
+      "type": "external",
+      "label": "Stripe",
+      "sublabel": "cobros y payouts",
+      "pos": [
+        1020,
+        125
+      ],
+      "size": [
+        155,
+        62
+      ]
+    },
+    {
+      "id": "twilio",
+      "type": "external",
+      "label": "Twilio",
+      "sublabel": "SMS",
+      "pos": [
+        1020,
+        255
+      ],
+      "size": [
+        155,
+        62
+      ]
+    },
+    {
+      "id": "sendgrid",
+      "type": "external",
+      "label": "SendGrid",
+      "sublabel": "correo saliente",
+      "pos": [
+        1020,
+        385
+      ],
+      "size": [
+        155,
+        62
+      ]
+    },
+    {
+      "id": "firebase",
+      "type": "external",
+      "label": "Firebase",
+      "sublabel": "push FCM",
+      "pos": [
+        1020,
+        515
+      ],
+      "size": [
+        155,
+        62
+      ]
+    },
+    {
+      "id": "maps",
+      "type": "external",
+      "label": "Google Maps",
+      "sublabel": "geocoding y rutas",
+      "pos": [
+        1020,
+        645
+      ],
+      "size": [
+        155,
+        62
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "AWS us-east-1",
+      "wraps": [
+        "alb",
+        "api"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Supabase — proyecto gestionado",
+      "wraps": [
+        "storage",
+        "rest",
+        "pg"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "movil-alb",
+      "from": "movil",
+      "to": "alb",
+      "label": "HTTPS + WebSocket",
+      "variant": "emphasis"
+    },
+    {
+      "id": "panel-alb",
+      "from": "panel",
+      "to": "alb",
+      "label": "HTTPS"
+    },
+    {
+      "id": "alb-api",
+      "from": "alb",
+      "to": "api",
+      "label": "reenvía :8080",
+      "variant": "emphasis"
+    },
+    {
+      "id": "api-storage",
+      "from": "api",
+      "to": "storage",
+      "label": "archivos",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "api-rest",
+      "from": "api",
+      "to": "rest",
+      "label": "PostgREST",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 200
+    },
+    {
+      "id": "api-pg",
+      "from": "api",
+      "to": "pg",
+      "label": "SQL directo",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "api-stripe",
+      "from": "api",
+      "to": "stripe",
+      "label": "PaymentIntent",
+      "labelSegment": 2
+    },
+    {
+      "id": "api-twilio",
+      "from": "api",
+      "to": "twilio",
+      "label": "SMS",
+      "labelSegment": 2
+    },
+    {
+      "id": "api-sendgrid",
+      "from": "api",
+      "to": "sendgrid",
+      "label": "correo",
+      "labelSegment": 2
+    },
+    {
+      "id": "api-firebase",
+      "from": "api",
+      "to": "firebase",
+      "label": "push",
+      "labelSegment": 2
+    },
+    {
+      "id": "api-maps",
+      "from": "api",
+      "to": "maps",
+      "label": "rutas",
+      "labelSegment": 2
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Cómputo",
+      "items": [
+        "Una tarea ECS Fargate ARM64 tras el ALB",
+        "0.5 vCPU y 1 GB, contenedor en el puerto 8080",
+        "Imagen publicada en ECR, logs en CloudWatch"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Datos",
+      "items": [
+        "Supabase se usa por dos caminos: PostgREST para el grueso de las consultas y Postgres directo por el pooler para SQL agregado",
+        "Storage guarda documentos de conductor y avatares"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Integraciones",
+      "items": [
+        "Las cinco se verifican al arrancar en integrationChecks.ts",
+        "El resultado alimenta el panel de sistema del admin"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Límite actual",
+      "items": [
+        "REDIS_URL está vacío, así que Socket.IO usa el adaptador en memoria",
+        "Eso ata el servicio a una sola instancia: con dos réplicas los clientes dejarían de verse entre sí"
+      ]
+    }
+  ]
+}
