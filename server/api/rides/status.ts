@@ -23,6 +23,32 @@ import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN
 import { calculateRideMetrics } from "../../services/rideMetrics";
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 
+/**
+ * Bumps a profile's completed-ride counter. Used for both the passenger and the
+ * driver when a ride finishes.
+ *
+ * Prefers the `increment_total_rides` RPC because it is atomic; falls back to
+ * read-then-write when that function is not present in the database. The
+ * fallback can lose a concurrent increment, which is tolerable for a display
+ * counter but is why the RPC is tried first.
+ *
+ * Never throws: a failed counter must not affect a completed ride.
+ */
+async function incrementTotalRides(profileId: string): Promise<void> {
+  try {
+    const { error } = await supabaseAdmin.rpc('increment_total_rides', { user_id: profileId });
+    if (!error) return;
+
+    const { data } = await supabaseAdmin
+      .from('profiles').select('total_rides').eq('id', profileId).maybeSingle();
+    const current = parseInt(String((data as Record<string, unknown> | null)?.total_rides ?? '0'), 10);
+    await supabaseAdmin.from('profiles')
+      .update({ total_rides: current + 1 }).eq('id', profileId);
+  } catch {
+    // fire-and-forget
+  }
+}
+
 export function registerStatusRoutes(router: Router): void {
 router.get("/:id", requireSupabaseAuth, async (req: Request, res: Response) => {
   try {
@@ -264,6 +290,11 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
     if (finalStatus === 'completed') {
       updates.completed_at = now;
 
+      // Un viaje puede saltar de 'accepted' a 'completed' sin pasar por
+      // 'in_progress', y entonces `started_at` nunca se escribía: quedaba un
+      // viaje terminado que nunca empezó. Se sella aquí como respaldo.
+      if (!(r as Record<string, unknown>).started_at) updates.started_at = now;
+
       // Wait time fee: charge $0.50/min after 5 free minutes
       const rideData = r as Record<string, unknown>;
       if (rideData.wait_started_at) {
@@ -282,22 +313,15 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
         updateDriverStreak(uid, waitFeeAdded).catch(() => {});
       }
 
-      // Increment passenger total_rides (fire-and-forget)
-      const passengerIdForIncrement = String(r.passenger_id || '');
-      if (passengerIdForIncrement) {
-        void (async () => {
-          try {
-            const { error: rpcErr } = await supabaseAdmin.rpc('increment_total_rides', { user_id: passengerIdForIncrement });
-            if (rpcErr) {
-              // RPC might not exist yet — fall back to manual increment
-              const { data: pd } = await supabaseAdmin.from('profiles').select('total_rides').eq('id', passengerIdForIncrement).maybeSingle();
-              const current = parseInt(String((pd as Record<string, unknown> | null)?.total_rides ?? '0'), 10);
-              await supabaseAdmin.from('profiles').update({ total_rides: current + 1 }).eq('id', passengerIdForIncrement);
-            }
-          } catch {
-            // fire-and-forget: ignore errors
-          }
-        })();
+      // Increment total_rides for BOTH participants (fire-and-forget).
+      //
+      // The driver used to be left out, so their counter stayed at 0 forever.
+      // That is not just a wrong number on the admin panel: the rating average
+      // below divides by it, so `(rating * 0 + newRating) / 1` collapses to
+      // "the last rating received" and every previous score is discarded.
+      for (const participantId of [String(r.passenger_id || ''), String(r.driver_id || '')]) {
+        if (!participantId) continue;
+        void incrementTotalRides(participantId);
       }
     }
 
@@ -447,13 +471,25 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
               }
             }
 
-            // Always update ride record with financial breakdown and transfer ID
-            await supabaseAdmin.from('rides').update({
-              driver_earnings: driverPayoutUSD,
-              platform_fee: platformFeeUSD,
+            // Always update ride record with financial breakdown and transfer ID.
+            //
+            // `payment_status` used to be written only by the Stripe webhook, so a
+            // webhook that never arrived left a charged ride marked 'pending'
+            // forever. The capture already succeeded here, so record it now; the
+            // webhook writing 'paid' again later is harmless.
+            //
+            // `total_price` had no writer anywhere in the codebase — this is what
+            // was actually charged, tip and fees included.
+            const { error: finErr } = await supabaseAdmin.from('rides').update({
+              payment_status: 'paid',
+              total_price: Math.round(fareUSD * 100) / 100,
+              platform_fee_amount: platformFeeUSD,
               ...(driverTransferId ? { stripe_transfer_id: driverTransferId } : {}),
               updated_at: new Date().toISOString(),
             }).eq('id', req.params.id);
+            if (finErr) {
+              logger.error(`[RIDES] Could not persist payment outcome for ride ${req.params.id}: ${finErr.message}`);
+            }
 
             // Valet commission: if ride was referred/assisted by a valet and hasn't been paid yet
             const valetUserId = (r as Record<string, unknown>).valet_user_id as string | undefined;

@@ -6,6 +6,7 @@ import { pool as pgPool } from "../db/pool";
 import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
+import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
 // cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
@@ -155,34 +156,227 @@ adminRouter.get("/dashboard", async (_req: Request, res: Response) => {
 
 adminRouter.get("/drivers", async (_req: Request, res: Response) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('profiles')
-      .select('*')
-      .in('role', ['chauffeur', 'driver'])
-      .order('created_at', { ascending: false });
+    const [ridesRes, docsRes] = await Promise.all([
+      supabaseAdmin
+        .from('rides')
+        .select(`
+          id, driver_id, ride_status, fare, total_price, tip_amount,
+          created_at, completed_at, cancelled_at,
+          pickup, dropoff, pickup_address, dropoff_address,
+          distance_miles, duration_minutes, vehicle_type, payment_method,
+          payment_status, rating, cancel_reason,
+          passenger:profiles!rides_passenger_id_fkey(first_name, last_name, phone)
+        `)
+        .not('driver_id', 'is', null)
+        .order('created_at', { ascending: false }),
+      supabaseAdmin
+        .from('driver_documents')
+        .select('id, driver_id, doc_key, status, file_name, storage_url, created_at, updated_at'),
+    ]);
+
+    // El contador `total_rides` del perfil solo cuenta completados, pero la lista
+    // de viajes muestra todos los que tuvo asignados. Verlos juntos parecía un
+    // descuadre, así que aquí se cuenta contra la tabla real y se devuelven las
+    // tres cifras por separado, junto con lo facturado y el último viaje.
+    // La ficha del conductor tiene una pestaña de viajes que no tenía a qué
+    // llamar: no existía endpoint de viajes por conductor. Se arma aquí la lista
+    // ya lista para pintar, con los mismos nombres que usa /rides.
+    const nombrePasajero = (p: unknown) => {
+      const x = p as { first_name?: string; last_name?: string; phone?: string } | null;
+      if (!x) return null;
+      return `${x.first_name || ''} ${x.last_name || ''}`.trim() || x.phone || null;
+    };
+    const direccionViaje = (json: unknown, texto: unknown) => {
+      const j = json as { address?: string } | string | null;
+      if (typeof j === 'string' && j) return j;
+      if (j && typeof j === 'object' && j.address) return j.address;
+      return (texto as string) || null;
+    };
+
+    type Conteo = {
+      completados: number; cancelados: number; total: number;
+      facturado: number; ultimo: string | null;
+      viajes: Record<string, unknown>[];
+    };
+    const conteo = new Map<string, Conteo>();
+    for (const v of (ridesRes.data ?? []) as Record<string, unknown>[]) {
+      const id = String(v.driver_id);
+      const c = conteo.get(id) ?? { completados: 0, cancelados: 0, total: 0, facturado: 0, ultimo: null, viajes: [] };
+      c.total += 1;
+      if (v.ride_status === 'completed') {
+        c.completados += 1;
+        c.facturado += Number(v.fare) || 0;
+        const fin = v.completed_at as string | null;
+        if (fin && (!c.ultimo || fin > c.ultimo)) c.ultimo = fin;
+      } else if (v.ride_status === 'cancelled') c.cancelados += 1;
+
+      const millas = v.distance_miles as number | null;
+      c.viajes.push({
+        id: v.id,
+        date: v.created_at,
+        createdAt: v.created_at,
+        completedAt: v.completed_at,
+        cancelledAt: v.cancelled_at,
+        status: v.ride_status,
+        passenger: nombrePasajero(v.passenger),
+        origin: direccionViaje(v.pickup, v.pickup_address),
+        destination: direccionViaje(v.dropoff, v.dropoff_address),
+        fare: v.fare,
+        totalPrice: v.total_price,
+        tipAmount: v.tip_amount,
+        distanceMiles: millas,
+        durationMinutes: v.duration_minutes,
+        vehicleType: v.vehicle_type,
+        paymentMethod: v.payment_method,
+        paymentStatus: v.payment_status,
+        rating: v.rating,
+        cancelReason: v.cancel_reason,
+      });
+      conteo.set(id, c);
+    }
+
+    // `driver_documents` usa dos palabras para lo mismo — 'valid' y 'approved' —
+    // así que se normalizan antes de contar. El estado global es el peor de los
+    // individuales: un solo rechazado deja al conductor en 'rejected'.
+    interface DocumentoPanel {
+      id: unknown;
+      docKey: string;
+      /** Estado normalizado, el mismo vocabulario que `documentsState`. */
+      state: 'aprobado' | 'rechazado' | 'pendiente';
+      /** Valor crudo de la columna, por si hace falta auditarlo. */
+      rawStatus: string;
+      fileName: string | null;
+      url: string | null;
+      uploadedAt: unknown;
+      updatedAt: unknown;
+      /** false = subido pero fuera del esquema que se le exige. */
+      required: boolean;
+    }
+    type Docs = { aprobados: number; pendientes: number; rechazados: number; total: number; lista: DocumentoPanel[] };
+    const documentos = new Map<string, Docs>();
+    for (const x of (docsRes.data ?? []) as Record<string, unknown>[]) {
+      const id = String(x.driver_id);
+      const d = documentos.get(id) ?? { aprobados: 0, pendientes: 0, rechazados: 0, total: 0, lista: [] };
+      d.total += 1;
+      const estado = normalizarEstadoDoc(x.status);
+      if (estado === 'aprobado') d.aprobados += 1;
+      else if (estado === 'rechazado') d.rechazados += 1;
+      else d.pendientes += 1;
+      d.lista.push({
+        id: x.id,
+        docKey: String(x.doc_key),
+        state: estado,
+        rawStatus: String(x.status),
+        fileName: (x.file_name as string) || null,
+        url: (x.storage_url as string) || null,
+        uploadedAt: x.created_at,
+        updatedAt: x.updated_at,
+        required: ACCEPTED_DOC_KEYS.includes(String(x.doc_key)),
+      });
+      documentos.set(id, d);
+    }
+    for (const d of documentos.values()) d.lista.sort((a, b) => a.docKey.localeCompare(b.docKey));
+    const estadoDocumentos = (d: Docs | undefined): 'sin_documentos' | 'rechazado' | 'pendiente' | 'aprobado' => {
+      if (!d || d.total === 0) return 'sin_documentos';
+      if (d.rechazados > 0) return 'rechazado';
+      if (d.pendientes > 0) return 'pendiente';
+      return 'aprobado';
+    };
+
+    // Filtrar solo por rol escondía a quien maneja con el rol equivocado: un
+    // perfil marcado `passenger` acumulaba 12 viajes como conductor y no salía
+    // en la lista, de modo que las sumas nunca cuadraban contra /rides. Se
+    // incluye además a todo el que aparezca como `driver_id` en algún viaje.
+    const idsQueManejaron = [...conteo.keys()];
+    let consulta = supabaseAdmin.from('profiles').select('*');
+    consulta = idsQueManejaron.length
+      ? consulta.or(`role.in.(chauffeur,driver),id.in.(${idsQueManejaron.join(',')})`)
+      : consulta.in('role', ['chauffeur', 'driver']);
+    const { data, error } = await consulta.order('created_at', { ascending: false });
     if (error) throw error;
-    const drivers = (data ?? []).map((d: Record<string, unknown>) => ({
+
+    const rolesDeConductor = new Set(['chauffeur', 'driver']);
+
+    const drivers = (data ?? []).map((d: Record<string, unknown>) => {
+    const veh = (d.vehicle ?? {}) as Record<string, unknown>;
+    const via = conteo.get(String(d.id));
+    const doc = documentos.get(String(d.id));
+    const estadoDocs = estadoDocumentos(doc);
+    const bgStatus = (d.background_check as Record<string, unknown> | undefined)?.status as string | undefined;
+    const comision = Number(d.commission_rate ?? 10);
+    const facturado = Math.round((via?.facturado ?? 0) * 100) / 100;
+    return {
       id: d.id,
       name: [d.first_name, d.last_name].filter(Boolean).join(' ') || 'Unnamed Driver',
       phone: d.phone || '',
       email: d.email || '',
       status: d.status_val || 'offline',
       rating: d.rating || 5.0,
-      ridesCompleted: d.total_rides || 0,
-      vehicle: d.vehicle ? (() => { const v = d.vehicle as Record<string, unknown>; return `${v.make || ''} ${v.model || ''} ${v.year || ''}`.trim(); })() : '',
-      plate: (d.vehicle as Record<string, unknown> | undefined)?.plate as string || '',
-      vehicleColor: (d.vehicle as Record<string, unknown> | undefined)?.color as string || '',
-      verified: (d.background_check as Record<string, unknown> | undefined)?.status === 'approved',
-      joinedDate: (d.created_at as string | undefined)?.split('T')[0] || '',
-      docsStatus: (d.background_check as Record<string, unknown> | undefined)?.status as string || 'not_submitted',
+      ridesCompleted: via?.completados ?? 0,
+      ridesCancelled: via?.cancelados ?? 0,
+      ridesAssigned:  via?.total ?? 0,
+      lastRideAt: via?.ultimo ?? null,
+      lastRide:   via?.ultimo ?? null,   // alias: el panel lee este nombre
+      // Tarifas de sus viajes completados y lo que le queda tras la comisión.
+      // Es un cálculo, no un pago confirmado: los pagos reales viven en Stripe.
+      earningsGross: facturado,
+      earningsNet: Math.round(facturado * (1 - comision / 100) * 100) / 100,
+      // `earnings` es lo que gana el conductor, o sea el neto: es lo que la
+      // ficha rotula como "Ganancias".
+      earnings: Math.round(facturado * (1 - comision / 100) * 100) / 100,
+      // Sus viajes, ya ordenados del más reciente al más antiguo.
+      rides: via?.viajes ?? [],
+      // Contador guardado en el perfil, para poder detectar si se desincroniza.
+      totalRidesCounter: d.total_rides || 0,
+      // true = maneja viajes pero su perfil no tiene rol de conductor.
+      roleMismatch: !rolesDeConductor.has(String(d.role)) && (via?.total ?? 0) > 0,
+      role: d.role,
+
+      vehicle: `${veh.make || ''} ${veh.model || ''} ${veh.year || ''}`.trim(),
+      vehicleMake:  (veh.make  as string) || null,
+      vehicleModel: (veh.model as string) || null,
+      vehicleYear:  veh.year != null && veh.year !== '' ? String(veh.year) : null,
+      plate:        (veh.plate as string) || '',
+      vehicleColor: (veh.color as string) || '',
+      vehiclePhotoUrl: (veh.vehicle_photo_url as string) || null,
+      // El registro de conductor no pide vehículo: se carga después, en un paso
+      // aparte que muchos nunca completan. Estos dos campos separan "no lo cargó
+      // todavía" de "quedó aprobado sin vehículo", que no debería poder pasar.
+      hasVehicle: Object.keys(veh).length > 0,
+      approvedWithoutVehicle: d.verification_status === 'approved' && Object.keys(veh).length === 0,
+
+      // ── Verificación ────────────────────────────────────────────────────────
+      // Tres fuentes describían esto y se contradecían entre sí. `documentsState`
+      // es la única derivada de los documentos reales y es la que debe mandar en
+      // el panel; las otras dos se exponen tal cual para poder auditarlas.
+      documentsState: estadoDocs,
+      documentsApproved: doc?.aprobados ?? 0,
+      documentsPending:  doc?.pendientes ?? 0,
+      documentsRejected: doc?.rechazados ?? 0,
+      documentsTotal:    doc?.total ?? 0,
+      // Cada documento con su archivo, para que el detalle del conductor no
+      // tenga que pedir /documents aparte y filtrar por conductor.
+      documents: doc?.lista ?? [],
       verificationStatus: d.verification_status || 'pending_documents',
+      backgroundCheckStatus: bgStatus || 'not_submitted',
+      rejectionReason: d.rejection_reason || null,
+      // true = el perfil dice una cosa y sus documentos dicen otra.
+      verificationMismatch:
+        (d.verification_status === 'approved') !== (estadoDocs === 'aprobado'),
+      // Se conservan los nombres viejos para no romper el panel actual.
+      verified: bgStatus === 'approved',
+      docsStatus: bgStatus || 'not_submitted',
+
+      joinedDate: (d.created_at as string | undefined)?.split('T')[0] || '',
+      createdAt: d.created_at ?? null,
       membership: d.membership || 'free',
       operatingCity: d.operating_city || '',
-      commissionRate: d.commission_rate || 10,
+      commissionRate: comision,
       stripeConnectStatus: d.stripe_connect_status || 'not_connected',
       priorityScore: d.priority_score || 1.0,
       accountStatus: d.account_status || 'active',
-    }));
+    };
+    });
     res.json({ drivers });
   } catch (err: any) {
     logger.error(`[admin/drivers] ${errMsg(err)}`);
@@ -336,17 +530,17 @@ adminRouter.post("/documents/:id/approve", async (req: Request, res: Response) =
   const { id } = req.params;
   const { notes } = req.body as { notes?: string };
   try {
+    // Se escribía 'valid' aquí pero había documentos guardados como 'approved',
+    // y el conteo de abajo solo miraba 'valid': un conductor con los once
+    // revisados podía no aprobarse nunca. Ahora se escribe una sola palabra y
+    // el estado del conductor lo decide `recalcularVerificacion`, que compara
+    // contra los tipos requeridos y exige vehículo.
     const { data: doc, error: docError } = await supabaseAdmin
-      .from('driver_documents').update({ status: 'valid', updated_at: new Date().toISOString() })
+      .from('driver_documents').update({ status: 'approved', updated_at: new Date().toISOString() })
       .eq('id', id).select().single();
     if (docError || !doc) return res.status(404).json({ error: 'Document not found.' });
-    const driverId = (doc as Record<string, unknown>).driver_id;
-    const { data: allDocs } = await supabaseAdmin.from('driver_documents').select('status, doc_key').eq('driver_id', driverId);
-    const REQUIRED_COUNT = 11;
-    const approvedCount = (allDocs || []).filter((d: Record<string, unknown>) => d.status === 'valid').length;
-    if (approvedCount >= REQUIRED_COUNT) {
-      await supabaseAdmin.from('profiles').update({ verification_status: 'approved', updated_at: new Date().toISOString() }).eq('id', driverId);
-    }
+    const driverId = String((doc as Record<string, unknown>).driver_id);
+    await recalcularVerificacion(driverId);
     void notes;
     return res.json({ success: true, document: { id, status: 'approved', driverName: (doc as Record<string, unknown>).driver_name || 'Driver', type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
   } catch {
@@ -362,8 +556,11 @@ adminRouter.post("/documents/:id/reject", async (req: Request, res: Response) =>
       .from('driver_documents').update({ status: 'rejected', updated_at: new Date().toISOString() })
       .eq('id', id).select().single();
     if (docError || !doc) return res.status(404).json({ error: 'Document not found.' });
-    const driverId = (doc as Record<string, unknown>).driver_id;
-    await supabaseAdmin.from('profiles').update({ verification_status: 'rejected', rejection_reason: notes || 'Document was rejected. Please re-upload a clear, valid copy.', updated_at: new Date().toISOString() }).eq('id', driverId);
+    const driverId = String((doc as Record<string, unknown>).driver_id);
+    await recalcularVerificacion(driverId);
+    if (notes) {
+      await supabaseAdmin.from('profiles').update({ rejection_reason: notes, updated_at: new Date().toISOString() }).eq('id', driverId);
+    }
     return res.json({ success: true, document: { id, status: 'rejected', driverName: (doc as Record<string, unknown>).driver_name || 'Driver', type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
   } catch {
     return res.status(500).json({ error: 'Failed to reject document.' });
@@ -376,8 +573,11 @@ adminRouter.post("/documents/:id/request-reupload", async (req: Request, res: Re
   try {
     const { data: doc } = await supabaseAdmin.from('driver_documents').update({ status: 'pending', updated_at: new Date().toISOString() }).eq('id', id).select().single();
     if (doc) {
-      const driverId = (doc as Record<string, unknown>).driver_id;
-      await supabaseAdmin.from('profiles').update({ verification_status: 'pending_documents', rejection_reason: reason || 'Please re-upload the requested document.', updated_at: new Date().toISOString() }).eq('id', driverId);
+      const driverId = String((doc as Record<string, unknown>).driver_id);
+      await recalcularVerificacion(driverId);
+      if (reason) {
+        await supabaseAdmin.from('profiles').update({ rejection_reason: reason, updated_at: new Date().toISOString() }).eq('id', driverId);
+      }
     }
     return res.json({ success: true, document: { id, status: 'pending' } });
   } catch {
@@ -419,11 +619,94 @@ adminRouter.get("/rides", async (req: Request, res: Response) => {
   try {
     const limit = parseInt((req.query.limit as string) || '200');
     const status = req.query.status as string | undefined;
-    let query = supabaseAdmin.from('rides').select('*').order('created_at', { ascending: false }).limit(limit);
+
+    // Explicit column list rather than `*`, for two reasons:
+    //
+    // 1. The table still carries a legacy `status` column that nothing writes
+    //    any more — every row reads "completed" while `ride_status` holds the
+    //    real value. Selecting `*` handed both to the panel, which picked the
+    //    stale one and reported 66 completed rides when 56 were cancelled.
+    //    Leaving it out makes the wrong field unreachable.
+    //
+    // 2. `passenger_name` / `driver_name` exist but were never populated
+    //    (0 of 66 rows), so the names have to come from a join.
+    let query = supabaseAdmin
+      .from('rides')
+      .select(`
+        id, created_at, ride_status, booking_type, scheduled_at,
+        started_at, completed_at, cancelled_at, cancel_reason,
+        pickup, dropoff, pickup_address, dropoff_address,
+        stops, distance_miles, duration_minutes,
+        fare, tip_amount, promo_discount, total_price, cancellation_fee,
+        payment_status, payment_method, payment_intent_id,
+        vehicle_type, surge_multiplier, rating, passenger_rating,
+        passenger_id, driver_id,
+        passenger:profiles!rides_passenger_id_fkey(id, first_name, last_name, email, phone),
+        driver:profiles!rides_driver_id_fkey(id, first_name, last_name, email, phone)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
     if (status && status !== 'all') query = query.eq('ride_status', status);
     const { data, error } = await query;
     if (error) throw error;
-    res.json({ rides: data ?? [] });
+
+    // El nombre es solo el nombre. La mayoría de pasajeros entra por login
+    // telefónico y nunca completa el perfil (58 de 66 viajes), así que aquí sale
+    // null y el teléfono viaja en su propio campo: mezclarlos hacía que el panel
+    // pintara un número donde dice "nombre".
+    const nombre = (p: unknown) => {
+      const x = p as { first_name?: string; last_name?: string } | null;
+      if (!x) return null;
+      return `${x.first_name || ''} ${x.last_name || ''}`.trim() || null;
+    };
+    const telefono = (p: unknown) => (p as { phone?: string } | null)?.phone || null;
+    const correo   = (p: unknown) => (p as { email?: string } | null)?.email || null;
+
+    // La dirección viaja en la columna JSONB, con el TEXT como respaldo: hay
+    // filas donde una de las dos está vacía.
+    const direccion = (json: unknown, texto: unknown) => {
+      const j = json as { address?: string } | string | null;
+      if (typeof j === 'string' && j) return j;
+      if (j && typeof j === 'object' && j.address) return j.address;
+      return (texto as string) || null;
+    };
+
+    // El panel lee `status`, `origin`, `destination`, `distance` y `duration`,
+    // pero esas cinco columnas están muertas (0 de 66 filas con dato, igual que
+    // `status`). Se derivan aquí de las columnas que sí se escriben para que la
+    // vista quede completa sin tocar el frontend.
+    const rides = (data ?? []).map((row: Record<string, unknown>) => {
+      const millas = row.distance_miles as number | null;
+      const minutos = row.duration_minutes as number | null;
+      return {
+        ...row,
+        status:        row.ride_status,
+        origin:         direccion(row.pickup, row.pickup_address),
+        destination:    direccion(row.dropoff, row.dropoff_address),
+        pickupAddress:  direccion(row.pickup, row.pickup_address),
+        dropoffAddress: direccion(row.dropoff, row.dropoff_address),
+        distance:      millas  != null ? `${Number(millas).toFixed(1)} mi` : null,
+        duration:      minutos != null ? `${minutos} min` : null,
+        vehicleClass:  row.vehicle_type,
+        paymentMethod: row.payment_method,
+        cancelReason:  row.cancel_reason,
+        date:          row.created_at,
+        // null = el perfil no tiene nombre; el panel decide si cae al teléfono.
+        passenger:      nombre(row.passenger),
+        passengerName:  nombre(row.passenger),
+        passengerPhone: telefono(row.passenger),
+        passengerEmail: correo(row.passenger),
+        // driverName null = viaje aún sin conductor asignado.
+        driver:      nombre(row.driver),
+        driverName:  nombre(row.driver),
+        driverPhone: telefono(row.driver),
+        driverEmail: correo(row.driver),
+        hasDriver:   row.driver_id != null,
+      };
+    });
+
+    res.json({ rides });
   } catch (err: any) {
     logger.error(`[admin/rides] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to load rides' });
@@ -479,7 +762,7 @@ adminRouter.patch("/rides/:id/status", async (req: Request, res: Response) => {
 adminRouter.get("/revenue", async (_req: Request, res: Response) => {
   try {
     const [allRidesRes, dailyRes, byClassRes, recentTxRes, hourlyRes, prevWeekRes] = await Promise.all([
-      supabaseAdmin.from('rides').select('fare, created_at, vehicle_type, ride_status'),
+      supabaseAdmin.from('rides').select('fare, created_at, vehicle_type, ride_status, payment_status'),
       pgPool.query(`
         SELECT DATE(created_at) AS day,
           COALESCE(SUM(fare), 0)::float AS total,
@@ -525,6 +808,12 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
     const all = (allRidesRes.data ?? []) as Record<string, unknown>[];
     const completed = all.filter(r => r.ride_status === 'completed');
     const sum = (arr: Record<string, unknown>[]) => arr.reduce((s: number, r: Record<string, unknown>) => s + (parseFloat(String(r.fare)) || 0), 0);
+
+    // Un viaje completado no es un viaje cobrado: solo cuenta como cobrado si
+    // `payment_status` llegó a 'paid'. Antes todo lo completado se reportaba como
+    // ingreso, de modo que un cobro no confirmado inflaba las cifras del panel.
+    const collected = completed.filter(r => r.payment_status === 'paid');
+    const uncollected = completed.filter(r => r.payment_status !== 'paid');
 
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
     const yesterdayStart = new Date(todayStart.getTime() - 86400000);
@@ -592,6 +881,12 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
       totalAllTime: Math.round(totalAllTime * 100) / 100,
       avgFare: completed.length > 0 ? Math.round(sum(completed) / completed.length * 100) / 100 : 0,
       totalCompletedRides: completed.length,
+      // Facturado vs cobrado. `totalAllTime` sigue siendo lo facturado para no
+      // romper el panel; estos campos dicen cuánto de eso entró de verdad.
+      billedAllTime: Math.round(totalAllTime * 100) / 100,
+      collectedAllTime: Math.round(sum(collected) * 100) / 100,
+      uncollectedAllTime: Math.round(sum(uncollected) * 100) / 100,
+      uncollectedRides: uncollected.length,
       byVehicleClass,
       dailyRevenue,
       hourlyRevenue,

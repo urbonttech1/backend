@@ -10,6 +10,7 @@ import {
   applyCompletionBonus,
 } from "../services/driverScore";
 import { notifyUser } from "../services/fcm";
+import { puedeOperar } from "../services/driverVerification";
 import { driverNotif } from "../services/notificationTemplates";
 
 // Streak milestones that deserve a push notification
@@ -129,6 +130,16 @@ driverRouter.patch(
     const { is_online } = req.body;
 
     try {
+      // El registro no exige vehículo ni documentos, así que el control está
+      // aquí: un conductor sin aprobar o sin vehículo no puede conectarse.
+      // Desconectarse siempre se permite.
+      if (is_online) {
+        const permiso = await puedeOperar(String(driver_id));
+        if (!permiso.ok) {
+          return res.status(403).json({ error: permiso.reason, errorCode: permiso.code });
+        }
+      }
+
       // FIX: previously `is_online` was only written to driver_locations when
       // going OFFLINE; going online only touched profiles.status_val, leaving a
       // window where profiles said "online" but driver_locations.is_online was

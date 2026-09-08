@@ -3,18 +3,15 @@ import { supabaseAdmin } from '../db/client';
 import { pool } from '../db/pool';
 import { requireSupabaseAuth } from '../middleware';
 import { logger } from '../lib/logger';
+import { recalcularVerificacion, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
 export const chauffeurDocsRouter = Router();
 
-const REQUIRED_DOC_KEYS = [
-  'limoPermit', 'airportPermit', 'inspection', 'portPermit',
-  'insurance', 'registration', 'corpFiles', 'w9', 'taxId',
-  'license', 'photo',
-] as const;
-
-type DocKey = typeof REQUIRED_DOC_KEYS[number];
+// REQUIRED_DOC_KEYS y DocKey viven en services/driverVerification para que la
+// lista de documentos exigidos sea una sola en todo el backend: el panel de
+// admin comparaba contra un total de 11 filas en vez de contra estos tipos.
 
 const ALLOWED_MIME_TYPES = [
   'application/pdf',
@@ -179,7 +176,7 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
   if (!docKey || !fileName || !mimeType || !base64)
     return res.status(400).json({ error: 'Missing required fields.', errorCode: 'MISSING_FIELDS' });
 
-  if (!REQUIRED_DOC_KEYS.includes(docKey as DocKey))
+  if (!ACCEPTED_DOC_KEYS.includes(docKey))
     return res.status(400).json({ error: 'Invalid document type.', errorCode: 'INVALID_DOC_KEY' });
 
   if (!ALLOWED_MIME_TYPES.includes(mimeType.toLowerCase()))
@@ -241,43 +238,18 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
 
     logger.info(`[DocUpload] ${docKey} saved for driver ${uid}`);
 
-    // Auto-advance to pending_review if ALL required docs are now present.
-    // This way drivers don't need to manually call /submit-documents — the
-    // dashboard updates automatically after the last document is uploaded.
-    try {
-      const { data: existingDocs } = await supabaseAdmin
-        .from('driver_documents')
-        .select('doc_key')
-        .eq('driver_id', uid);
-      const uploadedKeys = (existingDocs || []).map((d: { doc_key: string }) => d.doc_key);
-      const allUploaded = REQUIRED_DOC_KEYS.every(k => uploadedKeys.includes(k));
-      if (allUploaded) {
-        const { error: advanceErr } = await supabaseAdmin
-          .from('profiles')
-          .update({ verification_status: 'pending_review', updated_at: new Date().toISOString() })
-          .eq('id', uid);
-        if (!advanceErr) {
-          logger.info(`[DocUpload] All ${REQUIRED_DOC_KEYS.length} docs present — auto-advanced to pending_review for ${uid}`);
-          return res.json({ success: true, storageUrl, docKey, verificationStatus: 'pending_review' });
-        }
-        // supabaseAdmin failed (PostgREST schema cache issue or RLS) — retry via direct SQL
-        logger.warn(`[DocUpload] supabaseAdmin profile update failed (${advanceErr.message}) — retrying via pool`);
-        try {
-          await pool.query(
-            `UPDATE profiles SET verification_status = 'pending_review', updated_at = NOW() WHERE id = $1`,
-            [uid],
-          );
-          logger.info(`[DocUpload] All ${REQUIRED_DOC_KEYS.length} docs present — auto-advanced via pool to pending_review for ${uid}`);
-          return res.json({ success: true, storageUrl, docKey, verificationStatus: 'pending_review' });
-        } catch (poolAdvErr) {
-          logger.warn(`[DocUpload] Pool profile update also failed: ${errMsg(poolAdvErr)}`);
-        }
-      }
-    } catch (statusErr) {
-      logger.warn(`[DocUpload] Could not auto-update verification_status: ${errMsg(statusErr)}`);
-    }
+    // El estado del conductor lo decide `recalcularVerificacion`: antes se
+    // marcaba `pending_review` en cuanto estaban los once archivos, sin mirar si
+    // alguno venía rechazado ni si había vehículo.
+    const verificacion = await recalcularVerificacion(uid);
 
-    return res.json({ success: true, storageUrl, docKey });
+    return res.json({
+      success: true,
+      storageUrl,
+      docKey,
+      verificationStatus: verificacion.status,
+      missingDocs: verificacion.missingDocs,
+    });
   } catch (err) {
     logger.error(`[DocUpload] Unexpected error: ${errMsg(err)}`);
     return res.status(500).json({ error: 'Upload failed. Please try again.', errorCode: 'SERVER_ERROR' });
@@ -296,46 +268,24 @@ chauffeurDocsRouter.post('/submit-documents', requireSupabaseAuth, async (req: R
   if (role !== 'chauffeur' && role !== 'driver') return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
 
   try {
-    const { data: docs, error: docsErr } = await supabaseAdmin
-      .from('driver_documents')
-      .select('doc_key')
-      .eq('driver_id', uid);
+    const verificacion = await recalcularVerificacion(uid);
 
-    if (docsErr) {
-      logger.error(`[DocSubmit] Could not fetch docs: ${docsErr.message}`);
-      return res.status(500).json({ error: 'Could not verify documents. Please try again.', errorCode: 'SERVER_ERROR' });
-    }
-
-    const uploadedKeys = (docs || []).map((d: { doc_key: string }) => d.doc_key);
-    const missingDocs  = REQUIRED_DOC_KEYS.filter(k => !uploadedKeys.includes(k));
-
-    if (missingDocs.length > 0) {
+    if (verificacion.missingDocs.length > 0) {
       return res.status(400).json({
-        error: `Missing documents: ${missingDocs.join(', ')}`,
+        error: `Missing documents: ${verificacion.missingDocs.join(', ')}`,
         errorCode: 'INCOMPLETE_DOCUMENTS',
-        missingDocs,
+        missingDocs: verificacion.missingDocs,
       });
     }
 
-    const { error: updateErr } = await supabaseAdmin
-      .from('profiles')
-      .update({ verification_status: 'pending_review', updated_at: new Date().toISOString() })
-      .eq('id', uid);
-
-    if (updateErr) {
-      logger.warn(`[DocSubmit] supabaseAdmin profile update failed (${updateErr.message}) — retrying via pool`);
-      try {
-        await pool.query(
-          `UPDATE profiles SET verification_status = 'pending_review', updated_at = NOW() WHERE id = $1`,
-          [uid],
-        );
-      } catch (poolSubmitErr) {
-        logger.error(`[DocSubmit] pool profile update also failed: ${errMsg(poolSubmitErr)}`);
-        return res.status(500).json({ error: 'Failed to submit documents.', errorCode: 'SERVER_ERROR' });
-      }
-    }
-
-    return res.json({ success: true, status: 'pending_review', verificationStatus: 'pending_review' });
+    return res.json({
+      success: true,
+      status: verificacion.status,
+      verificationStatus: verificacion.status,
+      rejectedDocs: verificacion.rejectedDocs,
+      hasVehicle: verificacion.hasVehicle,
+      reason: verificacion.reason,
+    });
   } catch (err) {
     logger.error(`[DocSubmit] Error: ${errMsg(err)}`);
     return res.status(500).json({ error: 'Submission failed.', errorCode: 'SERVER_ERROR' });
@@ -446,7 +396,11 @@ chauffeurDocsRouter.post('/set-vehicle', requireSupabaseAuth, async (req: Reques
       return res.status(500).json({ error: 'Failed to save vehicle info.', errorCode: 'SERVER_ERROR' });
     }
 
-    return res.json({ success: true, vehicle });
+    // El vehículo es condición de aprobación, así que registrarlo puede ser lo
+    // último que le faltaba al conductor para quedar aprobado.
+    const verificacion = await recalcularVerificacion(uid);
+
+    return res.json({ success: true, vehicle, verificationStatus: verificacion.status });
   } catch (err) {
     logger.error(`[SetVehicle] Error: ${errMsg(err)}`);
     return res.status(500).json({ error: 'Failed to save vehicle info.', errorCode: 'SERVER_ERROR' });
@@ -514,6 +468,15 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
   // Run all uploads in parallel — Uber-style fast batch
   await Promise.all(
     Object.entries(documents).map(async ([docKey, dataUrl]) => {
+      // Esta ruta no comprobaba el tipo de documento, a diferencia de
+      // /upload-doc. Por aquí entró un juego de once documentos con nombres que
+      // no existen en la lista requerida, y ese conductor quedó imposible de
+      // evaluar: tenía todo cargado y aun así le faltaba todo.
+      if (!ACCEPTED_DOC_KEYS.includes(docKey)) {
+        results[docKey] = { success: false, error: 'Unknown document type' };
+        return;
+      }
+
       if (!dataUrl || typeof dataUrl !== 'string') {
         results[docKey] = { success: false, error: 'No data provided' };
         return;
@@ -585,29 +548,10 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
   const successCount = Object.values(results).filter(r => r.success).length;
   const failedDocs   = Object.entries(results).filter(([, r]) => !r.success).map(([k]) => k);
 
-  // Only mark pending_review when at least some docs were saved
-  let batchProfileUpdated = false;
-  if (successCount > 0) {
-    const { error: batchUpdateErr } = await supabaseAdmin
-      .from('profiles')
-      .update({ verification_status: 'pending_review', updated_at: new Date().toISOString() })
-      .eq('id', uid);
-    if (batchUpdateErr) {
-      // supabaseAdmin failed — retry via direct SQL (bypasses PostgREST schema cache)
-      logger.warn(`[BatchUpload] supabaseAdmin profile update failed (${batchUpdateErr.message}) — retrying via pool`);
-      try {
-        await pool.query(
-          `UPDATE profiles SET verification_status = 'pending_review', updated_at = NOW() WHERE id = $1`,
-          [uid],
-        );
-        batchProfileUpdated = true;
-      } catch (poolBatchErr) {
-        logger.error(`[BatchUpload] pool profile update also failed: ${errMsg(poolBatchErr)}`);
-      }
-    } else {
-      batchProfileUpdated = true;
-    }
-  }
+  // Esta ruta marcaba `pending_review` con que se hubiera guardado UN solo
+  // documento, así que un conductor a medio cargar aparecía como listo para
+  // revisión. Ahora el estado sale del recálculo, igual que en el resto.
+  const verificacion = successCount > 0 ? await recalcularVerificacion(uid) : null;
 
   logger.info(`[BatchUpload] driver=${uid} uploaded=${successCount}/${Object.keys(documents).length}${failedDocs.length ? ` failed=${failedDocs.join(',')}` : ''}`);
 
@@ -616,8 +560,7 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
     uploaded: successCount,
     total:    Object.keys(documents).length,
     results,
-    // Let the client know it can advance the UI to pending_review state
-    ...(batchProfileUpdated ? { verificationStatus: 'pending_review' } : {}),
+    ...(verificacion ? { verificationStatus: verificacion.status, missingDocs: verificacion.missingDocs } : {}),
     ...(failedDocs.length > 0 ? { failedDocs } : {}),
   });
 });
@@ -631,17 +574,18 @@ chauffeurDocsRouter.post('/submit', requireSupabaseAuth, async (req: Request, re
   if (!uid) return res.status(401).json({ error: 'Unauthorized.', errorCode: 'UNAUTHORIZED' });
 
   try {
-    const { error } = await supabaseAdmin
-      .from('profiles')
-      .update({ verification_status: 'pending_review', updated_at: new Date().toISOString() })
-      .eq('id', uid);
+    // Esta ruta ponía `pending_review` sin comprobar absolutamente nada: bastaba
+    // llamarla. Ahora el estado lo decide el recálculo sobre los documentos.
+    const verificacion = await recalcularVerificacion(uid);
 
-    if (error) {
-      logger.error(`[Submit] DB error: ${error.message}`);
-      return res.status(500).json({ error: 'Failed to submit application.', errorCode: 'SERVER_ERROR' });
-    }
-
-    return res.json({ success: true, verificationStatus: 'pending_review' });
+    return res.json({
+      success: true,
+      verificationStatus: verificacion.status,
+      missingDocs: verificacion.missingDocs,
+      rejectedDocs: verificacion.rejectedDocs,
+      hasVehicle: verificacion.hasVehicle,
+      reason: verificacion.reason,
+    });
   } catch (err) {
     logger.error(`[Submit] Error: ${errMsg(err)}`);
     return res.status(500).json({ error: 'Failed to submit application.', errorCode: 'SERVER_ERROR' });
