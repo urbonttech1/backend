@@ -279,13 +279,75 @@ adminAuthRouter.post('/users', requireAdminJWT, requireOwner, async (req: Reques
   }
 });
 
+/**
+ * Cuenta los owners activos, excluyendo opcionalmente a uno.
+ *
+ * Sirve para no quedarse sin ningún owner: si eso ocurre, nadie puede volver a
+ * crear ni editar usuarios del panel y hay que arreglarlo a mano en la base.
+ */
+async function ownersActivosRestantes(excluyendoId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .from('admin_users')
+    .select('id')
+    .eq('role', 'owner')
+    .eq('active', true)
+    .neq('id', excluyendoId);
+  if (error) throw error;
+  return (data ?? []).length;
+}
+
 // PATCH /api/admin/auth/users/:id — owner only
 adminAuthRouter.patch('/users/:id', requireAdminJWT, requireOwner, async (req: Request, res: Response) => {
   const { id } = req.params;
   const { role, active, password, name } = req.body as {
     role?: AdminRole; active?: boolean; password?: string; name?: string;
   };
+
+  const esUnoMismo = req.adminUser?.id === id;
+
+  // El DELETE ya impedía borrarse a uno mismo, pero el PATCH no tenía ninguna
+  // protección equivalente: un owner podía degradarse el rol o desactivarse y
+  // perder el acceso a la gestión de usuarios sin forma de recuperarlo desde el
+  // panel. Cambiarse el nombre o la contraseña sí sigue permitido.
+  if (esUnoMismo && role !== undefined && role !== 'owner') {
+    return res.status(400).json({
+      error: 'No puedes cambiar tu propio rol. Pídeselo a otro owner.',
+      errorCode: 'CANNOT_DEMOTE_SELF',
+    });
+  }
+  if (esUnoMismo && active === false) {
+    return res.status(400).json({
+      error: 'No puedes desactivar tu propia cuenta.',
+      errorCode: 'CANNOT_DEACTIVATE_SELF',
+    });
+  }
+
   try {
+    const validRoles: AdminRole[] = ['owner', 'developer', 'support', 'operations', 'analyst'];
+    if (role !== undefined && !validRoles.includes(role)) {
+      return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(', ')}.` });
+    }
+
+    // Degradar o desactivar al último owner activo deja el panel sin nadie que
+    // pueda administrarlo.
+    const dejaDeSerOwnerActivo = (role !== undefined && role !== 'owner') || active === false;
+    if (dejaDeSerOwnerActivo) {
+      const { data: objetivo } = await supabaseAdmin
+        .from('admin_users')
+        .select('role, active')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (objetivo?.role === 'owner' && objetivo?.active === true) {
+        if (await ownersActivosRestantes(id) === 0) {
+          return res.status(409).json({
+            error: 'Es el último owner activo. Asigna otro owner antes de cambiarlo.',
+            errorCode: 'LAST_OWNER',
+          });
+        }
+      }
+    }
+
     const updates: Record<string, unknown> = {};
     if (password !== undefined) {
       if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
@@ -317,12 +379,33 @@ adminAuthRouter.patch('/users/:id', requireAdminJWT, requireOwner, async (req: R
 adminAuthRouter.delete('/users/:id', requireAdminJWT, requireOwner, async (req: Request, res: Response) => {
   const { id } = req.params;
   if (req.adminUser?.id === id) {
-    return res.status(400).json({ error: 'Cannot delete your own account.' });
+    return res.status(400).json({
+      error: 'No puedes borrar tu propia cuenta.',
+      errorCode: 'CANNOT_DELETE_SELF',
+    });
   }
   try {
+    const { data: objetivo } = await supabaseAdmin
+      .from('admin_users')
+      .select('email, role, active')
+      .eq('id', id)
+      .maybeSingle();
+    if (!objetivo) return res.status(404).json({ error: 'User not found.' });
+
+    // Mismo criterio que el PATCH: borrar al último owner activo deja el panel
+    // sin quien lo administre.
+    if (objetivo.role === 'owner' && objetivo.active === true) {
+      if (await ownersActivosRestantes(id) === 0) {
+        return res.status(409).json({
+          error: 'Es el último owner activo. Asigna otro owner antes de borrarlo.',
+          errorCode: 'LAST_OWNER',
+        });
+      }
+    }
+
     const { error } = await supabaseAdmin.from('admin_users').delete().eq('id', id);
     if (error) throw error;
-    log.info({ id }, 'Admin user deleted');
+    log.info({ id, email: objetivo.email, role: objetivo.role, by: req.adminUser?.id }, 'Admin user deleted');
     return res.json({ success: true });
   } catch (err: any) {
     log.error({ err: err.message }, 'Delete admin user error');

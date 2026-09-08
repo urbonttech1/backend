@@ -7,6 +7,7 @@ import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
+import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
 // cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
@@ -386,25 +387,47 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
 
 adminRouter.post("/drivers/:id/suspend", async (req: Request, res: Response) => {
   try {
-    const { reason } = req.body || {};
-    const { error } = await supabaseAdmin.from('profiles')
-      .update({ account_status: 'suspended', status_val: 'offline', status_reason: reason || 'Suspended by admin', updated_at: new Date().toISOString() })
-      .eq('id', req.params.id).in('role', ['chauffeur', 'driver']);
+    const { reason, suspendedUntil } = req.body || {};
+    const { data, error } = await supabaseAdmin.from('profiles')
+      .update({
+        account_status: 'suspended',
+        status_val: 'offline',
+        status_reason: reason || 'Suspended by admin',
+        ...(suspendedUntil ? { suspension_until: suspendedUntil } : {}),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', req.params.id).in('role', ['chauffeur', 'driver'])
+      .select('email, first_name, last_name').maybeSingle();
     if (error) throw error;
-    res.json({ success: true, driverId: req.params.id, action: 'suspended', reason, timestamp: new Date().toISOString() });
+    if (!data) return res.status(404).json({ error: 'Driver not found' });
+
+    const aviso = await enviarAvisoSuspension(
+      { email: data.email, name: [data.first_name, data.last_name].filter(Boolean).join(' ') },
+      { reason, suspendedUntil },
+    );
+    res.json({ success: true, driverId: req.params.id, action: 'suspended', reason, notification: aviso, timestamp: new Date().toISOString() });
   } catch (err: any) {
+    logger.error(`[admin/drivers/suspend] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to suspend driver' });
   }
 });
 
-adminRouter.post("/drivers/:id/reactivate", async (_req: Request, res: Response) => {
+adminRouter.post("/drivers/:id/reactivate", async (req: Request, res: Response) => {
   try {
-    const { error } = await supabaseAdmin.from('profiles')
-      .update({ account_status: 'active', status_val: 'offline', status_reason: null, updated_at: new Date().toISOString() })
-      .eq('id', _req.params.id).in('role', ['chauffeur', 'driver']);
+    const { data, error } = await supabaseAdmin.from('profiles')
+      .update({ account_status: 'active', status_val: 'offline', status_reason: null, suspension_until: null, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id).in('role', ['chauffeur', 'driver'])
+      .select('email, first_name, last_name').maybeSingle();
     if (error) throw error;
-    res.json({ success: true, driverId: _req.params.id, action: 'reactivated', timestamp: new Date().toISOString() });
+    if (!data) return res.status(404).json({ error: 'Driver not found' });
+
+    const aviso = await enviarAvisoReactivacion({
+      email: data.email,
+      name: [data.first_name, data.last_name].filter(Boolean).join(' '),
+    });
+    res.json({ success: true, driverId: req.params.id, action: 'reactivated', notification: aviso, timestamp: new Date().toISOString() });
   } catch (err: any) {
+    logger.error(`[admin/drivers/reactivate] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to reactivate driver' });
   }
 });
@@ -476,25 +499,46 @@ adminRouter.get("/passengers", async (req: Request, res: Response) => {
 
 adminRouter.post("/passengers/:id/suspend", async (req: Request, res: Response) => {
   try {
-    const { reason } = req.body || {};
-    const { error } = await supabaseAdmin.from('profiles')
-      .update({ account_status: 'suspended', status_reason: reason || 'Suspended by admin', updated_at: new Date().toISOString() })
-      .eq('id', req.params.id).eq('role', 'passenger');
+    const { reason, suspendedUntil } = req.body || {};
+    const { data, error } = await supabaseAdmin.from('profiles')
+      .update({
+        account_status: 'suspended',
+        status_reason: reason || 'Suspended by admin',
+        ...(suspendedUntil ? { suspension_until: suspendedUntil } : {}),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', req.params.id).eq('role', 'passenger')
+      .select('email, first_name, last_name').maybeSingle();
     if (error) throw error;
-    res.json({ success: true, passengerId: req.params.id, action: 'suspended', reason });
+    if (!data) return res.status(404).json({ error: 'Passenger not found' });
+
+    const aviso = await enviarAvisoSuspension(
+      { email: data.email, name: [data.first_name, data.last_name].filter(Boolean).join(' ') },
+      { reason, suspendedUntil },
+    );
+    res.json({ success: true, passengerId: req.params.id, action: 'suspended', reason, notification: aviso });
   } catch (err: any) {
+    logger.error(`[admin/passengers/suspend] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to suspend passenger' });
   }
 });
 
 adminRouter.post("/passengers/:id/reactivate", async (req: Request, res: Response) => {
   try {
-    const { error } = await supabaseAdmin.from('profiles')
-      .update({ account_status: 'active', status_reason: null, updated_at: new Date().toISOString() })
-      .eq('id', req.params.id).eq('role', 'passenger');
+    const { data, error } = await supabaseAdmin.from('profiles')
+      .update({ account_status: 'active', status_reason: null, suspension_until: null, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id).eq('role', 'passenger')
+      .select('email, first_name, last_name').maybeSingle();
     if (error) throw error;
-    res.json({ success: true, passengerId: req.params.id, action: 'reactivated' });
+    if (!data) return res.status(404).json({ error: 'Passenger not found' });
+
+    const aviso = await enviarAvisoReactivacion({
+      email: data.email,
+      name: [data.first_name, data.last_name].filter(Boolean).join(' '),
+    });
+    res.json({ success: true, passengerId: req.params.id, action: 'reactivated', notification: aviso });
   } catch (err: any) {
+    logger.error(`[admin/passengers/reactivate] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to reactivate passenger' });
   }
 });

@@ -252,7 +252,7 @@ export function verifyTokenIgnoreExpiry(token: string): UrbontSession | null {
   }
 }
 
-export async function verifySupabaseToken(token: string): Promise<{ id: string; phone?: string; role?: string } | null> {
+export async function verifySupabaseToken(token: string): Promise<{ id: string; email?: string; phone?: string; role?: string } | null> {
   // 1. Try our custom JWT first (phone/OTP login)
   const session = verifyToken(token);
   if (session) return { id: session.user_id, phone: session.phone, role: session.role };
@@ -278,6 +278,9 @@ export async function verifySupabaseToken(token: string): Promise<{ id: string; 
         }
         return {
           id: userId,
+          // El correo se descartaba aquí, y el alta por Google terminaba creando
+          // perfiles con email vacío aunque Google lo hubiera verificado.
+          email: data.user.email || '',
           phone: data.user.phone || '',
           role: role || 'passenger',
         };

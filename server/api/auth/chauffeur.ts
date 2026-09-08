@@ -463,7 +463,11 @@ chauffeurAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (
       });
     }
 
-    const email = existing?.email || '';
+    // El correo salía solo del perfil existente, así que un alta por Google
+    // —donde todavía no hay perfil— guardaba la cadena vacía y dejaba al
+    // conductor sin ninguna forma de contacto, pese a venir verificado por el
+    // proveedor. Se toma del token cuando el perfil aún no lo tiene.
+    const email = existing?.email || verifiedUser.email || '';
 
     // Split new vs returning user to avoid resetting meaningful fields
     // (rating, total_rides, background_check, etc.) for existing drivers.
