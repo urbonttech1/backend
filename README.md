@@ -90,3 +90,9 @@ aws ecs update-service --cluster urbont --service urbont-api \
 aws ecs describe-services --cluster urbont --services urbont-api \
   --query 'services[0].deployments[*].{Status:status,Running:runningCount,Pending:pendingCount}' \
   --output table --region us-east-1 --profile urbont
+
+
+
+- agrupación de documento por aprobación por usuario
+- revisión incidentes, quejas, soporte, tarifas e ingresos
+- revisión de feedback no esta alineado
