@@ -137,3 +137,19 @@ export function calcularComisionDinamica(precioViaje: number): ComisionResult {
 
   return { porcentaje, montoUSD, centavos };
 }
+
+/**
+ * Normaliza el método de pago a los dos únicos valores que el sistema distingue.
+ *
+ * `rides.payment_method` lleva un CHECK que sólo admite 'card' o 'cash', pero el
+ * cliente lo manda como string libre: validation.ts lo tipa `z.string()` y
+ * create.ts lo pasa tal cual al insert. Sin normalizar, un 'apple_pay' o un
+ * 'google_pay' de la app tumbaría la reserva entera con un error de constraint.
+ *
+ * La regla no es nueva: accept.ts:260 ya asume que todo lo que no es 'cash' se
+ * cobra como tarjeta, porque Apple Pay y Google Pay son tarjetas vía Stripe.
+ * Aquí sólo se hace explícita esa suposición.
+ */
+export function normalizePaymentMethod(value: unknown): 'card' | 'cash' {
+  return String(value ?? '').trim().toLowerCase() === 'cash' ? 'cash' : 'card';
+}

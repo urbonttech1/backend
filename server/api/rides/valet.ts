@@ -12,6 +12,7 @@ import {
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
   NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
+  normalizePaymentMethod,
 } from "../../config/pricing";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
@@ -166,7 +167,9 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
     const gpsLng = typeof pickupLng === 'number' ? pickupLng : null;
     const gpsDstLat = typeof dropoffLat === 'number' ? dropoffLat : null;
     const gpsDstLng = typeof dropoffLng === 'number' ? dropoffLng : null;
-    const pmMethod = (paymentMethod || 'cash') as string;
+    // Normalizado por el CHECK de rides.payment_method: el dashboard de valet
+    // manda el método como string libre y aquí no había validación.
+    const pmMethod = normalizePaymentMethod(paymentMethod || 'cash');
 
     // ── Valet $10 surcharge ──────────────────────────────────────────────────
     // Parse the base fare sent by the dashboard (e.g. "$22.50" → 22.50)

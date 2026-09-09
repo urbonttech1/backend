@@ -12,6 +12,7 @@ import {
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
   NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
+  normalizePaymentMethod,
 } from "../../config/pricing";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
@@ -281,7 +282,12 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       pickup_lat:      typeof pLat === 'number' ? pLat : null,
       pickup_lng:      typeof pLng === 'number' ? pLng : null,
       duration_minutes: durationMinutes || duration_minutes || null,
-      payment_method:  paymentMethod || payment_method || 'card',
+      // Normalizado: validation.ts tipa esto como `z.string()`, así que el cliente
+      // puede mandar cualquier cosa. Como `rides.payment_method` ahora lleva un
+      // CHECK ('card','cash'), un valor libre —'apple_pay', por ejemplo— tumbaría
+      // la reserva entera. El otro handler de este archivo ya validaba con un 400
+      // (línea ~541); éste no lo hacía.
+      payment_method:  normalizePaymentMethod(paymentMethod || payment_method),
       notes:           notes || null,
       scheduled_at:    scheduledAt || scheduled_at || null,
       // Uber/Lyft model: rides booked >30 min ahead get status 'scheduled'

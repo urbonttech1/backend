@@ -36,12 +36,32 @@ export const LEGACY_DOC_KEYS = [
   'license', 'photo',
 ] as const;
 
+/**
+ * Esquema del signup web nuevo (websitev2, src/lib/driver-documents.ts): los
+ * diecisiete que pide hoy /conductor. Une los permisos de Miami-Dade del
+ * esquema de limusina con los federales del vigente, y suma dos claves que no
+ * existían: `businessTaxes` y `backgroundCheck`.
+ *
+ * Sin esta lista, un conductor que completara el formulario web quedaba con
+ * `defensiveDriving` faltando para siempre — ya no se le pide a nadie — y sus
+ * dos documentos nuevos se rechazaban al subir por no estar en ACCEPTED.
+ */
+export const WEB_DOC_KEYS = [
+  'license', 'photo', 'bgCheck', 'registration', 'insurance',
+  'commercialInsurance', 'inspection', 'airportPermit', 'portPermit',
+  'limoPermit', 'tncPermit', 'w9', 'businessTaxes', 'corpFiles',
+  'taxId', 'drugTest', 'backgroundCheck',
+] as const;
+
 /** Todo lo que se admite subir, sin importar el esquema. */
 export const ACCEPTED_DOC_KEYS = [
-  ...new Set<string>([...REQUIRED_DOC_KEYS, ...LEGACY_DOC_KEYS]),
+  ...new Set<string>([...REQUIRED_DOC_KEYS, ...LEGACY_DOC_KEYS, ...WEB_DOC_KEYS]),
 ] as readonly string[];
 
-export type DocKey = typeof REQUIRED_DOC_KEYS[number] | typeof LEGACY_DOC_KEYS[number];
+export type DocKey =
+  | typeof REQUIRED_DOC_KEYS[number]
+  | typeof LEGACY_DOC_KEYS[number]
+  | typeof WEB_DOC_KEYS[number];
 
 export type VerificationStatus =
   | 'pending_documents'  // faltan documentos, o falta el vehículo
@@ -123,12 +143,20 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
     }
 
     // Se evalúa contra el esquema que el conductor haya empezado. Sin esto, los
-    // que completaron el esquema anterior aparecerían con los once documentos
-    // faltando, y los del esquema vigente también, porque las dos listas solo
-    // comparten seis nombres.
+    // que completaron un esquema aparecerían con todo faltando al medirlos
+    // contra otro, porque las listas sólo comparten una parte de los nombres.
+    //
+    // Se compara por PROPORCIÓN cubierta, no por número de claves. Contando
+    // claves, un conductor con el esquema de limusina completo (11 de 11)
+    // empataba con las 11 que ese mismo esquema cubre del web, y al desempatar
+    // hacia el web le aparecían seis documentos faltantes: conductores ya
+    // aprobados volvían a `pending_documents`. La proporción da 1.0 al esquema
+    // que sí completó. A igualdad de proporción gana el que cubre más claves,
+    // que es el esquema más específico de los dos.
     const cubiertos = (lista: readonly string[]) => lista.filter(k => porTipo.has(k)).length;
-    const esquema: readonly string[] =
-      cubiertos(LEGACY_DOC_KEYS) > cubiertos(REQUIRED_DOC_KEYS) ? LEGACY_DOC_KEYS : REQUIRED_DOC_KEYS;
+    const esquema: readonly string[] = [WEB_DOC_KEYS, REQUIRED_DOC_KEYS, LEGACY_DOC_KEYS]
+      .map(lista => ({ lista, n: cubiertos(lista) }))
+      .sort((a, b) => (b.n / b.lista.length) - (a.n / a.lista.length) || b.n - a.n)[0].lista;
 
     const missingDocs  = esquema.filter(k => !porTipo.has(k)) as DocKey[];
     const rejectedDocs = esquema.filter(k => porTipo.get(k) === 'rechazado') as DocKey[];

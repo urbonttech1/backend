@@ -384,8 +384,15 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
       }
     }
 
-    // Cancel the ride and flag it as no-show
-    await supabaseAdmin.from('rides').update({
+    // Cancel the ride and flag it as no-show.
+    //
+    // El resultado SE COMPROBA: `no_show` y `no_show_fee` no existían en la tabla,
+    // así que PostgREST rechazaba el update completo y el viaje quedaba activo
+    // pese a haberle cobrado ya el cargo al pasajero — y sin error en el log,
+    // porque este update se ignoraba. Las columnas ya existen (ver migrations.ts),
+    // pero si esto vuelve a fallar hay dinero cobrado sin contraparte y tiene que
+    // quedar registrado con el importe para poder conciliarlo con Stripe.
+    const { error: cancelErr } = await supabaseAdmin.from('rides').update({
       ride_status:  'cancelled',
       no_show:       true,
       no_show_fee:   noShowCharged ? NO_SHOW_FEE : 0,
@@ -393,6 +400,14 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
       cancelled_at:  new Date().toISOString(),
       cancel_reason: 'passenger_no_show',
     }).eq('id', req.params.id);
+
+    if (cancelErr) {
+      logger.error(
+        `[RIDES] No-show cancel FAILED for ride ${req.params.id}: ${cancelErr.message}. ` +
+        `Charged=${noShowCharged} fee=${noShowCharged ? NO_SHOW_FEE : 0}. Ride left ACTIVE — needs manual review.`,
+      );
+      return res.status(500).json({ error: 'Could not cancel the ride. Support has been notified.' });
+    }
 
     // Notify passenger
     notifyUser(String(r.passenger_id), {

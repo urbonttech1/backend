@@ -1094,6 +1094,51 @@ export async function runMigrations() {
       CREATE INDEX IF NOT EXISTS rides_reminders_idx ON rides (ride_status, scheduled_at) WHERE ride_status = 'scheduled';
     `);
 
+    // ── Auditoría de esquema (2026-09) ────────────────────────────────────────
+
+    // `rides.no_show` / `no_show_fee`: server/api/rides/cancel.ts las escribía
+    // desde siempre, pero NUNCA se crearon. PostgREST rechazaba el update entero
+    // por columna inexistente, así que la cancelación por no-show cobraba el
+    // cargo en Stripe y luego dejaba el viaje activo, en silencio, porque el
+    // resultado del update tampoco se comprobaba.
+    await client.query(`
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS no_show     BOOLEAN DEFAULT FALSE;
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS no_show_fee NUMERIC(10,2) DEFAULT 0;
+    `);
+
+    // Un chofer sólo puede estar una vez en la cola de un aeropuerto. Sin esto,
+    // reintentos o dobles taps lo duplicaban y le daban varios turnos.
+    await safeIndex(
+      `CREATE UNIQUE INDEX IF NOT EXISTS airport_queue_driver_airport_unique
+         ON airport_queue (driver_id, airport_code)`,
+    );
+
+    // `payment_method` admitía cualquier string. Los únicos valores que el código
+    // distingue son 'card' y 'cash' (rides/stats.ts, rides/valet.ts); cualquier
+    // otro haría que el cobro se saltara silenciosamente esas ramas.
+    //
+    // OJO: deliberadamente NO se restringe `vehicle_type`. Guarda nombres de
+    // display libres ('Business Class', 'Premium SUV', 'Van & Sprinter') y el
+    // emparejamiento con choferes usa ilike (rides/accept.ts:71-110), así que un
+    // CHECK contra las claves canónicas de VEHICLE_FARE_RULES rechazaría toda
+    // reserva real. Normalizar en escritura con VEHICLE_ALIAS es requisito previo.
+    // Guardado contra el catálogo: ADD CONSTRAINT no admite IF NOT EXISTS, y sin
+    // esto el segundo arranque fallaría. Mismo idioma que chauffeur-docs.ts.
+    await safeAlter(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'rides_payment_method_check'
+        ) THEN
+          ALTER TABLE rides ADD CONSTRAINT rides_payment_method_check
+            CHECK (payment_method IS NULL OR payment_method IN ('card','cash'));
+        END IF;
+      END $$;
+    `);
+
+    // Sin updated_at no se puede auditar ni sincronizar incrementalmente.
+    await safeAlter(`ALTER TABLE ride_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);
