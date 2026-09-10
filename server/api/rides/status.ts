@@ -480,10 +480,20 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
             //
             // `total_price` had no writer anywhere in the codebase — this is what
             // was actually charged, tip and fees included.
+            // `driver_earnings` es lo que le corresponde al chofer, se haya
+            // transferido o no. Nunca se escribía —la columna ni siquiera existía—
+            // y el webhook `account.updated` la usa para encontrar los pagos
+            // pendientes: busca viajes completados con `driver_earnings > 0` y
+            // `stripe_transfer_id` nulo, para transferirlos cuando el chofer
+            // termina de activar su cuenta de Stripe Connect.
+            //
+            // Sin este campo esa búsqueda no devolvía nada nunca, y el dinero de
+            // un chofer que se conectaba tarde no se le enviaba jamás.
             const { error: finErr } = await supabaseAdmin.from('rides').update({
               payment_status: 'paid',
               total_price: Math.round(fareUSD * 100) / 100,
               platform_fee_amount: platformFeeUSD,
+              driver_earnings: driverPayoutUSD,
               ...(driverTransferId ? { stripe_transfer_id: driverTransferId } : {}),
               updated_at: new Date().toISOString(),
             }).eq('id', req.params.id);
@@ -861,9 +871,14 @@ router.post('/:id/rating', requireSupabaseAuth, async (req: Request, res: Respon
 
 router.get('/:id/public', async (req: Request, res: Response) => {
   try {
+    // `driver_location` salía de esta lista: era una columna que no existe en la
+    // tabla, y Postgres rechaza el SELECT completo cuando falta una sola columna,
+    // así que este endpoint fallaba entero. La posición del chofer se lee ahora de
+    // `driver_locations`, que es la tabla viva —la que escriben la app y los jobs—
+    // en vez de crear una segunda copia dentro de `rides`.
     const { data: ride, error } = await supabaseAdmin
       .from('rides')
-      .select('ride_status, driver_id, pickup, dropoff, driver_location')
+      .select('ride_status, driver_id, pickup, dropoff')
       .eq('id', req.params.id)
       .single();
 
@@ -897,8 +912,22 @@ router.get('/:id/public', async (req: Request, res: Response) => {
       }
     }
 
-    const loc = ride.driver_location as { lat?: number; lng?: number } | null;
-    if (loc?.lat) { driverLat = loc.lat; driverLng = loc.lng; }
+    // La posición en vivo pisa a la del perfil, que se actualiza con menos
+    // frecuencia. Se descarta si está vieja: mostrar al chofer donde estaba hace
+    // media hora es peor que no mostrarlo.
+    if (ride.driver_id) {
+      const cincoMinAtras = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const { data: live } = await supabaseAdmin
+        .from('driver_locations')
+        .select('lat, lng, updated_at')
+        .eq('driver_id', String(ride.driver_id))
+        .gte('updated_at', cincoMinAtras)
+        .maybeSingle();
+
+      const lat = live?.lat != null ? Number(live.lat) : undefined;
+      const lng = live?.lng != null ? Number(live.lng) : undefined;
+      if (lat !== undefined && Number.isFinite(lat)) { driverLat = lat; driverLng = lng; }
+    }
 
     const pickup  = typeof ride.pickup  === 'string' ? ride.pickup  : (ride.pickup as Record<string,unknown>)?.address || '';
     const dropoff = typeof ride.dropoff === 'string' ? ride.dropoff : (ride.dropoff as Record<string,unknown>)?.address || '';

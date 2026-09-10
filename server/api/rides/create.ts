@@ -8,12 +8,15 @@ import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
   calculateFareFromRules,
+  calculateHourlyFare,
   WAIT_TIME_FREE_MINUTES, WAIT_TIME_FEE_PER_MIN,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
   NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
   normalizePaymentMethod,
 } from "../../config/pricing";
+import { getEffectiveSurge } from "../config";
+import { ensureFaresFresh } from "../../services/fareConfig";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -23,18 +26,35 @@ import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 
 export function registerCreateRoutes(router: Router): void {
-router.get('/calculate-fare', requireSupabaseAuth, (req: Request, res: Response) => {
-  const distanceKm     = parseFloat(req.query.distanceKm as string);
-  const durationMinutes = parseFloat(req.query.durationMinutes as string);
-  const vehicleType    = (req.query.vehicleType as string) || 'sedan';
-
-  if (isNaN(distanceKm) || isNaN(durationMinutes) || distanceKm < 0 || durationMinutes < 0) {
-    return res.status(400).json({ error: 'distanceKm and durationMinutes must be non-negative numbers.' });
-  }
+router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const vehicleType = (req.query.vehicleType as string) || 'sedan';
+  const bookingType = (req.query.bookingType as string) || 'distance';
 
   try {
+    await ensureFaresFresh();
+    const surgeMultiplier = await getEffectiveSurge();
+
+    // Chofer a disposición: se cotiza por bloque de horas, no por distancia.
+    // Sin esta rama la app no tenía forma de mostrar un precio por horas sin
+    // llevar su propia tabla de tarifas, que es justo lo que se busca eliminar.
+    if (bookingType === 'hourly') {
+      const hours = parseFloat(req.query.hours as string);
+      if (isNaN(hours) || hours <= 0) {
+        return res.status(400).json({ error: 'hours must be a positive number when bookingType=hourly.' });
+      }
+      const hourly = calculateHourlyFare({ vehicleType, hours, surgeMultiplier });
+      if (!hourly) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
+      return res.json(hourly);
+    }
+
+    const distanceKm      = parseFloat(req.query.distanceKm as string);
+    const durationMinutes = parseFloat(req.query.durationMinutes as string);
+    if (isNaN(distanceKm) || isNaN(durationMinutes) || distanceKm < 0 || durationMinutes < 0) {
+      return res.status(400).json({ error: 'distanceKm and durationMinutes must be non-negative numbers.' });
+    }
+
     const distanceMiles = distanceKm * 0.621371;
-    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes });
+    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, surgeMultiplier });
     if (!breakdown) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
     return res.json(breakdown);
   } catch (err: any) {
@@ -123,7 +143,13 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
     const distanceMiles   = totalDistance / 1609.344;  // meters → miles
     const durationMinutes = totalDuration / 60;         // seconds → minutes
 
-    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes }) ?? { total: 0, distanceMiles, durationMinutes };
+    // La cotización lleva el mismo surge que se va a cobrar. Sin esto, cuando la
+    // app deje de calcular por su cuenta vería un precio sin recargo y se le
+    // cobraría con recargo — justo la dirección que no queremos.
+    await ensureFaresFresh();
+    const surgeMultiplier = await getEffectiveSurge();
+    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, surgeMultiplier })
+      ?? { total: 0, distanceMiles, durationMinutes, surge_multiplier: surgeMultiplier };
     res.json({ ...breakdown, distanceMiles, durationMinutes });
   } catch (err: any) {
     logger.error(`[RIDES] estimate error: ${err.message}`);
@@ -309,14 +335,50 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     // ── Upfront price lock: store locked_fare so it can never change after booking ──
     // Also store a full fare breakdown for earnings/receipt display
     const { surgeMultiplier: bodySurge, distanceMiles: bodyMiles, durationMinutes: bodyDuration } = req.body as { surgeMultiplier?: number; distanceMiles?: number; durationMinutes?: number; };
-    const surgeMultiplier = typeof bodySurge === 'number' ? bodySurge : 1.0;
+
+    // ── Surge: el servidor decide, pero nunca cobra más de lo que se mostró ──
+    //
+    // Hasta ahora el surge no se aplicaba en ningún cálculo: el recargo que el
+    // pasajero aceptaba se descartaba al recalcular, y los viernes y sábados por
+    // la noche se cobraba de menos.
+    //
+    // Al empezar a aplicarlo aparece el riesgo opuesto, que es peor: si el reloj
+    // del teléfono no coincide con la hora de Miami —un pasajero en otro huso,
+    // por ejemplo— el servidor podría cobrar un recargo que nunca se mostró en
+    // pantalla. Por eso se toma el MENOR de los dos mientras la app siga
+    // calculando por su cuenta: se recupera el recargo legítimo y es imposible
+    // cobrar por encima de lo aceptado.
+    //
+    // Cuando la app consuma /api/rides/estimate (su fase 5), ambos valores serán
+    // el mismo y este mínimo pasa a ser inofensivo.
+    await ensureFaresFresh();
+    const serverSurge = await getEffectiveSurge();
+    const clientSurge = typeof bodySurge === 'number' && bodySurge >= 1 ? bodySurge : null;
+    const surgeMultiplier = clientSurge !== null ? Math.min(serverSurge, clientSurge) : serverSurge;
+
+    const requestedBookingType =
+      (req.body as { booking_type?: string; bookingType?: string }).booking_type ||
+      (req.body as { booking_type?: string; bookingType?: string }).bookingType ||
+      'now';
+    const requestedHours = Number(hourly_hours ?? hourlyHoursBody);
+
     let fareBreakdown: object | null = null;
-    if (typeof bodyMiles === 'number' && typeof bodyDuration === 'number') {
+    if (requestedBookingType === 'hourly' && Number.isFinite(requestedHours) && requestedHours > 0) {
+      // Chofer a disposición: se cobra por bloque de horas, no por distancia.
+      // Hasta ahora el backend guardaba `hourly_hours` pero no calculaba nada,
+      // así que el precio de estas reservas era el que mandara el cliente.
+      fareBreakdown = calculateHourlyFare({
+        vehicleType: finalVehicleType,
+        hours:       requestedHours,
+        surgeMultiplier,
+      });
+    } else if (typeof bodyMiles === 'number' && typeof bodyDuration === 'number') {
       fareBreakdown = calculateFareFromRules({
         vehicleType:     finalVehicleType,
         distanceMiles:   bodyMiles,
         durationMinutes: bodyDuration,
-        bookingType:     (req.body as { booking_type?: string; bookingType?: string }).booking_type || (req.body as { booking_type?: string; bookingType?: string }).bookingType || 'now',
+        bookingType:     requestedBookingType,
+        surgeMultiplier,
       });
     }
 

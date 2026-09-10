@@ -51,6 +51,7 @@ import { pool } from "./server/db/pool";
 import { startCronJobs } from "./server/jobs/cron";
 import { sanitizeBody } from "./server/middleware";
 import { runMigrations } from "./server/db/migrations";
+import { loadFares } from "./server/services/fareConfig";
 import { runIntegrationChecks } from "./server/services/integrationChecks";
 import { logger } from "./server/lib/logger";
 
@@ -392,7 +393,7 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
 app.get('/', (_req: Request, res: Response) => {
   res.json({
     msg: '👋 URBONT API',
-    version: process.env.npm_package_version ?? '1.3.4',
+    version: process.env.npm_package_version ?? '1.4.0',
   });
 });
 
@@ -910,7 +911,12 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
       const admin = await import('firebase-admin');
       if (!admin.default.apps.length && serviceAccountObj) {
         admin.default.initializeApp({
-          credential: admin.default.credential.cert(serviceAccountObj as unknown),
+          // `as unknown` no convertía a nada: sólo apagaba el chequeo y dejaba el
+          // argumento sin tipo. `cert()` espera un ServiceAccount, que es la forma
+          // que tiene el JSON de credenciales que se parseó arriba.
+          credential: admin.default.credential.cert(
+            serviceAccountObj as import('firebase-admin').ServiceAccount,
+          ),
         });
       }
       if (admin.default.apps.length) {
@@ -1001,14 +1007,23 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
     // Force PostgREST to reload its schema cache on every server startup so
     // columns added by migrations (guest_phone, etc.) are immediately visible.
     .then(() => pool.query("NOTIFY pgrst, 'reload schema'").catch(() => {}))
-    .then(() => shouldSetupDemo
-      ? Promise.allSettled([setupDemoDriverAccount(), setupDemoValetAccount()])
-      : Promise.resolve([])
-    )
-    .then(() => shouldApproveDriver
-      ? approveDriverIfNeeded('7864165121', 'cvc@oohg.org')
-      : Promise.resolve()
-    )
+    // Tarifas vigentes desde app_config.fares_config. Va después de las
+    // migraciones para que la tabla exista, y nunca lanza: si falla se cobra con
+    // los valores por defecto de pricing.ts.
+    .then(() => loadFares(true))
+    // Ambas ramas resuelven a void. Antes una devolvía la tupla de
+    // Promise.allSettled y la otra un array vacío, y esa unión rompía la
+    // inferencia de la cadena — el valor no se usa en ningún caso.
+    .then(async () => {
+      if (shouldSetupDemo) {
+        await Promise.allSettled([setupDemoDriverAccount(), setupDemoValetAccount()]);
+      }
+    })
+    .then(async () => {
+      if (shouldApproveDriver) {
+        await approveDriverIfNeeded('7864165121', 'cvc@oohg.org');
+      }
+    })
     .catch(err => logger.warn({ err: err.message }, 'Migrations skipped'));
 
   // Este servidor es solo API + WebSocket. Antes de la separacion en repos

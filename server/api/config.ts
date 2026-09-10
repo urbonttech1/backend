@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { requireSupabaseAuth } from "../middleware";
 import { createContextLogger } from "../lib/logger";
 import { pool } from "../db/pool";
+import { getTimeSurge } from "../config/pricing";
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -11,6 +12,39 @@ const DEFAULTS = {
   min_version: '1.0.0',
   surge_multiplier: 1.0,
 };
+
+/**
+ * Surge que un admin fijó a mano en `app_config`, combinado con el de franja
+ * horaria. Se toma el MAYOR de los dos, que es la regla que la app ya aplica
+ * (`screen-renderer.tsx:917`): un recargo manual por un evento puntual no debe
+ * quedar anulado por la franja, ni al revés.
+ *
+ * Cachea 60 s: se consulta en cada cotización y el valor cambia muy de vez en
+ * cuando. Ante un fallo de lectura devuelve sólo el de franja horaria — nunca
+ * lanza, porque dejaría sin precio a toda la app.
+ */
+let surgeCache: { value: number; at: number } | null = null;
+const SURGE_TTL_MS = 60_000;
+
+export async function getEffectiveSurge(now: Date = new Date()): Promise<number> {
+  const timeSurge = getTimeSurge(now);
+
+  if (surgeCache && Date.now() - surgeCache.at < SURGE_TTL_MS) {
+    return Math.max(timeSurge, surgeCache.value);
+  }
+
+  try {
+    const { rows } = await pool.query<{ value: string }>(
+      `SELECT value FROM app_config WHERE key = 'surge_multiplier'`
+    );
+    const manual = parseFloat(rows[0]?.value ?? '1') || 1;
+    surgeCache = { value: manual, at: Date.now() };
+    return Math.max(timeSurge, manual);
+  } catch (err) {
+    log.warn({ err: (err as Error).message }, 'no se pudo leer surge_multiplier — se usa sólo la franja horaria');
+    return timeSurge;
+  }
+}
 
 // GET /api/config — public: returns maintenance_mode, min_version, surge_multiplier, googleMapsApiKey
 configRouter.get("/", async (_req: Request, res: Response) => {

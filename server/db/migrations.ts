@@ -1139,6 +1139,18 @@ export async function runMigrations() {
     // Sin updated_at no se puede auditar ni sincronizar incrementalmente.
     await safeAlter(`ALTER TABLE ride_logs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()`);
 
+    // Dos columnas más que el código consultaba y nunca se crearon. Postgres
+    // rechaza el SELECT entero cuando una sola columna falta, así que cada una
+    // rompía su endpoint por completo.
+    //
+    // `driver_earnings` SIN DEFAULT a propósito: el webhook de Stripe busca los
+    // pagos pendientes con `.not('driver_earnings','is',null)`, y un default de 0
+    // haría que no encontrara ninguno nunca.
+    await client.query(`
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2);
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS long_pickup_fee NUMERIC(10,2) DEFAULT 0;
+    `);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

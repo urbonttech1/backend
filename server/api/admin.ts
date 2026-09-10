@@ -8,6 +8,8 @@ import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
+import { invalidateFares, parseStoredFares } from '../services/fareConfig';
+import { DEFAULT_FARE_CLASSES, type FareClass } from '../config/pricing';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
 // cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
@@ -38,36 +40,36 @@ const serverStartTime = Date.now();
 // (sedan $14 vs $25, suv $20 vs $38, van $38 vs $65, perMile 2.50 vs 4.00, etc.).
 // Admins saw incorrect numbers in the Fare Editor — these are now synced to the actual
 // pricing engine values so what admins see matches what passengers are charged.
-const DEFAULT_FARES: Record<string, unknown> = {
-  businessClass: { name: "Standard (Sedan)", baseFare: 25, perMile: 4.00, perMin: 1.00, minFare: 25, includedMiles: 3, serviceFee: 2.50, cancellationFee: 10, peakMultiplier: 1.35, airportSurcharge: 4, nightSurcharge: 0 },
-  suv: { name: "Premier (SUV)", baseFare: 38, perMile: 5.50, perMin: 1.25, minFare: 38, includedMiles: 3, serviceFee: 2.50, cancellationFee: 10, peakMultiplier: 1.35, airportSurcharge: 4, nightSurcharge: 0 },
-  van: { name: "Executive Van", baseFare: 65, perMile: 8.00, perMin: 1.75, minFare: 65, includedMiles: 3, serviceFee: 2.50, cancellationFee: 10, peakMultiplier: 1.35, airportSurcharge: 4, nightSurcharge: 0 },
-  concierge: { name: "Front Desk Surcharge", baseFare: 10, perHour: 0, minHours: 0, serviceFee: 0, cancellationFee: 10, peakMultiplier: 1.0, airportSurcharge: 0, nightSurcharge: 0 },
-  valet: { name: "Valet Parking", baseFare: 35, perHour: 35, minHours: 1, serviceFee: 0, cancellationFee: 20, peakMultiplier: 1.0, airportSurcharge: 0, nightSurcharge: 0 }
-};
+// Las tarifas por defecto viven en config/pricing.ts — ver getFaresFromDB abajo.
+//
+// `concierge` y `valet` ya no aparecen en este editor: no son clases de vehículo
+// y ningún cálculo de tarifa las usaba. El cargo de valet es la constante
+// VALET_COMMISSION_USD en rides/helpers.ts; si hace falta configurarlo, va por su
+// propio camino y no mezclado con el precio por milla de un sedán.
 
-async function getFaresFromDB(): Promise<Record<string, unknown>> {
+/**
+ * Tarifas para el editor del panel.
+ *
+ * Antes este archivo tenía su propia copia (`DEFAULT_FARES`, con la clave
+ * `businessClass` y campos del esquema por kilómetro) y su propia lógica de
+ * reseteo. Eran dos definiciones de tarifa en el mismo backend, y la de acá no
+ * era la que cobraba.
+ *
+ * Ahora sale de `DEFAULT_FARE_CLASSES` y `parseStoredFares`, los mismos que usa
+ * el motor: lo que el panel muestra es exactamente lo que se le cobra al
+ * pasajero. La normalización de claves y campos heredados vive en
+ * `services/fareConfig.ts`, no duplicada aquí.
+ */
+async function getFaresFromDB(): Promise<Record<string, FareClass>> {
   try {
     const { rows } = await pgPool.query(`SELECT value FROM app_config WHERE key = 'fares_config'`);
     if (rows[0]?.value) {
-      const stored = JSON.parse(rows[0].value);
-      // Heal legacy rows that used per-km / inflated base fares (pre-audit schema).
-      // Detected by presence of `perKm` on the standard class or missing `van`.
-      const needsReset =
-        stored?.businessClass?.perKm !== undefined ||
-        stored?.businessClass?.baseFare > 30  ||  // old inflated pre-v1 fares
-        stored?.businessClass?.baseFare < 25  ||  // old underpriced fares (pre-audit fix; correct is $25)
-        stored?.suv?.baseFare < 38            ||  // suv was $20, now $38
-        stored?.van?.baseFare < 65            ||  // van was $38, now $65
-        !stored?.van;
-      if (needsReset) {
-        await saveFaresToDB(DEFAULT_FARES).catch(() => {});
-        return { ...DEFAULT_FARES };
-      }
-      return stored;
+      return { ...DEFAULT_FARE_CLASSES, ...parseStoredFares(JSON.parse(rows[0].value)) };
     }
-  } catch {}
-  return { ...DEFAULT_FARES };
+  } catch (e) {
+    logger.warn({ err: errMsg(e) }, '[admin/fares] no se pudo leer fares_config, se usan los valores por defecto');
+  }
+  return { ...DEFAULT_FARE_CLASSES };
 }
 
 async function saveFaresToDB(fares: Record<string, unknown>): Promise<void> {
@@ -642,19 +644,68 @@ adminRouter.put("/fares", async (req: Request, res: Response) => {
   if (!vehicleClass || !fares[vehicleClass]) {
     return res.status(400).json({ error: "Invalid vehicle class" });
   }
-  const allowed = ['baseFare', 'perKm', 'perMin', 'perHour', 'minFare', 'minHours', 'serviceFee', 'cancellationFee', 'peakMultiplier', 'airportSurcharge', 'nightSurcharge'];
+  // Campos que el motor de cobro aplica de verdad.
+  //
+  // La lista anterior tenía `perKm` —del esquema viejo por kilómetro— pero NO
+  // `perMile` ni `includedMiles`: el panel mostraba "Por milla", el operador lo
+  // editaba, la API respondía 200 y el valor se descartaba en silencio. Era el
+  // campo que más pesa en el precio después de las millas incluidas.
+  //
+  // `peakMultiplier`, `airportSurcharge` y `nightSurcharge` salen porque ningún
+  // cálculo los aplica: volverán cuando el motor los soporte.
+  const allowed = [
+    'minFare', 'includedMiles', 'perMile', 'perMin',
+    'serviceFee', 'cancellationFee', 'perHour', 'minHours',
+  ] as const satisfies readonly (keyof FareClass)[];
+
+  const applied: Record<string, number> = {};
+  const actualizada: FareClass = { ...fares[vehicleClass] };
   for (const key of allowed) {
-    if (updates[key] !== undefined) {
-      const val = parseFloat(updates[key]);
-      if (!isNaN(val) && val >= 0) fares[vehicleClass][key] = val;
+    if (updates[key] === undefined) continue;
+    const val = parseFloat(updates[key]);
+    if (!isNaN(val) && val >= 0) {
+      actualizada[key] = val;
+      applied[key] = val;
     }
   }
+  fares[vehicleClass] = actualizada;
+
+  // Lo que el panel mandó y no se guardó, para que pueda avisarlo en vez de dar
+  // por hecho que se aplicó todo.
+  const permitidos: readonly string[] = allowed;
+  const rejected = Object.keys(updates ?? {}).filter(k => !permitidos.includes(k));
+
   try {
     await saveFaresToDB(fares);
+    // Sin esto el cambio no surte efecto hasta el próximo arranque.
+    await invalidateFares();
   } catch (e) {
     logger.warn({ err: e }, '[admin/fares] DB persist failed, using memory');
   }
-  res.json({ success: true, fares, updatedClass: vehicleClass, timestamp: new Date().toISOString() });
+
+  // Quién cambió qué precio. Mover las tarifas a la base les quita la revisión de
+  // código y el historial de git, así que el rastro tiene que quedar en algún lado.
+  //
+  // OJO: `GET /api/admin/audit-logs` hoy lee `ride_logs`, no esta tabla, así que
+  // el cambio queda registrado pero todavía no se ve en el panel. Exponerlo es un
+  // pendiente aparte.
+  const detalle = Object.entries(applied).map(([k, v]) => `${k}=${v}`).join(', ') || 'sin cambios';
+  try {
+    await pgPool.query(
+      `INSERT INTO audit_logs (admin_name, action, target, ip) VALUES ($1, $2, $3, $4)`,
+      [
+        req.adminUser?.name || req.adminUser?.email || 'desconocido',
+        'fares.update',
+        `${vehicleClass} → ${detalle}`,
+        req.ip ?? null,
+      ],
+    );
+  } catch (e) {
+    // Un fallo de auditoría no debe tumbar el cambio de tarifa, pero sí verse.
+    logger.warn({ err: errMsg(e), vehicleClass, applied }, '[admin/fares] no se pudo registrar en audit_logs');
+  }
+
+  res.json({ success: true, fares, updatedClass: vehicleClass, applied, rejected, timestamp: new Date().toISOString() });
 });
 
 // ─── Rides ───────────────────────────────────────────────────────────────────
