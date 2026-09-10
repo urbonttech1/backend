@@ -393,7 +393,7 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
 app.get('/', (_req: Request, res: Response) => {
   res.json({
     msg: '👋 URBONT API',
-    version: process.env.npm_package_version ?? '1.4.0',
+    version: process.env.npm_package_version ?? '1.4.1',
   });
 });
 
