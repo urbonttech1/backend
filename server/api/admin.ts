@@ -856,7 +856,7 @@ adminRouter.patch("/rides/:id/status", async (req: Request, res: Response) => {
 
 adminRouter.get("/revenue", async (_req: Request, res: Response) => {
   try {
-    const [allRidesRes, dailyRes, byClassRes, recentTxRes, hourlyRes, prevWeekRes] = await Promise.all([
+    const [allRidesRes, dailyRes, byClassRes, recentTxRes, hourlyRes, topDriversRes, prevWeekRes] = await Promise.all([
       supabaseAdmin.from('rides').select('fare, created_at, vehicle_type, ride_status, payment_status'),
       pgPool.query(`
         SELECT DATE(created_at) AS day,
@@ -873,11 +873,19 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
         FROM rides WHERE ride_status = 'completed'
         GROUP BY vehicle_type ORDER BY amount DESC
       `).catch(() => ({ rows: [] as unknown[] })),
+      // Dos joins a profiles: uno por el pasajero y otro por el chofer. Antes
+      // sólo estaba el del pasajero, así que la columna Conductor del panel
+      // mostraba siempre «—» aunque el dato estuviera en la fila del viaje.
+      // Los nombres se arman con COALESCE por cada parte: en SQL, concatenar algo
+      // con NULL anula la expresión entera, así que quien tenga nombre pero no
+      // apellido se mostraría como 'Passenger'. Hay un perfil así en producción.
       pgPool.query(`
         SELECT r.id, r.fare, r.created_at, r.vehicle_type,
-          COALESCE(p.first_name || ' ' || p.last_name, 'Passenger') AS passenger_name
+          COALESCE(NULLIF(TRIM(COALESCE(pp.first_name,'') || ' ' || COALESCE(pp.last_name,'')), ''), 'Passenger') AS passenger_name,
+          COALESCE(NULLIF(TRIM(COALESCE(dp.first_name,'') || ' ' || COALESCE(dp.last_name,'')), ''), '')          AS driver_name
         FROM rides r
-        LEFT JOIN profiles p ON r.passenger_id = p.id
+        LEFT JOIN profiles pp ON r.passenger_id = pp.id
+        LEFT JOIN profiles dp ON r.driver_id    = dp.id
         WHERE r.ride_status = 'completed' AND r.fare IS NOT NULL
         ORDER BY r.created_at DESC LIMIT 30
       `).catch(() => ({ rows: [] as unknown[] })),
@@ -889,6 +897,22 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
         FROM rides
         WHERE ride_status = 'completed' AND created_at >= NOW() - INTERVAL '30 days'
         GROUP BY hour ORDER BY hour ASC
+      `).catch(() => ({ rows: [] as unknown[] })),
+      // Mejores conductores por ingreso. El panel ya tenía la tabla montada
+      // (revenue/page.tsx:245) pero el endpoint nunca devolvía `topDrivers`, así
+      // que se mostraba vacía con su mensaje de «sin datos».
+      pgPool.query(`
+        SELECT p.id,
+               COALESCE(NULLIF(TRIM(COALESCE(p.first_name,'') || ' ' || COALESCE(p.last_name,'')), ''), 'Driver') AS name,
+               COUNT(*)                        AS rides,
+               COALESCE(SUM(r.fare), 0)::float AS revenue,
+               COALESCE(p.rating, 0)::float    AS rating
+        FROM rides r
+        JOIN profiles p ON r.driver_id = p.id
+        WHERE r.ride_status = 'completed'
+        GROUP BY p.id, p.first_name, p.last_name, p.rating
+        ORDER BY revenue DESC
+        LIMIT 10
       `).catch(() => ({ rows: [] as unknown[] })),
       // Previous week revenue for week-over-week comparison
       pgPool.query(`
@@ -928,16 +952,18 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
     const growthPct = (current: number, previous: number) =>
       previous > 0 ? Math.round(((current - previous) / previous) * 1000) / 10 : null;
 
+    // Importes a dos decimales, no a dólares enteros: un día de $31.90 se
+    // reportaba como $32, y esa diferencia se acumula a lo largo del gráfico.
     const byVehicleClass = (byClassRes.rows as Record<string, unknown>[]).map((r: Record<string, unknown>) => ({
       vehicleClass: r.vehicle_type || 'Unknown',
-      amount: Math.round(parseFloat(String(r.amount)) || 0),
+      amount: Math.round((parseFloat(String(r.amount)) || 0) * 100) / 100,
       rides: parseInt(String(r.rides)),
       percentage: totalAllTime > 0 ? Math.round((parseFloat(String(r.amount)) / totalAllTime) * 100) : 0,
     }));
 
     const dailyRevenue = (dailyRes.rows as Record<string, unknown>[]).map((r: Record<string, unknown>) => ({
       day: new Date(r.day as string).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      amount: Math.round(parseFloat(String(r.total)) || 0),
+      amount: Math.round((parseFloat(String(r.total)) || 0) * 100) / 100,
       count: parseInt(String(r.count)),
     }));
 
@@ -956,12 +982,27 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
     const recentTransactions = (recentTxRes.rows as Record<string, unknown>[]).map((r: Record<string, unknown>) => ({
       id: r.id,
       passenger: r.passenger_name || 'Passenger',
+      driverName: String(r.driver_name ?? '').trim(),
       amount: parseFloat(String(r.fare)) || 0,
       type: 'ride_fare',
       rideId: (r.id as string)?.slice(-8).toUpperCase(),
       date: r.created_at,
       vehicleType: r.vehicle_type,
     }));
+
+    const topDrivers = (topDriversRes.rows as Record<string, unknown>[]).map((r: Record<string, unknown>) => ({
+      id: r.id,
+      name: r.name,
+      rides: parseInt(String(r.rides)) || 0,
+      revenue: Math.round((parseFloat(String(r.revenue)) || 0) * 100) / 100,
+      rating: Math.round((parseFloat(String(r.rating)) || 0) * 10) / 10,
+    }));
+
+    // Cuántos de los viajes creados llegaron a completarse. El panel lo pinta con
+    // `.toFixed(1)`, así que se devuelve ya redondeado a un decimal.
+    const completionRate = all.length > 0
+      ? Math.round((completed.length / all.length) * 1000) / 10
+      : 0;
 
     res.json({
       today: todayRevenue,
@@ -974,8 +1015,11 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
       lastMonth: lastMonthRevenue,
       monthGrowth: growthPct(thisMonthRevenue, lastMonthRevenue),
       totalAllTime: Math.round(totalAllTime * 100) / 100,
+      // Ojo: el promedio es sobre lo FACTURADO, no sobre lo cobrado. Con
+      // `uncollectedRides` a la vista se puede contrastar cuánto de eso entró.
       avgFare: completed.length > 0 ? Math.round(sum(completed) / completed.length * 100) / 100 : 0,
       totalCompletedRides: completed.length,
+      completionRate,
       // Facturado vs cobrado. `totalAllTime` sigue siendo lo facturado para no
       // romper el panel; estos campos dicen cuánto de eso entró de verdad.
       billedAllTime: Math.round(totalAllTime * 100) / 100,
@@ -985,6 +1029,7 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
       byVehicleClass,
       dailyRevenue,
       hourlyRevenue,
+      topDrivers,
       recentTransactions,
     });
   } catch (err: any) {
