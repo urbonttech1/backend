@@ -1,0 +1,637 @@
+<title>Ocho fallos en el cobro</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;0,500;1,400&display=swap">
+<style>
+  :root {
+    --ground:#f4f6f8; --surface:#ffffff; --surface-2:#eceff3;
+    --ink:#111d29; --ink-2:#3d4d5c; --ink-3:#6b7b8a;
+    --rule:#d6dde5; --rule-strong:#b9c4cf;
+    --accent:#1a5a7f; --accent-soft:#e4eef4;
+    --ok:#2c6a4d; --ok-soft:#e2efe8;
+    --warn:#8a6410; --warn-soft:#f6efdc;
+    --bad:#a3342a; --bad-soft:#f7e5e2;
+    --code-bg:#f7f9fb;
+    --shadow:0 1px 2px rgba(17,29,41,.06), 0 6px 20px rgba(17,29,41,.05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0d151d; --surface:#141f29; --surface-2:#1c2934;
+      --ink:#e7edf2; --ink-2:#b3c1cd; --ink-3:#7f8f9e;
+      --rule:#2a3945; --rule-strong:#3b4c5a;
+      --accent:#6fb2d6; --accent-soft:#16303f;
+      --ok:#6fbf95; --ok-soft:#162f24;
+      --warn:#d7ab55; --warn-soft:#2f2717;
+      --bad:#e58379; --bad-soft:#331b18;
+      --code-bg:#0f1820;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0d151d; --surface:#141f29; --surface-2:#1c2934;
+    --ink:#e7edf2; --ink-2:#b3c1cd; --ink-3:#7f8f9e;
+    --rule:#2a3945; --rule-strong:#3b4c5a;
+    --accent:#6fb2d6; --accent-soft:#16303f;
+    --ok:#6fbf95; --ok-soft:#162f24;
+    --warn:#d7ab55; --warn-soft:#2f2717;
+    --bad:#e58379; --bad-soft:#331b18;
+    --code-bg:#0f1820;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.25);
+  }
+
+  * { box-sizing:border-box; }
+  body {
+    background:var(--ground); color:var(--ink);
+    font-family:"IBM Plex Serif", Georgia, serif;
+    font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:1020px; margin:0 auto; padding:0 28px 96px; }
+  .col  { max-width:68ch; }
+
+  code, .mono { font-family:"IBM Plex Mono", ui-monospace, Menlo, monospace; }
+  code {
+    font-size:.85em; background:var(--surface-2); border:1px solid var(--rule);
+    border-radius:3px; padding:.08em .34em; word-break:break-word;
+  }
+
+  header.masthead { border-bottom:2px solid var(--ink); padding:52px 0 22px; margin-bottom:36px; }
+  .kicker {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:11px;
+    font-weight:600; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); margin-bottom:14px;
+  }
+  h1 {
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-size:clamp(30px,4.6vw,42px); font-weight:600; line-height:1.1;
+    letter-spacing:-.02em; margin:0 0 16px; text-wrap:balance;
+  }
+  .standfirst { font-size:18px; color:var(--ink-2); max-width:60ch; margin:0 0 24px; }
+  .meta {
+    display:flex; flex-wrap:wrap; gap:8px 28px;
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-size:12.5px; color:var(--ink-3);
+  }
+  .meta b { color:var(--ink-2); font-weight:500; }
+
+  section { margin-top:52px; }
+  .sec-head { border-bottom:1px solid var(--rule); padding-bottom:9px; margin-bottom:22px; }
+  h2 {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:22px;
+    font-weight:600; letter-spacing:-.012em; margin:0; text-wrap:balance;
+  }
+  h3 {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:15px;
+    font-weight:600; margin:26px 0 9px;
+  }
+  p { margin:0 0 14px; }
+  .col > p:last-child { margin-bottom:0; }
+
+  /* ── Resumen de severidad ─────────────────────────────────── */
+  .tally { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin:26px 0; }
+  .tally-box {
+    border:1px solid var(--rule); border-radius:5px; padding:16px 18px;
+    background:var(--surface); display:flex; flex-direction:column; gap:4px;
+  }
+  .tally-box.crit { border-color:var(--bad); background:var(--bad-soft); }
+  .tally-n {
+    font-family:"IBM Plex Mono", monospace; font-size:30px; font-weight:600;
+    line-height:1; font-variant-numeric:tabular-nums; color:var(--ink);
+  }
+  .tally-box.crit .tally-n { color:var(--bad); }
+  .tally-lbl {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:12.5px;
+    color:var(--ink-2); line-height:1.4;
+  }
+
+  /* ── Hallazgo ─────────────────────────────────────────────── */
+  .find {
+    background:var(--surface); border:1px solid var(--rule);
+    border-radius:5px; margin:20px 0; overflow:hidden; box-shadow:var(--shadow);
+  }
+  .find.crit { border-left:3px solid var(--bad); }
+  .find.med  { border-left:3px solid var(--warn); }
+  .find.low  { border-left:3px solid var(--ink-3); }
+  .find-head {
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+    padding:15px 18px 0;
+  }
+  .find-n {
+    font-family:"IBM Plex Mono", monospace; font-size:12px; font-weight:600;
+    color:var(--ink-3);
+  }
+  .find-title {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:16px;
+    font-weight:600; margin:0; flex:1; min-width:14ch; letter-spacing:-.005em;
+  }
+  .sev {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:10.5px;
+    font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    padding:3px 8px; border-radius:3px; white-space:nowrap;
+  }
+  .sev.crit { background:var(--bad-soft);  color:var(--bad); }
+  .sev.med  { background:var(--warn-soft); color:var(--warn); }
+  .sev.low  { background:var(--surface-2); color:var(--ink-3); }
+  .find-where {
+    font-family:"IBM Plex Mono", monospace; font-size:11.5px;
+    color:var(--ink-3); padding:4px 18px 0;
+  }
+  .find-body { padding:12px 18px 18px; }
+  .find-body > *:last-child { margin-bottom:0; }
+  .find-body p { font-size:15px; color:var(--ink-2); }
+
+  pre {
+    font-family:"IBM Plex Mono", monospace; font-size:12.5px; line-height:1.6;
+    margin:12px 0; overflow-x:auto; color:var(--ink-2);
+    background:var(--code-bg); border:1px solid var(--rule);
+    border-radius:4px; padding:13px 15px;
+  }
+  pre .c  { color:var(--ink-3); }
+  pre .hl { color:var(--bad); font-weight:500; }
+  pre .n  { color:var(--ok); font-weight:500; }
+
+  .tablewrap { overflow-x:auto; margin:16px 0; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; }
+  th {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:10.5px;
+    font-weight:600; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--ink-3); text-align:left; padding:0 14px 7px 0;
+    border-bottom:1px solid var(--rule-strong); white-space:nowrap;
+  }
+  td {
+    padding:10px 14px 10px 0; border-bottom:1px solid var(--rule);
+    vertical-align:top; color:var(--ink-2);
+  }
+  td:first-child, th:first-child { padding-left:0; }
+  td.mono { font-size:12.5px; color:var(--ink); white-space:nowrap; }
+
+  .callout {
+    background:var(--surface); border:1px solid var(--rule); border-radius:4px;
+    padding:16px 18px; margin:16px 0;
+  }
+  .callout.alarm { border-color:var(--bad); background:var(--bad-soft); }
+  .callout.good  { border-color:var(--ok);  background:var(--ok-soft); }
+  .callout h4 {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:14px;
+    font-weight:600; margin:0 0 7px; color:var(--ink);
+  }
+  .callout p { margin:0; font-size:14.5px; color:var(--ink-2); }
+  .callout p + p { margin-top:9px; }
+
+  /* ── Los dos modelos de reparto ───────────────────────────── */
+  .models { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:16px 0; }
+  .model {
+    border:1px solid var(--rule); border-radius:4px; padding:15px 16px;
+    background:var(--code-bg); display:flex; flex-direction:column; gap:8px;
+  }
+  .model-name {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:13.5px;
+    font-weight:600; color:var(--ink);
+  }
+  .model-call {
+    font-family:"IBM Plex Mono", monospace; font-size:11.5px; color:var(--accent);
+  }
+  .model p {
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-size:13px; line-height:1.5; color:var(--ink-2); margin:0;
+  }
+
+  /* ── Recorrido del dinero ─────────────────────────────────── */
+  .flow { margin:18px 0; border:1px solid var(--rule); border-radius:4px; overflow:hidden; }
+  .flow-row {
+    display:grid; grid-template-columns:1fr auto; gap:16px; align-items:baseline;
+    padding:11px 16px; border-bottom:1px solid var(--rule); background:var(--surface);
+  }
+  .flow-row:last-child { border-bottom:none; }
+  .flow-row.dup { background:var(--bad-soft); }
+  .flow-row.net { background:var(--surface-2); border-top:1px solid var(--rule-strong); }
+  .flow-what {
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-size:13.5px; color:var(--ink-2); line-height:1.45;
+  }
+  .flow-row.dup .flow-what { color:var(--bad); font-weight:600; }
+  .flow-row.net .flow-what { color:var(--ink); font-weight:600; }
+  .flow-amt {
+    font-family:"IBM Plex Mono", monospace; font-size:14px; font-weight:500;
+    color:var(--ink); font-variant-numeric:tabular-nums; white-space:nowrap;
+  }
+  .flow-row.dup .flow-amt { color:var(--bad); font-weight:600; }
+  .flow-stage {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:10.5px;
+    font-weight:600; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--ink-3); padding:10px 16px 6px; background:var(--surface-2);
+    border-bottom:1px solid var(--rule);
+  }
+
+  /* ── Fases del arreglo ────────────────────────────────────── */
+  .phases { display:flex; flex-direction:column; }
+  .ph {
+    display:grid; grid-template-columns:26px 1fr; gap:15px;
+    padding:16px 0; border-bottom:1px solid var(--rule);
+  }
+  .ph:first-child { border-top:1px solid var(--rule); }
+  .ph-n {
+    font-family:"IBM Plex Mono", monospace; font-size:13px; font-weight:600;
+    color:var(--ink-3); padding-top:2px;
+  }
+  .ph h4 {
+    font-family:"IBM Plex Sans", system-ui, sans-serif; font-size:15px;
+    font-weight:600; margin:0 0 5px;
+  }
+  .ph p { margin:0; font-size:14.5px; color:var(--ink-2); }
+
+  footer {
+    margin-top:64px; padding-top:18px; border-top:1px solid var(--rule);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    font-size:12.5px; color:var(--ink-3);
+  }
+
+  @media (max-width:700px) {
+    .wrap { padding:0 20px 64px; }
+    .tally { grid-template-columns:1fr; }
+    .models { grid-template-columns:1fr; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="kicker">urbont-api · auditoría del flujo de cobro</div>
+    <h1>Ocho fallos en el cobro</h1>
+    <p class="standfirst">
+      Tres permiten que un cliente decida cuánto se le cobra y a qué cuenta va el
+      pago del chofer. Otro le paga dos veces en cada viaje de valet.
+    </p>
+    <div class="meta">
+      <span><b>Alcance:</b> creación del cobro, captura, reparto, cancelación y webhooks</span>
+      <span><b>Fecha:</b> 9 sep 2026</span>
+      <span><b>Estado:</b> sin corregir</span>
+    </div>
+  </header>
+
+  <div class="col">
+    <p>
+      Revisión del camino completo del dinero. Los hallazgos están verificados
+      leyendo el código, no inferidos: cada uno cita el archivo y la línea.
+    </p>
+  </div>
+
+  <div class="tally">
+    <div class="tally-box crit">
+      <div class="tally-n">4</div>
+      <div class="tally-lbl">Críticos — permiten manipular o duplicar pagos</div>
+    </div>
+    <div class="tally-box">
+      <div class="tally-n">2</div>
+      <div class="tally-lbl">Serios — dinero que puede no cobrarse nunca</div>
+    </div>
+    <div class="tally-box">
+      <div class="tally-n">2</div>
+      <div class="tally-lbl">Menores — registro incompleto y código muerto</div>
+    </div>
+  </div>
+
+  <div class="col">
+    <div class="callout alarm">
+      <h4>Los tres primeros comparten una sola raíz</h4>
+      <p>
+        <code>POST /api/integrations/stripe/create-ride-payment</code> confía en el
+        cuerpo de la petición para <strong>el importe</strong>, <strong>la cuenta
+        de destino</strong> y <strong>el viaje</strong>. La única barrera es tener
+        un token válido: no comprueba rol ni relación con el viaje.
+      </p>
+    </div>
+  </div>
+
+  <section>
+    <div class="sec-head"><h2>Críticos</h2></div>
+
+    <div class="find crit">
+      <div class="find-head">
+        <span class="find-n">01</span>
+        <h3 class="find-title">Cualquiera puede desviar el pago del chofer a su cuenta</h3>
+        <span class="sev crit">Crítico</span>
+      </div>
+      <div class="find-where">server/api/integrations.ts:667</div>
+      <div class="find-body">
+<pre>let connectedAccountId = driverConnectedAccountId || null;   <span class="hl">// ← del body</span>
+
+if (!connectedAccountId) {
+  <span class="c">// recién aquí se busca el chofer real en la base de datos</span>
+}</pre>
+        <p>
+          Si el cliente manda <code>driverConnectedAccountId</code>, la búsqueda en
+          base de datos <strong>se salta por completo</strong>. Cualquier usuario
+          autenticado puede crear el cobro de un viaje dirigiendo el 90% a una
+          cuenta de Stripe Connect suya.
+        </p>
+      </div>
+    </div>
+
+    <div class="find crit">
+      <div class="find-head">
+        <span class="find-n">02</span>
+        <h3 class="find-title">El importe del cobro lo decide el cliente</h3>
+        <span class="sev crit">Crítico</span>
+      </div>
+      <div class="find-where">server/api/integrations.ts:659 · server/api/rides/create.ts:333</div>
+      <div class="find-body">
+        <p>
+          <code>totalFareUSD</code> viene del cuerpo y sólo se valida que esté entre
+          $1 y $10.000. <strong>Nunca se compara con el <code>fare</code> ni el
+          <code>locked_fare</code> del viaje</strong>, que son los que el propio
+          servidor calculó. Un cliente modificado paga $1 por un viaje de $200.
+        </p>
+        <p>
+          Lo mismo con <code>payment_intent_id</code> al crear el viaje: sale del
+          cuerpo, así que se puede asociar un PaymentIntent ajeno o de otro importe.
+        </p>
+      </div>
+    </div>
+
+    <div class="find crit">
+      <div class="find-head">
+        <span class="find-n">03</span>
+        <h3 class="find-title">No se comprueba que el viaje sea de quien paga</h3>
+        <span class="sev crit">Crítico</span>
+      </div>
+      <div class="find-where">server/api/integrations.ts, endpoint create-ride-payment</div>
+      <div class="find-body">
+        <p>
+          El <code>rideId</code> llega en el cuerpo y no se verifica que el viaje
+          pertenezca a quien llama. Combinado con los dos anteriores, se puede
+          intervenir el cobro de viajes de terceros.
+        </p>
+      </div>
+    </div>
+
+    <div class="find crit">
+      <div class="find-head">
+        <span class="find-n">04</span>
+        <h3 class="find-title">Doble pago al chofer en el flujo de valet</h3>
+        <span class="sev crit">Crítico</span>
+      </div>
+      <div class="find-where">server/api/rides/valet.ts:399 + server/api/rides/status.ts:447</div>
+      <div class="find-body">
+        <p>
+          Stripe permite repartir el dinero de dos formas, y el backend usa las dos
+          sin que ninguna sepa de la otra. La diferencia está en <strong>quién mueve
+          el dinero</strong>.
+        </p>
+
+        <div class="models">
+          <div class="model">
+            <div class="model-name">Cargo con destino</div>
+            <div class="model-call">transfer_data + application_fee_amount</div>
+            <p>
+              El pasajero paga a Urbont y <strong>Stripe reparte solo, en el mismo
+              momento del cobro</strong>. Le manda al chofer su parte y Urbont se
+              queda con la comisión. Una sola operación, sin código de por medio.
+            </p>
+          </div>
+          <div class="model">
+            <div class="model-name">Transferencia aparte</div>
+            <div class="model-call">stripe.transfers.create()</div>
+            <p>
+              El pasajero paga y <strong>todo queda en Urbont</strong>. Después, en
+              otro momento, Urbont envía la parte del chofer desde su propio saldo.
+              Dos operaciones separadas.
+            </p>
+          </div>
+        </div>
+
+        <p>
+          El checkout de valet usa el primero (<code>valet.ts:400</code>), y además
+          omite el <code>amount</code>, así que Stripe le transfiere al chofer todo
+          el cargo menos la comisión. Cuando ese viaje se completa,
+          <code>status.ts:447</code> ejecuta el segundo <strong>sin comprobar que el
+          primero ya ocurrió</strong>.
+        </p>
+
+        <h3>El recorrido del dinero en un viaje de $110</h3>
+
+        <div class="flow">
+          <div class="flow-stage">Al pagar — Stripe reparte solo</div>
+          <div class="flow-row">
+            <span class="flow-what">El pasajero paga</span>
+            <span class="flow-amt">$110.00</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-what">Stripe transfiere al chofer, automáticamente</span>
+            <span class="flow-amt">−$90.00</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-what">El webhook paga la comisión del valet</span>
+            <span class="flow-amt">−$10.00</span>
+          </div>
+          <div class="flow-row net">
+            <span class="flow-what">Urbont se queda con su 10% — correcto hasta acá</span>
+            <span class="flow-amt">$10.00</span>
+          </div>
+
+          <div class="flow-stage">Al completar — el backend transfiere otra vez</div>
+          <div class="flow-row dup">
+            <span class="flow-what">transfers.create(90% de $110) → al chofer, de nuevo</span>
+            <span class="flow-amt">−$99.00</span>
+          </div>
+          <div class="flow-row net">
+            <span class="flow-what">Resultado real para Urbont</span>
+            <span class="flow-amt">−$89.00</span>
+          </div>
+        </div>
+
+        <p>
+          El chofer se lleva <strong>$189 en vez de $90</strong>. Y esa segunda
+          transferencia no sale del dinero del pasajero —que ya se repartió— sino
+          <strong>del saldo propio de Urbont</strong>: en un viaje donde debía ganar
+          $10, pierde $89.
+        </p>
+
+        <div class="callout alarm">
+          <h4>Por qué no se detecta solo</h4>
+          <p>
+            Las dos operaciones son legítimas por separado. Stripe no puede saber
+            que la transferencia manual duplica un reparto que él ya hizo: para él
+            son dos movimientos distintos sobre la misma cuenta. Y en el código,
+            <strong>no existe ninguna comprobación de <code>pi.transfer_data</code></strong>
+            en todo el backend — verificado archivo por archivo.
+          </p>
+        </div>
+
+        <div class="callout">
+          <h4>Un efecto secundario menos visible</h4>
+          <p>
+            Cuando el reparto se fija al crear el PaymentIntent, el recargo por
+            espera que se añade al capturar <strong>no llega al chofer</strong>: su
+            parte quedó congelada antes de que ese importe existiera.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Serios</h2></div>
+
+    <div class="find med">
+      <div class="find-head">
+        <span class="find-n">05</span>
+        <h3 class="find-title">Si el proceso muere durante la captura, el dinero no se cobra</h3>
+        <span class="sev med">Serio</span>
+      </div>
+      <div class="find-where">server/api/rides/status.ts:404 · server/jobs/cron.ts</div>
+      <div class="find-body">
+<pre>stripe.paymentIntents.retrieve(...).then(async (pi) =&gt; {
+  <span class="c">// captura + transferencia al chofer + comisión del valet</span>
+})
+<span class="hl">// ↑ sin await</span>
+
+<span class="c">// …y el handler responde en la línea 700, con eso todavía en vuelo</span>
+res.json({ success: true });</pre>
+        <p>
+          Si el contenedor se recicla —un despliegue de ECS, por ejemplo— la captura
+          no ocurre. El <code>.catch</code> sólo escribe un log y
+          <strong>no hay ningún reintento</strong>: <code>cron.ts</code> tiene doce
+          tareas programadas y ninguna reconcilia PaymentIntents sin capturar.
+        </p>
+        <p>
+          Las autorizaciones de Stripe expiran a los 7 días. Ese viaje no se cobra
+          nunca, y nadie se entera.
+        </p>
+      </div>
+    </div>
+
+    <div class="find med">
+      <div class="find-head">
+        <span class="find-n">06</span>
+        <h3 class="find-title">El webhook completa viajes saltándose la máquina de estados</h3>
+        <span class="sev med">Serio</span>
+      </div>
+      <div class="find-where">server/api/integrations.ts:91</div>
+      <div class="find-body">
+        <p>
+          Al recibir <code>payment_intent.succeeded</code>, el webhook escribe
+          <code>ride_status: 'completed'</code> directamente, sin pasar por
+          <code>validateTransition</code>. Un pago que llega antes de tiempo cierra
+          el viaje aunque el chofer no lo haya terminado.
+        </p>
+        <p>
+          El flujo de valet ya tiene la excepción bien resuelta: cuando el tipo es
+          <code>valet_card_checkout</code> no toca el estado y deja que lo controle
+          el chofer. Falta aplicar ese mismo criterio al resto.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>Menores</h2></div>
+
+    <div class="find low">
+      <div class="find-head">
+        <span class="find-n">07</span>
+        <h3 class="find-title">El recargo por espera puede no quedar registrado</h3>
+        <span class="sev low">Menor</span>
+      </div>
+      <div class="find-where">server/api/rides/status.ts:391</div>
+      <div class="find-body">
+        <p>
+          El <code>fare</code> actualizado se escribe con <code>void</code> —promesa
+          sin esperar—. Se cobra el importe con el recargo, pero la fila puede
+          quedarse con el valor viejo si esa escritura falla. Recibo e historial
+          mostrarían menos de lo cobrado.
+        </p>
+      </div>
+    </div>
+
+    <div class="find low">
+      <div class="find-head">
+        <span class="find-n">08</span>
+        <h3 class="find-title"><code>driverRating</code> se recibe y nunca se usa</h3>
+        <span class="sev low">Menor</span>
+      </div>
+      <div class="find-where">server/api/integrations.ts:659</div>
+      <div class="find-body">
+        <p>
+          Se extrae del cuerpo y no se utiliza en ningún punto. Ruido que sugiere
+          una funcionalidad a medio hacer.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head"><h2>El arreglo</h2></div>
+
+    <div class="col">
+      <p>
+        La decisión de fondo ya está tomada: <strong>unificar el reparto en la
+        transferencia aparte</strong> y quitar <code>transfer_data</code> de donde
+        se crean los cobros. Es el único camino que funciona en el flujo normal,
+        donde al reservar todavía no hay chofer, y elimina el doble pago por
+        construcción en vez de por comprobación.
+      </p>
+    </div>
+
+    <div class="phases">
+      <div class="ph">
+        <div class="ph-n">1</div>
+        <div>
+          <h4>Cerrar las tres entradas manipulables</h4>
+          <p>
+            La cuenta del chofer se resuelve siempre desde <code>profiles</code>.
+            El importe sale del viaje, no del cuerpo. Y se comprueba que el viaje
+            sea de quien llama, o de su chofer asignado.
+          </p>
+        </div>
+      </div>
+      <div class="ph">
+        <div class="ph-n">2</div>
+        <div>
+          <h4>Un solo camino para el reparto</h4>
+          <p>
+            Fuera <code>application_fee_amount</code> y <code>transfer_data</code>
+            de los dos sitios donde se crean cobros. Todo entra a la plataforma, y
+            el reparto ocurre sólo al completar el viaje. La comisión del valet ya
+            se transfiere así y funciona.
+          </p>
+        </div>
+      </div>
+      <div class="ph">
+        <div class="ph-n">3</div>
+        <div>
+          <h4>Que la captura no se pierda</h4>
+          <p>
+            Esperar la captura antes de responder — es dinero, el cliente puede
+            aguardar los milisegundos que tarda. Y añadir una tarea cada quince
+            minutos que reintente los viajes completados sin cobrar.
+          </p>
+        </div>
+      </div>
+      <div class="ph">
+        <div class="ph-n">4</div>
+        <div>
+          <h4>Estados y registro</h4>
+          <p>
+            Pasar el cambio a <code>completed</code> por la máquina de estados,
+            esperar la escritura del recargo por espera, y quitar el parámetro
+            muerto.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout alarm">
+      <h4>Antes de desplegar, medir el daño</h4>
+      <p>
+        Conviene cruzar en Stripe los cargos que tengan <code>application_fee</code>
+        <strong>y además</strong> una transferencia manual sobre el mismo cargo. Eso
+        da los viajes de valet donde se pagó dos veces y el monto a recuperar. Es
+        una consulta de sólo lectura y se puede hacer en paralelo.
+      </p>
+    </div>
+  </section>
+
+  <footer>
+    Hallazgos verificados sobre el código de <span class="mono">urbont-api</span> ·
+    Ninguno ha sido corregido todavía
+  </footer>
+
+</div>

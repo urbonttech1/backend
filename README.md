@@ -25,6 +25,7 @@ supabase_schema.sql    Esquema base
 | Documento | Para qué |
 |---|---|
 | [`docs/API_PRECIOS_MOBILE.md`](docs/API_PRECIOS_MOBILE.md) | Contrato de precios para la app móvil: cotización por distancia y por hora, recargo por demanda, y qué constantes puede borrar el APK |
+| [`docs/Auditoria_Cobro_Stripe.html`](docs/Auditoria_Cobro_Stripe.html) | Ocho fallos en el flujo de cobro, cuatro críticos. **Sin corregir** |
 | [`docs/AWS_ECS_DEPLOY.md`](docs/AWS_ECS_DEPLOY.md) | Despliegue en ECS Fargate |
 | [`docs/CRON_JOBS.md`](docs/CRON_JOBS.md) | Tareas programadas |
 | [`docs/PANEL_CONDUCTORES.md`](docs/PANEL_CONDUCTORES.md) · [`docs/PANEL_SISTEMA.md`](docs/PANEL_SISTEMA.md) | Panel de administración |
