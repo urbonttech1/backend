@@ -368,6 +368,78 @@ async function startServer() {
     next();
   });
 
+  // ── CORS ────────────────────────────────────────────────────────────────────
+  // Va AQUÍ, antes que cualquier ruta y antes que los limitadores de peticiones,
+  // y no más abajo como estaba. Un middleware sólo afecta a lo que se registra
+  // después de él, así que con el orden anterior:
+  //
+  //   - GET /api/healthz (declarado más arriba) respondía SIN
+  //     Access-Control-Allow-Origin, y el navegador de la app descartaba la
+  //     respuesta. El OPTIONS sí funcionaba —app.get no captura OPTIONS, así que
+  //     el preflight llegaba hasta aquí— y eso hacía el fallo desconcertante.
+  //
+  //   - Un 429 de los limitadores tampoco llevaba la cabecera: el cliente veía
+  //     un error de CORS en vez de «demasiadas peticiones». Esto no lo reportó
+  //     nadie, pero es el mismo fallo.
+  //
+  // Regla general: el CORS va primero, porque también las respuestas de error
+  // tienen que ser legibles para quien las pidió.
+  const HYPERLIFT_ORIGIN = process.env.HYPERLIFT_URL 
+    ? `https://${process.env.HYPERLIFT_URL}` 
+    : 'https://app.urbont.com';
+  
+  const envOrigins = process.env.ALLOWED_ORIGIN
+    ? process.env.ALLOWED_ORIGIN.split(',').map(s => s.trim())
+    : [];
+  const corsOrigins = Array.from(new Set([
+    'http://localhost:5173',
+    'http://localhost:5000',
+    'http://localhost:8080',
+    // ── Capacitor / native WebView origins ───────────────────────────────────
+    // Android (androidScheme: 'https') — the WebView uses https://localhost
+    'https://localhost',
+    // Android (androidScheme: 'http') and some older Capacitor versions
+    'http://localhost',
+    // Capacitor iOS and certain Android configs
+    'capacitor://localhost',
+    // Ionic / legacy Capacitor
+    'ionic://localhost',
+    // ─────────────────────────────────────────────────────────────────────────
+    'https://app.urbont.com',
+    'https://www.urbont.com',
+    'https://urbont.com',
+    HYPERLIFT_ORIGIN,
+    ...envOrigins
+  ]));
+  // FIX: corsOpen was true whenever ALLOWED_ORIGIN was unset, including in production.
+  // This meant any origin could make credentialed cross-origin requests to the API.
+  // In production the hardcoded allowlist (app.urbont.com, localhost, Capacitor origins)
+  // is the correct default — open mode is only appropriate in local development.
+  const corsOpen = envOrigins.length === 0 && process.env.NODE_ENV !== 'production';
+  if (process.env.NODE_ENV === 'production' && envOrigins.length === 0) {
+    logger.warn('[CORS] ALLOWED_ORIGIN is not set — using hardcoded origin allowlist. Set ALLOWED_ORIGIN=https://app.urbont.com to explicitly configure allowed origins.');
+  }
+
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const origin = req.headers.origin || '';
+    if (corsOpen) {
+      // Development only: reflect any origin so local tooling works without configuration.
+      res.setHeader('Access-Control-Allow-Origin', origin || '*');
+    } else if (origin && corsOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+    // If origin is not in the allowlist, no Access-Control-Allow-Origin header is set,
+    // which causes browsers to block the response — correct secure behavior.
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
+    res.setHeader('Access-Control-Max-Age', '86400');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+
 
   // ── Health check — must be BEFORE rate limiters so monitoring tools are never blocked ──
   // Cloud Run uses this for liveness/readiness probes.
@@ -439,61 +511,6 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-  const HYPERLIFT_ORIGIN = process.env.HYPERLIFT_URL 
-    ? `https://${process.env.HYPERLIFT_URL}` 
-    : 'https://app.urbont.com';
-  
-  const envOrigins = process.env.ALLOWED_ORIGIN
-    ? process.env.ALLOWED_ORIGIN.split(',').map(s => s.trim())
-    : [];
-  const corsOrigins = Array.from(new Set([
-    'http://localhost:5173',
-    'http://localhost:5000',
-    'http://localhost:8080',
-    // ── Capacitor / native WebView origins ───────────────────────────────────
-    // Android (androidScheme: 'https') — the WebView uses https://localhost
-    'https://localhost',
-    // Android (androidScheme: 'http') and some older Capacitor versions
-    'http://localhost',
-    // Capacitor iOS and certain Android configs
-    'capacitor://localhost',
-    // Ionic / legacy Capacitor
-    'ionic://localhost',
-    // ─────────────────────────────────────────────────────────────────────────
-    'https://app.urbont.com',
-    'https://www.urbont.com',
-    'https://urbont.com',
-    HYPERLIFT_ORIGIN,
-    ...envOrigins
-  ]));
-  // FIX: corsOpen was true whenever ALLOWED_ORIGIN was unset, including in production.
-  // This meant any origin could make credentialed cross-origin requests to the API.
-  // In production the hardcoded allowlist (app.urbont.com, localhost, Capacitor origins)
-  // is the correct default — open mode is only appropriate in local development.
-  const corsOpen = envOrigins.length === 0 && process.env.NODE_ENV !== 'production';
-  if (process.env.NODE_ENV === 'production' && envOrigins.length === 0) {
-    logger.warn('[CORS] ALLOWED_ORIGIN is not set — using hardcoded origin allowlist. Set ALLOWED_ORIGIN=https://app.urbont.com to explicitly configure allowed origins.');
-  }
-
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    const origin = req.headers.origin || '';
-    if (corsOpen) {
-      // Development only: reflect any origin so local tooling works without configuration.
-      res.setHeader('Access-Control-Allow-Origin', origin || '*');
-    } else if (origin && corsOrigins.includes(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-    }
-    // If origin is not in the allowlist, no Access-Control-Allow-Origin header is set,
-    // which causes browsers to block the response — correct secure behavior.
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
-    res.setHeader('Access-Control-Max-Age', '86400');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    if (req.method === 'OPTIONS') return res.sendStatus(204);
-    next();
-  });
 
   app.use("/api/security", securityRouter);
   app.use("/api/referrals", referralRouter);

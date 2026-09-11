@@ -193,8 +193,14 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
     'https://app.urbont.com',
     'https://www.urbont.com',
     'https://urbont.com',
-    'capacitor://localhost',
-    'http://localhost',
+    // ── Orígenes nativos de Capacitor ────────────────────────────────────────
+    // La app ya no carga app.urbont.com: las pantallas viajan dentro del APK y
+    // Capacitor las sirve desde el propio teléfono.
+    'capacitor://localhost',   // iOS, y algunas configuraciones de Android
+    'https://localhost',       // Android con androidScheme: 'https' — el habitual
+    'http://localhost',        // Android con androidScheme: 'http'
+    'ionic://localhost',       // Ionic y versiones antiguas de Capacitor
+    // ─────────────────────────────────────────────────────────────────────────
     'http://localhost:5173',
     'http://localhost:3000',
     'http://localhost:8080',
@@ -217,7 +223,14 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
           callback(null, true);
           return;
         }
-        const exactMatch = SOCKET_ALLOWED_ORIGINS.some(o => origin === o || origin.startsWith(o));
+        // Igualdad exacta, nunca `startsWith`.
+        //
+        // Antes esto era `origin === o || origin.startsWith(o)`, y ese segundo
+        // término dejaba pasar `http://localhost.evil.com` —empieza por
+        // `http://localhost`— y también `https://app.urbont.com.evil.com`.
+        // Cualquiera que registrara uno de esos dominios abría un socket contra
+        // la API con credenciales. Un origen es una cadena completa o no es.
+        const exactMatch = SOCKET_ALLOWED_ORIGINS.includes(origin);
         const patternMatch = SOCKET_ALLOWED_PATTERNS.some(p => p.test(origin));
         if (exactMatch || patternMatch) {
           callback(null, true);
