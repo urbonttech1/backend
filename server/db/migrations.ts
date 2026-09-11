@@ -1151,6 +1151,65 @@ export async function runMigrations() {
       ALTER TABLE rides ADD COLUMN IF NOT EXISTS long_pickup_fee NUMERIC(10,2) DEFAULT 0;
     `);
 
+    // ── Zonas de servicio ─────────────────────────────────────────────────────
+    //
+    // Saca la geocerca del código a la base, para poder abrir una ciudad desde el
+    // panel en vez de con un despliegue. Antes era un círculo con centro y radio
+    // hardcodeados en rides/create.ts.
+    //
+    // Por ahora sólo círculos.
+    //
+    // El plan contemplaba una columna `boundary GEOGRAPHY(POLYGON)` para refinar
+    // la forma después, pero PostGIS está instalado en el esquema `tiger` —efecto
+    // colateral de postgis_tiger_geocoder— y no en `public` ni `extensions`, así
+    // que el tipo `geography` no se resuelve desde aquí. Los círculos no lo
+    // necesitan: la verificación es aritmética en memoria. Cuando se quiera pasar
+    // a polígonos habrá que reubicar la extensión primero.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS service_zones (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        active      BOOLEAN NOT NULL DEFAULT true,
+        -- El surge se calcula con la hora local de la ciudad, no la del servidor.
+        timezone    TEXT NOT NULL DEFAULT 'America/New_York',
+        center_lat  NUMERIC(10,6) NOT NULL,
+        center_lng  NUMERIC(10,6) NOT NULL,
+        radius_km   NUMERIC(8,2)  NOT NULL,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+
+      -- Un radio de 0 dejaría la zona sin cubrir nada.
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'service_zones_radius_check') THEN
+          ALTER TABLE service_zones ADD CONSTRAINT service_zones_radius_check CHECK (radius_km > 0);
+        END IF;
+      END $$;
+
+      CREATE INDEX IF NOT EXISTS idx_service_zones_active ON service_zones (active) WHERE active;
+    `);
+
+    // Semilla: exactamente el círculo que estaba en el código. Sin ON CONFLICT
+    // DO UPDATE — si alguien ya ajustó el radio desde el panel, no se pisa.
+    await client.query(`
+      INSERT INTO service_zones (id, name, timezone, center_lat, center_lng, radius_km)
+      VALUES ('miami', 'Miami / Sur de Florida', 'America/New_York', 25.761700, -80.191800, 125)
+      ON CONFLICT (id) DO NOTHING
+    `);
+
+    // La zona en la que se creó el viaje, congelada como locked_fare: el pasajero
+    // aceptó un precio que pertenece a una zona, y cruzar una frontera a mitad de
+    // trayecto no debe cambiarlo.
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS zone_id TEXT`);
+
+    // NOTA — `find_nearby_drivers` sigue rota: referencia
+    // `driver_locations.location`, una columna GEOGRAPHY que nunca se creó, así
+    // que el RPC falla en cada despacho y socketService cae a una consulta manual
+    // sin índice espacial. Arreglarla exige PostGIS accesible, y hoy vive en el
+    // esquema `tiger` (ver la nota de service_zones). Queda pendiente de reubicar
+    // la extensión; el repliegue actual funciona, sólo que sin índice.
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

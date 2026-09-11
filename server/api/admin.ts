@@ -9,6 +9,7 @@ import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
+import { invalidateZones } from '../services/serviceZones';
 import { DEFAULT_FARE_CLASSES, type FareClass } from '../config/pricing';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
@@ -1431,6 +1432,212 @@ adminRouter.get("/feedback", async (_req: Request, res: Response) => {
 
 // ─── App Config ───────────────────────────────────────────────────────────────
 
+// ─── Zonas de servicio ───────────────────────────────────────────────────────
+//
+// Dónde opera Urbont. Antes era un círculo hardcodeado en rides/create.ts y abrir
+// una ciudad exigía un despliegue; ahora es una fila en `service_zones`.
+//
+// Cada escritura llama a `invalidateZones()`: sin eso el cambio no surtiría
+// efecto hasta el próximo arranque, que fue justo el bug del editor de tarifas.
+
+/** Registra en audit_logs quién tocó el área de servicio. */
+async function auditarZona(req: Request, accion: string, detalle: string): Promise<void> {
+  try {
+    await pgPool.query(
+      `INSERT INTO audit_logs (admin_name, action, target, ip) VALUES ($1, $2, $3, $4)`,
+      [req.adminUser?.name || req.adminUser?.email || 'desconocido', accion, detalle, req.ip ?? null],
+    );
+  } catch (e) {
+    logger.warn({ err: errMsg(e), accion, detalle }, '[admin/zones] no se pudo registrar en audit_logs');
+  }
+}
+
+adminRouter.get("/zones", async (_req: Request, res: Response) => {
+  try {
+    const { rows } = await pgPool.query(`
+      SELECT id, name, active, timezone, center_lat, center_lng, radius_km,
+             false AS has_boundary, updated_at
+        FROM service_zones ORDER BY active DESC, name ASC
+    `);
+    res.json({ zones: rows });
+  } catch (err: unknown) {
+    logger.error(`[admin/zones] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load service zones' });
+  }
+});
+
+adminRouter.post("/zones", async (req: Request, res: Response) => {
+  const { id, name, centerLat, centerLng, radiusKm, timezone } = req.body as Record<string, unknown>;
+
+  const slug = String(id ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  const lat = Number(centerLat), lng = Number(centerLng), radio = Number(radiusKm);
+
+  if (!slug) return res.status(400).json({ error: 'id is required (letters, digits, - and _).' });
+  if (!String(name ?? '').trim()) return res.status(400).json({ error: 'name is required.' });
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) return res.status(400).json({ error: 'centerLat must be between -90 and 90.' });
+  if (!Number.isFinite(lng) || lng < -180 || lng > 180) return res.status(400).json({ error: 'centerLng must be between -180 and 180.' });
+  if (!Number.isFinite(radio) || radio <= 0) return res.status(400).json({ error: 'radiusKm must be greater than 0.' });
+
+  try {
+    // Nace DESACTIVADA, aunque la columna venga con default true.
+    //
+    // Crear una zona es escribir unas coordenadas a mano. Un dígito de más en la
+    // latitud abriría servicio en mitad del océano sin que nadie lo mirara, y la
+    // plataforma empezaría a aceptar viajes ahí de inmediato. Se crea, se revisa
+    // en el mapa de la pantalla, y sólo entonces se activa.
+    const { rows } = await pgPool.query(
+      `INSERT INTO service_zones (id, name, timezone, center_lat, center_lng, radius_km, active)
+       VALUES ($1, $2, COALESCE($3,'America/New_York'), $4, $5, $6, false)
+       RETURNING id, name, active, timezone, center_lat, center_lng, radius_km`,
+      [slug, String(name).trim(), timezone ? String(timezone) : null, lat, lng, radio],
+    );
+    await invalidateZones();
+    await auditarZona(req, 'zones.create', `${slug} → ${lat},${lng} r=${radio}km`);
+    res.json({ success: true, zone: rows[0] });
+  } catch (err: unknown) {
+    if (String(errMsg(err)).includes('duplicate key')) {
+      return res.status(409).json({ error: `Zone '${slug}' already exists.` });
+    }
+    logger.error(`[admin/zones] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to create service zone' });
+  }
+});
+
+adminRouter.patch("/zones/:id", async (req: Request, res: Response) => {
+  const { name, centerLat, centerLng, radiusKm, timezone } = req.body as Record<string, unknown>;
+
+  const sets: string[] = [];
+  const vals: unknown[] = [];
+  const applied: Record<string, unknown> = {};
+  const add = (col: string, key: string, v: unknown) => {
+    sets.push(`${col} = $${vals.length + 1}`); vals.push(v); applied[key] = v;
+  };
+
+  if (name !== undefined && String(name).trim()) add('name', 'name', String(name).trim());
+  if (timezone !== undefined && String(timezone).trim()) add('timezone', 'timezone', String(timezone).trim());
+  if (centerLat !== undefined) {
+    const v = Number(centerLat);
+    if (!Number.isFinite(v) || v < -90 || v > 90) return res.status(400).json({ error: 'centerLat must be between -90 and 90.' });
+    add('center_lat', 'centerLat', v);
+  }
+  if (centerLng !== undefined) {
+    const v = Number(centerLng);
+    if (!Number.isFinite(v) || v < -180 || v > 180) return res.status(400).json({ error: 'centerLng must be between -180 and 180.' });
+    add('center_lng', 'centerLng', v);
+  }
+  if (radiusKm !== undefined) {
+    const v = Number(radiusKm);
+    // Un radio de 0 dejaría la zona sin cubrir nada, desde una pantalla que no
+    // avisa de ello. Se rechaza en vez de aceptarlo en silencio.
+    if (!Number.isFinite(v) || v <= 0) return res.status(400).json({ error: 'radiusKm must be greater than 0.' });
+    add('radius_km', 'radiusKm', v);
+  }
+
+  if (sets.length === 0) return res.status(400).json({ error: 'Nothing to update.' });
+
+  try {
+    vals.push(req.params.id);
+    const { rows } = await pgPool.query(
+      `UPDATE service_zones SET ${sets.join(', ')}, updated_at = NOW()
+        WHERE id = $${vals.length}
+        RETURNING id, name, active, timezone, center_lat, center_lng, radius_km`,
+      vals,
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Zone not found.' });
+
+    await invalidateZones();
+    await auditarZona(req, 'zones.update', `${req.params.id} → ${Object.entries(applied).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+    res.json({ success: true, zone: rows[0], applied });
+  } catch (err: unknown) {
+    logger.error(`[admin/zones] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to update service zone' });
+  }
+});
+
+adminRouter.patch("/zones/:id/active", async (req: Request, res: Response) => {
+  const { active } = req.body as { active?: boolean };
+  if (typeof active !== 'boolean') return res.status(400).json({ error: 'active must be a boolean.' });
+
+  try {
+    // Desactivar la última zona activa dejaría a la plataforma sin poder aceptar
+    // un solo viaje. Se comprueba antes de escribir, no después.
+    if (!active) {
+      const { rows: activas } = await pgPool.query<{ n: string }>(
+        `SELECT COUNT(*) AS n FROM service_zones WHERE active AND id <> $1`, [req.params.id],
+      );
+      if (parseInt(activas[0]?.n ?? '0', 10) === 0) {
+        return res.status(409).json({
+          error: 'Cannot deactivate the last active zone — nobody would be able to book a ride.',
+        });
+      }
+    }
+
+    const { rows } = await pgPool.query(
+      `UPDATE service_zones SET active = $1, updated_at = NOW() WHERE id = $2
+       RETURNING id, name, active`,
+      [active, req.params.id],
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'Zone not found.' });
+
+    await invalidateZones();
+    await auditarZona(req, active ? 'zones.activate' : 'zones.deactivate', String(req.params.id));
+    res.json({ success: true, zone: rows[0] });
+  } catch (err: unknown) {
+    logger.error(`[admin/zones] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to change zone status' });
+  }
+});
+
+/**
+ * Borra una zona. Existe para deshacer un alta equivocada, no para retirar una
+ * ciudad — eso es desactivarla.
+ *
+ * Dos guardas, porque `rides.zone_id` es TEXT sin clave foránea a propósito (el
+ * viaje guarda la zona como etiqueta histórica) y por tanto la base no impediría
+ * nada por sí sola:
+ *
+ *  - Una zona activa no se borra. Primero se desactiva, que ya avisa si es la
+ *    última y dejaría la plataforma sin poder aceptar viajes.
+ *  - Una zona con viajes no se borra nunca. Su id es lo único que dice dónde
+ *    ocurrieron, y sin la fila queda un identificador huérfano que ya no se puede
+ *    interpretar.
+ */
+adminRouter.delete("/zones/:id", async (req: Request, res: Response) => {
+  try {
+    const { rows: zona } = await pgPool.query<{ name: string; active: boolean }>(
+      `SELECT name, active FROM service_zones WHERE id = $1`, [req.params.id],
+    );
+    if (zona.length === 0) return res.status(404).json({ error: 'Zone not found.' });
+
+    if (zona[0].active) {
+      return res.status(409).json({
+        error: 'Deactivate the zone before deleting it.',
+        errorCode: 'ZONE_ACTIVE',
+      });
+    }
+
+    const { rows: usos } = await pgPool.query<{ n: string }>(
+      `SELECT COUNT(*) AS n FROM rides WHERE zone_id = $1`, [req.params.id],
+    );
+    const viajes = parseInt(usos[0]?.n ?? '0', 10);
+    if (viajes > 0) {
+      return res.status(409).json({
+        error: `Cannot delete: ${viajes} ride(s) belong to this zone. Leave it deactivated instead.`,
+        errorCode: 'ZONE_HAS_RIDES',
+        rides: viajes,
+      });
+    }
+
+    await pgPool.query(`DELETE FROM service_zones WHERE id = $1`, [req.params.id]);
+    await invalidateZones();
+    await auditarZona(req, 'zones.delete', `${req.params.id} (${zona[0].name})`);
+    res.json({ success: true, deleted: req.params.id });
+  } catch (err: unknown) {
+    logger.error(`[admin/zones] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to delete service zone' });
+  }
+});
+
 adminRouter.get("/config", async (_req: Request, res: Response) => {
   try {
     const { rows } = await pgPool.query(`SELECT key, value, updated_at FROM app_config ORDER BY key`);
@@ -1446,7 +1653,10 @@ adminRouter.get("/config", async (_req: Request, res: Response) => {
 
 adminRouter.put("/config/:key", async (req: Request, res: Response) => {
   const { value } = req.body;
-  const safeKeys = ['maintenance_mode', 'min_version', 'surge_multiplier', 'surge_reason', 'service_area_km'];
+  // `service_area_km` salió de esta lista: el área de servicio vive en
+  // `service_zones` y se edita desde /zones. Seguir aceptándola aquí dejaba una
+  // perilla que se guardaba, no fallaba, y no cambiaba absolutamente nada.
+  const safeKeys = ['maintenance_mode', 'min_version', 'surge_multiplier', 'surge_reason'];
   if (!safeKeys.includes(req.params.key)) return res.status(400).json({ error: 'Config key not editable' });
   try {
     await pgPool.query(

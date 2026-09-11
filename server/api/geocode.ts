@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { createContextLogger } from "../lib/logger";
+import { getSearchBias, ensureZonesFresh } from "../services/serviceZones";
 
 export const geocodeRouter = Router();
 
@@ -188,31 +189,33 @@ geocodeRouter.get('/directions', async (req: Request, res: Response) => {
   }
 });
 
-// Miami service-area bounding box + center
-// SW corner: 25.1, -80.9  |  NE corner: 26.7, -80.0
-// Covers Greater Miami, Miami Beach, Fort Lauderdale, Homestead, Keys north of Key Largo,
-// Hollywood, Aventura, Pembroke Pines, Doral, Kendall, Cutler Bay, Pinecrest, Coral Gables,
-// Hialeah, Miami Lakes, Sweetwater, Westchester, etc.
-const MIAMI_CENTER_LAT  = 25.7617;
-const MIAMI_CENTER_LNG  = -80.1918;
-const MIAMI_RADIUS_M    = 100000; // 100 km — covers entire South Florida metro
-const MIAMI_BOUNDS_SW   = '25.10,-80.90';
-const MIAMI_BOUNDS_NE   = '26.70,-80.00';
+// El centro, el radio y la caja con que se sesga la búsqueda de direcciones salen
+// de `service_zones` (ver services/serviceZones.ts). Antes eran cinco constantes
+// con las coordenadas de Miami: abrir una segunda ciudad habría dejado a sus
+// pasajeros con el autocompletado apuntando a Florida.
+//
+// Sólo es un sesgo — no restringe resultados, y quien manda GPS usa el suyo.
 
 // GET /api/geocode/suggest?q=...&lat=...&lng=...&lang=...
-// Location + radius biases results toward Miami metro but does not hard-restrict them,
-// so partial inputs like street numbers still return relevant matches.
+// `location` + `radius` orientan la búsqueda al área de servicio. Ojo con
+// `strictbounds` más abajo: con él la pareja deja de ser una sugerencia y pasa a
+// filtrar de verdad.
 geocodeRouter.get('/suggest', async (req: Request, res: Response) => {
   const { q, lat, lng, lang } = req.query as Record<string, string>;
   if (!q || q.trim().length < 2) { res.json([]); return; }
   if (!GOOGLE_KEY) { log.info('[GEOCODE/suggest] NO API KEY'); res.json([]); return; }
 
-  const biasLat  = (lat && !isNaN(Number(lat))) ? lat : String(MIAMI_CENTER_LAT);
-  const biasLng  = (lng && !isNaN(Number(lng))) ? lng : String(MIAMI_CENTER_LNG);
+  await ensureZonesFresh();
+  const sesgo = getSearchBias();
+
+  const biasLat  = (lat && !isNaN(Number(lat))) ? lat : String(sesgo.lat);
+  const biasLng  = (lng && !isNaN(Number(lng))) ? lng : String(sesgo.lng);
   const language = (lang && /^[a-z]{2}(-[A-Z]{2})?$/.test(lang)) ? lang : 'en';
 
-  // Round GPS bias to 3 dp (~110 m) — tiny position changes shouldn't produce cache misses
-  const cacheKey = `${q.trim().toLowerCase()}|${parseFloat(biasLat).toFixed(3)},${parseFloat(biasLng).toFixed(3)}|${language}`;
+  // La clave incluye el sesgo, así que ampliar una zona desde el panel no sirve
+  // sugerencias cacheadas con el área anterior.
+  // Se redondea a 3 decimales (~110 m): un paso del pasajero no debe fallar la caché.
+  const cacheKey = `${q.trim().toLowerCase()}|${parseFloat(biasLat).toFixed(3)},${parseFloat(biasLng).toFixed(3)}|${sesgo.radiusM}|${language}`;
   const cached = cacheGet(cache.suggest, cacheKey);
   if (cached !== undefined) { res.json(cached); return; }
 
@@ -221,9 +224,13 @@ geocodeRouter.get('/suggest', async (req: Request, res: Response) => {
     `?input=${encodeURIComponent(q)}`,
     `&key=${GOOGLE_KEY}`,
     `&location=${biasLat},${biasLng}`,
-    `&radius=${MIAMI_RADIUS_M}`,
+    `&radius=${sesgo.radiusM}`,
     `&components=country:us`,
-    `&strictbounds=true`,
+    // `strictbounds` descarta todo lo que quede fuera de location+radius. Con una
+    // sola zona es lo que queremos: nadie escribe una dirección que no podemos
+    // servir. Con varias no sirve, porque location+radius es UN círculo y dejaría
+    // fuera a las demás ciudades — ahí se pasa a sesgo blando.
+    sesgo.zonasActivas === 1 ? `&strictbounds=true` : '',
     `&language=${language}`,
   ].join('');
 
@@ -335,13 +342,18 @@ geocodeRouter.get('/place', async (req: Request, res: Response) => {
 });
 
 // GET /api/geocode/forward?q=...
-// Strictly biased toward Miami metro — bounds are used as a viewport hint.
+// `bounds` es sólo una pista de encuadre: prioriza resultados dentro del área de
+// servicio, no los limita a ella. La caja es la unión de las zonas activas.
 geocodeRouter.get('/forward', async (req: Request, res: Response) => {
   const { q } = req.query as Record<string, string>;
   if (!q) { res.json(null); return; }
   if (!GOOGLE_KEY) { res.json(null); return; }
 
-  const cacheKey = q.trim().toLowerCase();
+  await ensureZonesFresh();
+  const sesgo = getSearchBias();
+
+  // La caja entra en la clave: si cambia el área, la respuesta puede cambiar.
+  const cacheKey = `${q.trim().toLowerCase()}|${sesgo.boundsSw}|${sesgo.boundsNe}`;
   const cached = cacheGet(cache.forward, cacheKey);
   if (cached !== undefined) { res.json(cached); return; }
 
@@ -350,7 +362,7 @@ geocodeRouter.get('/forward', async (req: Request, res: Response) => {
     `?address=${encodeURIComponent(q)}`,
     `&key=${GOOGLE_KEY}`,
     `&components=country:us`,
-    `&bounds=${MIAMI_BOUNDS_SW}|${MIAMI_BOUNDS_NE}`,
+    `&bounds=${sesgo.boundsSw}|${sesgo.boundsNe}`,
   ].join('');
 
   try {

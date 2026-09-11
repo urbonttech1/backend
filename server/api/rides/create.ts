@@ -17,6 +17,7 @@ import {
 } from "../../config/pricing";
 import { getEffectiveSurge } from "../config";
 import { ensureFaresFresh } from "../../services/fareConfig";
+import { resolveZone, ensureZonesFresh } from "../../services/serviceZones";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -62,21 +63,17 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
   }
 });
 
-// --- Miami service-area geofence (125 km radius) ───────────────────────────
-const MIAMI_CENTER = { lat: 25.7617, lng: -80.1918 };
-const SERVICE_RADIUS_KM = 125;
-
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
+// --- Área de servicio ───────────────────────────────────────────────────────
+//
+// Era un círculo de 125 km con centro y radio hardcodeados aquí, así que abrir
+// una ciudad exigía un despliegue. Ahora sale de `service_zones`, resuelto en
+// memoria por services/serviceZones.ts.
+//
+// El contrato con la app NO cambia: sigue siendo 422 con `outside_service_area`.
+// La app no tiene copia de la geocerca, sólo reacciona a esa clave, así que este
+// cambio es invisible para ella. Los tests lo fijan.
 function isInServiceArea(lat: number, lng: number): boolean {
-  return haversineKm(MIAMI_CENTER.lat, MIAMI_CENTER.lng, lat, lng) <= SERVICE_RADIUS_KM;
+  return resolveZone(lat, lng) !== null;
 }
 
 // --- GET /api/rides/estimate — Google Directions → real fare estimate ───────
@@ -92,7 +89,10 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
     return res.status(400).json({ error: 'pickupLat, pickupLng, dropoffLat, dropoffLng are required numbers.' });
   }
 
-  // Geofence — both ends must be within Miami service area
+  // Refresca el área si la última lectura es vieja. Sale de inmediato si no lo es.
+  await ensureZonesFresh();
+
+  // Geofence — ambos extremos deben caer en una zona activa
   if (!isInServiceArea(pickupLat, pickupLng)) {
     return res.status(422).json({
       error: 'outside_service_area',
@@ -218,6 +218,8 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     const dLat = typeof dropoffLat === 'number' ? dropoffLat : (typeof finalDropoff === 'object' ? (finalDropoff as { lat?: number })?.lat : undefined);
     const dLng = typeof dropoffLng === 'number' ? dropoffLng : (typeof finalDropoff === 'object' ? (finalDropoff as { lng?: number })?.lng : undefined);
 
+    await ensureZonesFresh();
+
     if (typeof pLat === 'number' && typeof pLng === 'number' && !isInServiceArea(pLat, pLng)) {
       return res.status(422).json({
         error: 'outside_service_area',
@@ -230,6 +232,14 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         message: "Your destination is outside our current service area. URBONT operates within the Greater Miami area. We'd love to expand soon!",
       });
     }
+
+    // La zona queda congelada con el viaje, igual que locked_fare: el pasajero
+    // aceptó un precio que pertenece a una zona, y cruzar una frontera durante el
+    // trayecto no debe cambiar nada.
+    const zonaDelViaje =
+      typeof pLat === 'number' && typeof pLng === 'number'
+        ? resolveZone(pLat, pLng)?.id ?? null
+        : null;
     // ─────────────────────────────────────────────────────────────────────────
 
     // Active ride guard — passenger can only have one active ride at a time
@@ -406,6 +416,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       accessibility:         accessibility === true || accessibility === 'true' ? true : false,
       // Upfront price lock — this is the guaranteed price shown before booking
       locked_fare:           finalFare,
+      zone_id:               zonaDelViaje,
       surge_multiplier:      surgeMultiplier,
       base_fare_breakdown:   fareBreakdown ? JSON.stringify(fareBreakdown) : null,
       // Route data from Google Directions (stored at booking time)

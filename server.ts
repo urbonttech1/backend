@@ -52,6 +52,7 @@ import { startCronJobs } from "./server/jobs/cron";
 import { sanitizeBody } from "./server/middleware";
 import { runMigrations } from "./server/db/migrations";
 import { loadFares } from "./server/services/fareConfig";
+import { loadZones } from "./server/services/serviceZones";
 import { runIntegrationChecks } from "./server/services/integrationChecks";
 import { logger } from "./server/lib/logger";
 
@@ -1011,6 +1012,9 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
     // migraciones para que la tabla exista, y nunca lanza: si falla se cobra con
     // los valores por defecto de pricing.ts.
     .then(() => loadFares(true))
+    // Área de servicio desde service_zones. Nunca lanza: si falla se opera
+    // con el círculo de Miami por defecto.
+    .then(() => loadZones(true))
     // Ambas ramas resuelven a void. Antes una devolvía la tupla de
     // Promise.allSettled y la otra un array vacío, y esa unión rompía la
     // inferencia de la cadena — el valor no se usa en ningún caso.

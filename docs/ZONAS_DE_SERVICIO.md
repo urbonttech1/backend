@@ -201,34 +201,72 @@ aceptar un solo viaje, y desde una pantalla que no advierte de ello.
 - **Tarifas por zona.** Un solo tarifario, como hoy.
 - **Viajes entre zonas.** Se siguen rechazando: origen y destino deben caer en la
   misma zona activa.
-- **Dibujo de polígonos en el panel.** Sólo círculos en esta tanda.
+- **Dibujo de polígonos en el panel.** Sólo círculos en esta tanda — y por ahora
+  no hay alternativa: PostGIS vive en el esquema `tiger` y el tipo `geography` no
+  se resuelve. La columna `boundary` se quitó de la migración; `hasBoundary`
+  queda en el modelo como el punto donde entrará, y hoy siempre es `false`.
+
+### El sesgo de búsqueda de direcciones, que también estaba hardcodeado
+
+`server/api/geocode.ts` tenía cinco constantes con las coordenadas de Miami que
+orientan el autocompletado. Ahora salen de `getSearchBias()`, derivado de las
+zonas activas: centro y radio de la zona más grande, caja como unión de todas.
+
+Con ellas venía un detalle que no era el que decía el comentario: `strictbounds=true`
+**no sesga, filtra**. Con una zona es lo que queremos. Con dos ciudades lejanas
+habría excluido a la segunda, porque `location`+`radius` es un solo círculo — así
+que ahora sólo se aplica cuando hay exactamente una zona activa.
 
 Cada uno de estos se vuelve necesario cuando se active la segunda zona. Con el
 modelo puesto, ninguno obliga a rehacer lo anterior.
 
 ---
 
-## Verificación
+## Verificación — ejecutada el 2026-09-10
 
-1. `npx tsc --noEmit && npx vitest run` (hoy: 47 en verde).
-2. **No-regresión de la geocerca**: tests que fijen que Fort Lauderdale (40 km) y
-   West Palm Beach (107 km) entran, y que Naples (166 km), Orlando (330 km) y
-   Atlanta (976 km) quedan fuera — exactamente el comportamiento de hoy.
-3. **Prefiltro correcto**: un test que compruebe que la caja envolvente nunca
-   descarta un punto que la prueba exacta aceptaría. Es el único punto donde un
-   error daría falsos negativos silenciosos.
-4. **El circuito del panel, que es la prueba que define el éxito**: ampliar el
-   radio a 250 km desde `/zones` y comprobar que un punto en Naples pasa de `422`
-   a aceptado **sin reiniciar el servidor**. Después desactivar la zona y
-   comprobar que todo vuelve a `422`.
-5. **Las guardas del panel**: intentar desactivar la última zona activa y poner
-   radio 0 — ambas deben rechazarse con un mensaje claro.
-6. **La auditoría**: cada cambio de zona deja fila en `audit_logs` con el actor y
-   los valores.
-7. **`find_nearby_drivers` funciona**: `select count(*) from find_nearby_drivers(25.7617,-80.1918)`
-   debe responder en vez de dar «function does not exist», y el `log.warn` de
-   `socketService.ts:754` debe dejar de aparecer.
-8. Datos de prueba, y borrarlos después.
+Todo contra el servidor local con la base de producción, sin reiniciar entre pasos.
+
+| # | Qué | Resultado |
+|---|---|---|
+| 1 | `npx tsc --noEmit && npx vitest run` | **0 errores · 62 tests en verde** |
+| 2 | No-regresión: Fort Lauderdale (40 km) y West Palm Beach (107 km) dentro; Naples (166), Key West (209), Orlando (330), Tampa (331), Atlanta (976) fuera | ✅ en tests |
+| 3 | El prefiltro de caja no produce falsos negativos: borde a 124 km en las cuatro direcciones | ✅ en tests |
+| 4 | El cargador lee la base al arrancar | ✅ `[Zonas] 1 activa(s): miami` |
+| 5 | **El circuito que define el éxito** | ver abajo |
+| 6 | Guarda de la última zona activa | ✅ `409` + mensaje explícito |
+| 7 | Auditoría | ✅ dos filas en `audit_logs`: `zones.update · miami → radiusKm=250` y `=125` |
+
+### El circuito, paso a paso
+
+```
+1) Naples con radio 125 km            → 422 outside_service_area
+2) PATCH /api/admin/zones/miami {radiusKm:250}  → 200, y el log registra
+                                          [Zonas] 1 activa(s): miami
+3) Naples, SIN reiniciar              → 200, tarifa calculada
+4) PATCH .../active {active:false}    → 409 «Cannot deactivate the last
+                                          active zone»
+5) PATCH {radiusKm:125}               → 200
+6) Naples de nuevo                    → 422 outside_service_area
+7) Miami sigue funcionando            → 200, total $52.91
+```
+
+El paso 3 es el que importa: **abrir una ciudad dejó de ser un despliegue**.
+
+Estado restaurado al terminar: `miami`, 125 km, activa. Las dos filas de
+`audit_logs` se dejaron a propósito — son el registro fiel de dos cambios reales
+hechos por un admin, y borrar auditoría es peor práctica que dejar ruido.
+
+### Lo que esta verificación NO cubre
+
+- **`find_nearby_drivers`** sigue sin arreglar: PostGIS está instalado en el
+  esquema `tiger`, no en `public` ni `extensions`, así que sus tipos no se
+  resuelven. Es lo mismo que bloquea los polígonos. El `log.warn` de
+  `socketService.ts:754` sigue apareciendo.
+- **`zone_id` en un viaje real**: el código lo congela al crear, y está cubierto
+  por tipos y revisión, pero no se creó un viaje de verdad para no ensuciar la
+  base de producción.
+- **La pantalla del panel** no está construida; los endpoints se probaron con
+  `curl`.
 
 ---
 
