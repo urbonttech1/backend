@@ -1,0 +1,21 @@
+name: Notify on push
+
+on:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Registrar información del push
+        run: |
+          {
+            echo "### 📬 Nuevo push recibido"
+            echo "- **Repositorio:** ${{ github.repository }}"
+            echo "- **Rama:** ${{ github.ref_name }}"
+            echo "- **Autor:** ${{ github.actor }}"
+            echo "- **Commit:** ${{ github.sha }}"
+            echo "- **Mensaje:** ${{ github.event.head_commit.message }}"
+          } >> "$GITHUB_STEP_SUMMARY"
