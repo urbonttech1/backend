@@ -1456,7 +1456,7 @@ adminRouter.get("/zones", async (_req: Request, res: Response) => {
   try {
     const { rows } = await pgPool.query(`
       SELECT id, name, active, timezone, center_lat, center_lng, radius_km,
-             false AS has_boundary, updated_at
+             country_code, false AS has_boundary, updated_at
         FROM service_zones ORDER BY active DESC, name ASC
     `);
     res.json({ zones: rows });
@@ -1467,10 +1467,13 @@ adminRouter.get("/zones", async (_req: Request, res: Response) => {
 });
 
 adminRouter.post("/zones", async (req: Request, res: Response) => {
-  const { id, name, centerLat, centerLng, radiusKm, timezone } = req.body as Record<string, unknown>;
+  const { id, name, centerLat, centerLng, radiusKm, timezone, countryCode } = req.body as Record<string, unknown>;
 
   const slug = String(id ?? '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
   const lat = Number(centerLat), lng = Number(centerLng), radio = Number(radiusKm);
+  // ISO 3166-1 alpha-2. Sale de la ciudad elegida en el panel; 'US' cuando la
+  // zona se crea a mano con coordenadas, que es como se hacía hasta ahora.
+  const pais = String(countryCode ?? 'US').trim().toUpperCase().slice(0, 2) || 'US';
 
   if (!slug) return res.status(400).json({ error: 'id is required (letters, digits, - and _).' });
   if (!String(name ?? '').trim()) return res.status(400).json({ error: 'name is required.' });
@@ -1486,13 +1489,13 @@ adminRouter.post("/zones", async (req: Request, res: Response) => {
     // plataforma empezaría a aceptar viajes ahí de inmediato. Se crea, se revisa
     // en el mapa de la pantalla, y sólo entonces se activa.
     const { rows } = await pgPool.query(
-      `INSERT INTO service_zones (id, name, timezone, center_lat, center_lng, radius_km, active)
-       VALUES ($1, $2, COALESCE($3,'America/New_York'), $4, $5, $6, false)
-       RETURNING id, name, active, timezone, center_lat, center_lng, radius_km`,
-      [slug, String(name).trim(), timezone ? String(timezone) : null, lat, lng, radio],
+      `INSERT INTO service_zones (id, name, timezone, center_lat, center_lng, radius_km, country_code, active)
+       VALUES ($1, $2, COALESCE($3,'America/New_York'), $4, $5, $6, $7, false)
+       RETURNING id, name, active, timezone, center_lat, center_lng, radius_km, country_code`,
+      [slug, String(name).trim(), timezone ? String(timezone) : null, lat, lng, radio, pais],
     );
     await invalidateZones();
-    await auditarZona(req, 'zones.create', `${slug} → ${lat},${lng} r=${radio}km`);
+    await auditarZona(req, 'zones.create', `${slug} (${pais}) → ${lat},${lng} r=${radio}km`);
     res.json({ success: true, zone: rows[0] });
   } catch (err: unknown) {
     if (String(errMsg(err)).includes('duplicate key')) {
@@ -1635,6 +1638,105 @@ adminRouter.delete("/zones/:id", async (req: Request, res: Response) => {
   } catch (err: unknown) {
     logger.error(`[admin/zones] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to delete service zone' });
+  }
+});
+
+/* ── Catálogo de ciudades ──────────────────────────────────────────────────
+ *
+ * Existe para que el panel deje de pedir coordenadas. No participa en la
+ * geocerca: la resolución sigue siendo lat/lng contra los círculos de
+ * `service_zones`, en memoria y sin tocar la base.
+ *
+ * La tabla se llena con scripts/import-cities.mjs. Si nadie lo corrió, estas
+ * rutas devuelven listas vacías y el panel sigue aceptando coordenadas a mano.
+ */
+
+interface CityRow {
+  geoname_id: number;
+  name: string;
+  country_code: string;
+  admin1: string | null;
+  lat: string;
+  lng: string;
+  population: number;
+  timezone: string;
+}
+
+const aCiudad = (r: CityRow) => ({
+  id:         r.geoname_id,
+  name:       r.name,
+  country:    r.country_code,
+  admin1:     r.admin1,
+  lat:        Number(r.lat),
+  lng:        Number(r.lng),
+  population: r.population,
+  timezone:   r.timezone,
+});
+
+/** Quita acentos para que «Bogota» encuentre «Bogotá». */
+const sinAcentos = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+// GET /api/admin/cities?q=bogo[&country=CO]
+adminRouter.get("/cities", async (req: Request, res: Response) => {
+  const q = sinAcentos(String(req.query.q ?? '').trim().toLowerCase());
+  if (q.length < 2) return res.json({ cities: [] });
+
+  const pais = String(req.query.country ?? '').trim().toUpperCase();
+
+  try {
+    // Orden por población descendente, y no es un detalle estético: hay dos
+    // Madrid en el catálogo, la de España (3.255.944) y la de Colombia
+    // (135.000). Sin este ORDER BY el panel ofrece primero la equivocada y
+    // alguien abre servicio en el sitio que no era.
+    const { rows } = await pgPool.query<CityRow>(
+      `SELECT geoname_id, name, country_code, admin1, lat, lng, population, timezone
+         FROM cities
+        WHERE lower(ascii_name) LIKE $1
+          ${pais ? 'AND country_code = $3' : ''}
+        ORDER BY population DESC
+        LIMIT $2`,
+      pais ? [`${q}%`, 12, pais] : [`${q}%`, 12],
+    );
+    res.json({ cities: rows.map(aCiudad) });
+  } catch (err: unknown) {
+    logger.error(`[admin/cities] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to search cities' });
+  }
+});
+
+// GET /api/admin/cities/near?lat=&lng=&radiusKm=
+adminRouter.get("/cities/near", async (req: Request, res: Response) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({ error: 'lat and lng are required numbers.' });
+  }
+
+  // El radio que pida el panel, con margen: la pantalla necesita también las
+  // ciudades de FUERA más cercanas, que son las que informan si conviene
+  // ampliar. Se piden una vez por centro y el panel recalcula al mover el radio.
+  const radioKm = Math.min(2000, Math.max(1, Number(req.query.radiusKm) || 150));
+  const alcance = radioKm * 1.6;
+
+  // Misma caja envolvente que serviceZones.ts, aquí para que el índice
+  // (lat, lng) haga el trabajo en vez de recorrer la tabla entera.
+  const dLat = alcance / 111;
+  const cos  = Math.max(0.01, Math.cos((lat * Math.PI) / 180));
+  const dLng = alcance / (111 * cos);
+
+  try {
+    const { rows } = await pgPool.query<CityRow>(
+      `SELECT geoname_id, name, country_code, admin1, lat, lng, population, timezone
+         FROM cities
+        WHERE lat BETWEEN $1 AND $2 AND lng BETWEEN $3 AND $4
+        ORDER BY population DESC
+        LIMIT 300`,
+      [lat - dLat, lat + dLat, lng - dLng, lng + dLng],
+    );
+    res.json({ cities: rows.map(aCiudad) });
+  } catch (err: unknown) {
+    logger.error(`[admin/cities/near] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load nearby cities' });
   }
 });
 

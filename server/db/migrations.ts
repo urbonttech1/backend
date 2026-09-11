@@ -1190,6 +1190,57 @@ export async function runMigrations() {
       CREATE INDEX IF NOT EXISTS idx_service_zones_active ON service_zones (active) WHERE active;
     `);
 
+    // El país de la zona. Hoy todas son 'US' y nada lo usa todavía, pero sale
+    // gratis en cuanto la zona se crea eligiendo una ciudad del catálogo, y es
+    // lo que después necesitarán la moneda, el país de la cuenta de Stripe y el
+    // filtro de países del buscador de direcciones.
+    // Ver docs/GEOCERCA_INTERNACIONAL.md.
+    await safeAlter(`ALTER TABLE service_zones ADD COLUMN IF NOT EXISTS country_code CHAR(2) NOT NULL DEFAULT 'US'`);
+
+    // ── Catálogo de ciudades ────────────────────────────────────────────────
+    //
+    // Poblado desde GeoNames (scripts/import-cities.mjs), no a mano. Existe para
+    // que el panel deje de pedir coordenadas: se escribe «Bogotá» y de ahí salen
+    // el centro, la zona horaria y el país.
+    //
+    // NO participa en la geocerca. La resolución sigue siendo lat/lng contra los
+    // círculos de `service_zones`, en memoria. Esta tabla sólo sirve para elegir
+    // un centro y para explicar qué cubre un radio.
+    //
+    // La tabla se crea vacía. Si nadie corre el importador, el buscador del panel
+    // no devuelve nada y se siguen escribiendo coordenadas a mano: se degrada,
+    // no se rompe.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cities (
+        geoname_id   INTEGER PRIMARY KEY,
+        name         TEXT    NOT NULL,
+        -- Sin acentos. Es contra esta columna que se busca, para que «Bogota»
+        -- encuentre «Bogotá» sin obligar a nadie a teclear tildes.
+        ascii_name   TEXT    NOT NULL,
+        country_code CHAR(2) NOT NULL,
+        admin1       TEXT,
+        lat          NUMERIC(9,5) NOT NULL,
+        lng          NUMERIC(9,5) NOT NULL,
+        population   INTEGER NOT NULL DEFAULT 0,
+        -- IANA, tal cual viene de GeoNames: 'America/Bogota', 'Europe/Madrid'.
+        timezone     TEXT    NOT NULL
+      );
+
+      -- Búsqueda por prefijo: lower(ascii_name) LIKE 'madr%'. text_pattern_ops es
+      -- lo que hace que ese LIKE use el índice en vez de recorrer 34.000 filas.
+      CREATE INDEX IF NOT EXISTS idx_cities_name
+        ON cities (lower(ascii_name) text_pattern_ops);
+
+      -- Prefiltro de caja para «qué ciudades hay alrededor de este centro»,
+      -- el mismo truco que usa serviceZones.ts en memoria.
+      CREATE INDEX IF NOT EXISTS idx_cities_latlng ON cities (lat, lng);
+
+      -- Desempate: entre dos ciudades del mismo nombre gana la más poblada.
+      -- Sin esto, «Madrid» devuelve la de Colombia (135.000 hab.) antes que la
+      -- de España (3.255.944), y se abriría servicio en el sitio equivocado.
+      CREATE INDEX IF NOT EXISTS idx_cities_population ON cities (population DESC);
+    `);
+
     // Semilla: exactamente el círculo que estaba en el código. Sin ON CONFLICT
     // DO UPDATE — si alguien ya ajustó el radio desde el panel, no se pisa.
     await client.query(`
