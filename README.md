@@ -25,6 +25,7 @@ supabase_schema.sql    Esquema base
 | Documento | Para qué |
 |---|---|
 | [`docs/API_PRECIOS_MOBILE.md`](docs/API_PRECIOS_MOBILE.md) | Contrato de precios para la app móvil: cotización por distancia y por hora, recargo por demanda, y qué constantes puede borrar el APK |
+| [`docs/API_MOBILE_GEOCERCA_TARIFA_CONDUCCION.md`](docs/API_MOBILE_GEOCERCA_TARIFA_CONDUCCION.md) | Guía de integración para la app móvil: geocerca (el contrato del 422), qué endpoint de tarifa usar en cada pantalla, y el ciclo completo del conductor con sus eventos de socket |
 | [`docs/Auditoria_Cobro_Stripe.html`](docs/Auditoria_Cobro_Stripe.html) | Ocho fallos en el flujo de cobro, cuatro críticos. **Sin corregir** |
 | [`docs/ZONAS_DE_SERVICIO.md`](docs/ZONAS_DE_SERVICIO.md) | Pasar la geocerca de código a base de datos, gestionable desde el panel. **Implementado y verificado** |
 | [`docs/GEOCERCA_INTERNACIONAL.md`](docs/GEOCERCA_INTERNACIONAL.md) | Qué falta para abrir un país, no una ciudad. La geocerca ya sirve; el cobro no. **Propuesta** |
@@ -84,13 +85,19 @@ admin@urbont.mx
 admin123
 
 
- 
+aws ecr get-login-password --region us-east-1 --profile urbont | docker login --username AWS --password-stdin 083414536603.dkr.ecr.us-east-1.amazonaws.com
 
 
 
+docker build -t 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest .
 
 
+docker push 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest
 
-- agrupación de documento por aprobación por usuario
-- revisión incidentes, quejas, soporte, tarifas e ingresos
-- revisión de feedback no esta alineado
+
+aws ecs update-service --cluster urbont --service urbont-api \
+  --force-new-deployment --region us-east-1 --profile urbont
+
+aws ecs describe-services --cluster urbont --services urbont-api \
+  --query 'services[0].deployments[*].{Status:status,Running:runningCount,Pending:pendingCount}' \
+  --output table --region us-east-1 --profile urbont

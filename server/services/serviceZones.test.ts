@@ -26,12 +26,25 @@ const zona = (over: Partial<ServiceZone> = {}): ServiceZone => ({
   name: 'Miami / Sur de Florida',
   active: true,
   timezone: 'America/New_York',
+  countryCode: 'US',
   centerLat: 25.7617,
   centerLng: -80.1918,
   radiusKm: 125,
   hasBoundary: false,
   bbox: null,
   ...over,
+});
+
+/** La segunda zona real, en otro país: es la que destapó el país fijo en el código. */
+const BARRANQUILLA = { lat: 10.96854, lng: -74.78132 };
+const barranquilla = zona({
+  id: 'barranquilla',
+  name: 'Barranquilla',
+  countryCode: 'CO',
+  timezone: 'America/Bogota',
+  centerLat: BARRANQUILLA.lat,
+  centerLng: BARRANQUILLA.lng,
+  radiusKm: 50,
 });
 
 describe('resolveZone — el área de hoy no cambia', () => {
@@ -140,6 +153,86 @@ describe('getSearchBias — el sesgo de búsqueda de direcciones sale de las zon
     expect(getSearchBias().radiusM).toBe(125_000);
     setZones([zona({ radiusKm: 250 })]);
     expect(getSearchBias().radiusM).toBe(250_000);
+  });
+});
+
+describe('getSearchBias — el país también sale de las zonas', () => {
+  /**
+   * Estos tests fijan el fallo que se corrigió: `geocode.ts` restringía la
+   * búsqueda a `country:us` con una constante, así que al activar Barranquilla el
+   * autocompletado devolvía vacío —o calles de Florida— a quien buscaba desde
+   * Colombia, y la geocodificación resolvía una dirección de Barranquilla en
+   * Colorado, con un 200 y sin ningún error.
+   */
+
+  it('con una sola zona, anuncia su país', () => {
+    expect(getSearchBias().countries).toEqual(['us']);
+  });
+
+  it('con dos países, devuelve la unión — es lo que acepta el autocompletado', () => {
+    setZones([zona(), barranquilla]);
+    expect(getSearchBias().countries.sort()).toEqual(['co', 'us']);
+  });
+
+  it('no repite el país cuando dos zonas comparten uno', () => {
+    setZones([zona(), zona({ id: 'orlando', centerLat: 28.5383, centerLng: -81.3792, radiusKm: 80 })]);
+    expect(getSearchBias().countries).toEqual(['us']);
+  });
+
+  it('normaliza lo que venga de la base', () => {
+    setZones([zona({ countryCode: 'us' }), barranquilla]);
+    expect(getSearchBias().countries.sort()).toEqual(['co', 'us']);
+  });
+
+  it('con el GPS del pasajero, el sesgo entero sale de SU zona', () => {
+    setZones([zona(), barranquilla]);
+    const b = getSearchBias(BARRANQUILLA.lat, BARRANQUILLA.lng);
+    expect(b.zoneId).toBe('barranquilla');
+    expect(b.country).toBe('co');
+    expect(b.lat).toBe(BARRANQUILLA.lat);
+    expect(b.radiusM).toBe(50_000);
+  });
+
+  it('el mismo GPS en la otra zona resuelve la otra', () => {
+    setZones([zona(), barranquilla]);
+    const b = getSearchBias(PUNTOS.miami.lat, PUNTOS.miami.lng);
+    expect(b.zoneId).toBe('miami');
+    expect(b.country).toBe('us');
+    expect(b.radiusM).toBe(125_000);
+  });
+
+  it('sin GPS no se declara país: preferimos no restringir a restringir mal', () => {
+    setZones([zona(), barranquilla]);
+    const b = getSearchBias();
+    expect(b.country).toBeNull();
+    expect(b.zoneId).toBeNull();
+    // Y el centro sigue siendo el de la zona mayor, como antes.
+    expect(b.lat).toBe(25.7617);
+  });
+
+  it('un GPS fuera de toda zona tampoco declara país', () => {
+    setZones([zona(), barranquilla]);
+    const b = getSearchBias(PUNTOS.atlanta.lat, PUNTOS.atlanta.lng);
+    expect(b.country).toBeNull();
+    expect(b.zoneId).toBeNull();
+  });
+
+  it('coordenadas inválidas se ignoran sin lanzar', () => {
+    setZones([zona(), barranquilla]);
+    for (const [lat, lng] of [[NaN, -80.19], [25.76, Infinity]] as const) {
+      const b = getSearchBias(lat, lng);
+      expect(b.zoneId).toBeNull();
+      expect(b.lat).toBe(25.7617);
+    }
+  });
+
+  it('el zoneId es lo que decide si se filtra duro, y sólo lo hay con GPS dentro', () => {
+    // geocode.ts aplica `strictbounds` si y sólo si hay zoneId. Antes lo ataba a
+    // `zonasActivas === 1`, así que abrir la segunda ciudad apagó el filtro para
+    // todos — también para los pasajeros de Miami.
+    setZones([zona(), barranquilla]);
+    expect(getSearchBias().zoneId).toBeNull();                                   // sin GPS: sesgo blando
+    expect(getSearchBias(PUNTOS.miami.lat, PUNTOS.miami.lng).zoneId).toBe('miami'); // con GPS: filtra
   });
 });
 

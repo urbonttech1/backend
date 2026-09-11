@@ -25,6 +25,16 @@ export interface ServiceZone {
   active: boolean;
   /** Zona horaria de la ciudad. El surge se calcula con su hora local. */
   timezone: string;
+  /**
+   * País de la zona. ISO 3166-1 alpha-2 en mayúscula: 'US', 'CO'.
+   *
+   * Obligatorio a propósito, sin valor por defecto en el tipo. La restricción de
+   * país de la búsqueda de direcciones estaba fija en `country:us` dentro de
+   * `geocode.ts`, y al activar Barranquilla el autocompletado dejó de encontrar
+   * direcciones colombianas y la geocodificación devolvía un punto en EE. UU. sin
+   * error. Una zona sin país declarado es exactamente lo que produjo ese fallo.
+   */
+  countryCode: string;
   /** Forma de círculo. Se ignora si hay polígono. */
   centerLat: number | null;
   centerLng: number | null;
@@ -47,6 +57,7 @@ const DEFAULT_ZONE: ServiceZone = {
   name: 'Miami / Sur de Florida',
   active: true,
   timezone: 'America/New_York',
+  countryCode: 'US',
   centerLat: 25.7617,
   centerLng: -80.1918,
   radiusKm: 125,
@@ -139,7 +150,7 @@ export function getZones(): ServiceZone[] {
 }
 
 export interface SearchBias {
-  /** Centro con el que sesgar el autocompletado cuando el cliente no manda GPS. */
+  /** Centro del círculo de búsqueda: el de la zona del pasajero, o el de la mayor. */
   lat: number;
   lng: number;
   /** Radio del sesgo, en metros — lo que espera la API de Google. */
@@ -149,20 +160,60 @@ export interface SearchBias {
   boundsNe: string;
   /** Cuántas zonas cubre este sesgo. Con más de una, un solo círculo no alcanza. */
   zonasActivas: number;
+  /**
+   * Unión de los países de las zonas activas, alpha-2 en minúscula: `['us','co']`.
+   * Para el autocompletado, que tolera varios países a la vez.
+   */
+  countries: string[];
+  /**
+   * País de la zona en la que está el pasajero, o `null` si no se sabe.
+   *
+   * Separado de `countries` porque la API de geocodificación NO se comporta igual
+   * que la de autocompletado: con varios países devuelve el centroide de la ciudad
+   * en vez de la calle pedida. Ahí hace falta uno solo, o ninguno.
+   */
+  country: string | null;
+  /**
+   * Zona resuelta a partir del GPS del pasajero, o `null`.
+   *
+   * Es lo que permite volver a filtrar duro: sabiendo su zona, `lat`+`radiusM`
+   * describen un círculo real y `strictbounds` recorta exactamente el área de
+   * servicio.
+   */
+  zoneId: string | null;
 }
 
 /**
  * Sesgo de búsqueda de direcciones, derivado de las zonas activas.
  *
- * Sólo orienta al autocompletado; no restringe nada — quien manda GPS usa el
- * suyo. Existe porque si no, abrir una segunda ciudad dejaría a sus pasajeros
- * buscando direcciones sesgadas hacia Miami.
+ * Existe porque si no, abrir una segunda ciudad dejaría a sus pasajeros buscando
+ * direcciones sesgadas hacia Miami — y, mientras el país estuvo fijo en el
+ * código, sin poder encontrar ninguna dirección de su propio país.
  *
- * El centro es el de la zona más grande: con varias abiertas y sin GPS, el
- * mercado principal es la apuesta razonable. La caja es la unión de todas.
+ * **Con GPS** se resuelve la zona del pasajero y todo sale de ella: centro, radio
+ * y país. Es el caso que importa, porque es el que permite filtrar de verdad.
+ *
+ * **Sin GPS** el centro es el de la zona más grande —con varias abiertas, el
+ * mercado principal es la apuesta razonable—, la caja es la unión de todas y el
+ * país queda en `null`: preferimos no restringir a arriesgarnos a restringir al
+ * país equivocado.
+ *
+ * @param lat Latitud del pasajero, si la manda. Se ignora si no es finita.
+ * @param lng Longitud del pasajero, idem.
  */
-export function getSearchBias(): SearchBias {
+export function getSearchBias(lat?: number, lng?: number): SearchBias {
   const zonas = activeZones.filter((z) => z.bbox !== null);
+
+  // Los países salen de TODAS las zonas activas, no sólo de las que tienen caja:
+  // una zona con polígono —cuando existan— también tiene que aportar el suyo.
+  const countries = [
+    ...new Set(
+      activeZones
+        .map((z) => (z.countryCode ?? '').trim().toLowerCase())
+        .filter((c) => c.length === 2),
+    ),
+  ];
+
   if (zonas.length === 0) {
     return {
       lat: DEFAULT_ZONE.centerLat!,
@@ -171,10 +222,19 @@ export function getSearchBias(): SearchBias {
       boundsSw: '25.10,-80.90',
       boundsNe: '26.70,-80.00',
       zonasActivas: 1,
+      countries: countries.length > 0 ? countries : [DEFAULT_ZONE.countryCode.toLowerCase()],
+      country: null,
+      zoneId: null,
     };
   }
 
+  // La zona del pasajero, si el GPS cae dentro de alguna. `resolveZone` ya
+  // descarta coordenadas no finitas, así que no hace falta validarlas aquí.
+  const propia = resolveZone(lat as number, lng as number);
+
   const mayor = zonas.reduce((a, b) => ((b.radiusKm ?? 0) > (a.radiusKm ?? 0) ? b : a));
+  const centro = propia ?? mayor;
+
   const sw = { lat: Infinity, lng: Infinity };
   const ne = { lat: -Infinity, lng: -Infinity };
   for (const z of zonas) {
@@ -185,12 +245,15 @@ export function getSearchBias(): SearchBias {
   }
 
   return {
-    lat: mayor.centerLat!,
-    lng: mayor.centerLng!,
-    radiusM: Math.round((mayor.radiusKm ?? 100) * 1000),
+    lat: centro.centerLat!,
+    lng: centro.centerLng!,
+    radiusM: Math.round((centro.radiusKm ?? 100) * 1000),
     boundsSw: `${sw.lat.toFixed(2)},${sw.lng.toFixed(2)}`,
     boundsNe: `${ne.lat.toFixed(2)},${ne.lng.toFixed(2)}`,
     zonasActivas: zonas.length,
+    countries,
+    country: propia ? propia.countryCode.trim().toLowerCase() : null,
+    zoneId: propia?.id ?? null,
   };
 }
 
@@ -201,6 +264,7 @@ interface ZoneRow {
   name: string;
   active: boolean;
   timezone: string;
+  country_code: string | null;
   center_lat: string | null;
   center_lng: string | null;
   radius_km: string | null;
@@ -214,6 +278,9 @@ function toZone(r: ZoneRow): ServiceZone {
     name: r.name,
     active: r.active,
     timezone: r.timezone,
+    // La columna es NOT NULL con default 'US', pero se normaliza igual: una fila
+    // creada a mano con 'us' o ' Co ' no debe cambiar el resultado.
+    countryCode: (r.country_code ?? 'US').trim().toUpperCase() || 'US',
     centerLat: num(r.center_lat),
     centerLng: num(r.center_lng),
     radiusKm: num(r.radius_km),
@@ -233,7 +300,8 @@ export async function loadZones(force = false): Promise<void> {
   loading = (async () => {
     try {
       const { rows } = await pool.query<ZoneRow>(
-        `SELECT id, name, active, timezone, center_lat, center_lng, radius_km,
+        `SELECT id, name, active, timezone, country_code,
+                center_lat, center_lng, radius_km,
                 false AS has_boundary
            FROM service_zones
           WHERE active
@@ -251,7 +319,11 @@ export async function loadZones(force = false): Promise<void> {
 
       activeZones = rows.map(toZone);
       lastLoadedAt = Date.now();
-      logger.info(`[Zonas] ${rows.length} activa(s): ${rows.map((r) => r.id).join(', ')}`);
+      // El país entra en el log: es lo que decide en qué país se buscan las
+      // direcciones, y conviene poder verlo sin consultar la base.
+      logger.info(
+        `[Zonas] ${rows.length} activa(s): ${activeZones.map((z) => `${z.id}/${z.countryCode}`).join(', ')}`,
+      );
     } catch (err) {
       logger.error(`[Zonas] No se pudieron cargar, sigue vigente lo que hubiera: ${(err as Error).message}`);
     } finally {

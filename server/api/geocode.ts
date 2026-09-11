@@ -189,12 +189,14 @@ geocodeRouter.get('/directions', async (req: Request, res: Response) => {
   }
 });
 
-// El centro, el radio y la caja con que se sesga la búsqueda de direcciones salen
-// de `service_zones` (ver services/serviceZones.ts). Antes eran cinco constantes
-// con las coordenadas de Miami: abrir una segunda ciudad habría dejado a sus
-// pasajeros con el autocompletado apuntando a Florida.
+// El centro, el radio, la caja y EL PAÍS con que se busca una dirección salen de
+// `service_zones` (ver services/serviceZones.ts). Antes eran constantes con las
+// coordenadas de Miami y un `country:us` fijo: abrir una segunda ciudad dejaba a
+// sus pasajeros con el autocompletado apuntando a Florida, y abrir un segundo
+// país los dejaba sin poder encontrar una sola dirección de su propio país.
 //
-// Sólo es un sesgo — no restringe resultados, y quien manda GPS usa el suyo.
+// Cuando el pasajero manda GPS y cae en una zona, esto pasa de ser un sesgo a
+// filtrar de verdad: ver `strictbounds` en /suggest.
 
 // GET /api/geocode/suggest?q=...&lat=...&lng=...&lang=...
 // `location` + `radius` orientan la búsqueda al área de servicio. Ojo con
@@ -206,16 +208,39 @@ geocodeRouter.get('/suggest', async (req: Request, res: Response) => {
   if (!GOOGLE_KEY) { log.info('[GEOCODE/suggest] NO API KEY'); res.json([]); return; }
 
   await ensureZonesFresh();
-  const sesgo = getSearchBias();
 
-  const biasLat  = (lat && !isNaN(Number(lat))) ? lat : String(sesgo.lat);
-  const biasLng  = (lng && !isNaN(Number(lng))) ? lng : String(sesgo.lng);
+  const latNum = (lat !== undefined && lat !== '') ? Number(lat) : NaN;
+  const lngNum = (lng !== undefined && lng !== '') ? Number(lng) : NaN;
+  const sesgo = getSearchBias(latNum, lngNum);
+
+  // Con la zona del pasajero resuelta, el círculo que se manda a Google ES su
+  // zona —centro y radio de la zona, no el punto del pasajero—, porque abajo se
+  // aplica `strictbounds` y el círculo pasa a ser el filtro: centrado en el
+  // pasajero dejaría entrar direcciones a un radio entero fuera del área.
+  // Sin zona resuelta se mantiene el sesgo blando de siempre, centrado en su GPS.
+  const biasLat  = sesgo.zoneId ? String(sesgo.lat) : (Number.isFinite(latNum) ? String(latNum) : String(sesgo.lat));
+  const biasLng  = sesgo.zoneId ? String(sesgo.lng) : (Number.isFinite(lngNum) ? String(lngNum) : String(sesgo.lng));
   const language = (lang && /^[a-z]{2}(-[A-Z]{2})?$/.test(lang)) ? lang : 'en';
 
-  // La clave incluye el sesgo, así que ampliar una zona desde el panel no sirve
-  // sugerencias cacheadas con el área anterior.
+  // Los países salen de las zonas activas. Esta línea estuvo fija en
+  // `country:us`, y al activar Barranquilla el autocompletado dejó de encontrar
+  // direcciones colombianas: devolvía vacío, o calles de Florida a quien escribía
+  // desde Colombia. La API de autocompletado acepta hasta cinco países.
+  const componentes = sesgo.countries.length > 0
+    ? `&components=${sesgo.countries.map((c) => `country:${c}`).join('%7C')}`
+    : '';
+
+  // La clave incluye el sesgo y los países, así que ampliar una zona o abrir un
+  // país desde el panel no sirve sugerencias cacheadas con el área anterior.
   // Se redondea a 3 decimales (~110 m): un paso del pasajero no debe fallar la caché.
-  const cacheKey = `${q.trim().toLowerCase()}|${parseFloat(biasLat).toFixed(3)},${parseFloat(biasLng).toFixed(3)}|${sesgo.radiusM}|${language}`;
+  const cacheKey = [
+    q.trim().toLowerCase(),
+    `${parseFloat(biasLat).toFixed(3)},${parseFloat(biasLng).toFixed(3)}`,
+    sesgo.radiusM,
+    language,
+    sesgo.countries.join(','),
+    sesgo.zoneId ?? '-',
+  ].join('|');
   const cached = cacheGet(cache.suggest, cacheKey);
   if (cached !== undefined) { res.json(cached); return; }
 
@@ -225,12 +250,14 @@ geocodeRouter.get('/suggest', async (req: Request, res: Response) => {
     `&key=${GOOGLE_KEY}`,
     `&location=${biasLat},${biasLng}`,
     `&radius=${sesgo.radiusM}`,
-    `&components=country:us`,
-    // `strictbounds` descarta todo lo que quede fuera de location+radius. Con una
-    // sola zona es lo que queremos: nadie escribe una dirección que no podemos
-    // servir. Con varias no sirve, porque location+radius es UN círculo y dejaría
-    // fuera a las demás ciudades — ahí se pasa a sesgo blando.
-    sesgo.zonasActivas === 1 ? `&strictbounds=true` : '',
+    componentes,
+    // `strictbounds` no sesga: FILTRA todo lo que quede fuera de location+radius.
+    // Se aplica cuando sabemos en qué zona está ESTE pasajero, porque entonces el
+    // círculo es real —el de su zona— y nadie puede escribir una dirección que no
+    // podemos servir. Antes la condición era «hay una sola zona en todo el
+    // sistema», así que al abrir la segunda ciudad el filtro se apagó para todos,
+    // incluidos los pasajeros de Miami, que empezaron a ver Orlando y Seattle.
+    sesgo.zoneId ? `&strictbounds=true` : '',
     `&language=${language}`,
   ].join('');
 
@@ -341,19 +368,42 @@ geocodeRouter.get('/place', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/geocode/forward?q=...
+// GET /api/geocode/forward?q=...&lat=...&lng=...
 // `bounds` es sólo una pista de encuadre: prioriza resultados dentro del área de
 // servicio, no los limita a ella. La caja es la unión de las zonas activas.
+// `lat`/`lng` son opcionales —el GPS del pasajero— y sólo sirven para saber en qué
+// país buscar; los APK que no los mandan siguen funcionando.
 geocodeRouter.get('/forward', async (req: Request, res: Response) => {
-  const { q } = req.query as Record<string, string>;
+  const { q, lat, lng } = req.query as Record<string, string>;
   if (!q) { res.json(null); return; }
   if (!GOOGLE_KEY) { res.json(null); return; }
 
   await ensureZonesFresh();
-  const sesgo = getSearchBias();
 
-  // La caja entra en la clave: si cambia el área, la respuesta puede cambiar.
-  const cacheKey = `${q.trim().toLowerCase()}|${sesgo.boundsSw}|${sesgo.boundsNe}`;
+  const latNum = (lat !== undefined && lat !== '') ? Number(lat) : NaN;
+  const lngNum = (lng !== undefined && lng !== '') ? Number(lng) : NaN;
+  const sesgo = getSearchBias(latNum, lngNum);
+
+  // UN solo país —el de la zona del pasajero—, y si no se sabe, NINGUNO.
+  //
+  // Aquí no vale la unión que sí usa el autocompletado: comprobado contra Google,
+  // `country:US|country:CO` sobre «Calle 84 #45-20, Barranquilla» responde con el
+  // centroide de la ciudad, a unos 2 km de la calle pedida, mientras un solo país
+  // o ninguna restricción devuelven el portal exacto.
+  //
+  // Y por eso el caso sin GPS va sin restricción en vez de caer a 'us': forzar
+  // EE. UU. era lo que geocodificaba esa dirección de Barranquilla en Colorado —
+  // un 200 con un punto equivocado a 4.000 km, que es peor que no responder.
+  const componentes = sesgo.country ? `&components=country:${sesgo.country}` : '';
+
+  // La caja y el país entran en la clave: si cambia el área o el país del
+  // pasajero, la respuesta puede cambiar.
+  const cacheKey = [
+    q.trim().toLowerCase(),
+    sesgo.boundsSw,
+    sesgo.boundsNe,
+    sesgo.country ?? 'any',
+  ].join('|');
   const cached = cacheGet(cache.forward, cacheKey);
   if (cached !== undefined) { res.json(cached); return; }
 
@@ -361,7 +411,7 @@ geocodeRouter.get('/forward', async (req: Request, res: Response) => {
     'https://maps.googleapis.com/maps/api/geocode/json',
     `?address=${encodeURIComponent(q)}`,
     `&key=${GOOGLE_KEY}`,
-    `&components=country:us`,
+    componentes,
     `&bounds=${sesgo.boundsSw}|${sesgo.boundsNe}`,
   ].join('');
 
