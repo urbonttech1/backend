@@ -4,6 +4,7 @@ import { supabaseAdmin, supabasePublic, issueToken, verifySupabaseToken, KNOWN_S
 import { pool } from '../../db/pool';
 import { sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
+import { esEmailDuplicado, esFalloDeServicio } from '../../lib/authErrors';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('CHAUFFEUR');
@@ -126,6 +127,61 @@ function clearFailedAttempts(email: string) {
   emailAttemptMap.delete(email.toLowerCase());
 }
 
+/* ── Edad mínima para conducir ──
+   No estaba comprobada: `dob` llegaba como texto libre y se escribía tal cual
+   en `date_of_birth`, así que un alta con una fecha de hace diez años —o con
+   una cadena que no es una fecha— se aceptaba con un 201. */
+const MIN_DRIVER_AGE = 21;
+
+/** Edad en años cumplidos, o `null` si la fecha no es válida o está en el futuro. */
+function edadEnAnios(dob: string): number | null {
+  const fecha = new Date(dob);
+  if (isNaN(fecha.getTime())) return null;
+  const ahora = new Date();
+  if (fecha > ahora) return null;
+  let edad = ahora.getFullYear() - fecha.getFullYear();
+  const mes = ahora.getMonth() - fecha.getMonth();
+  if (mes < 0 || (mes === 0 && ahora.getDate() < fecha.getDate())) edad--;
+  return edad;
+}
+
+/** Nombre de cada rol tal como lo reconocería quien lo tiene. */
+const NOMBRE_ROL: Record<string, string> = {
+  passenger:  'a passenger',
+  valet:      'a valet',
+  frontdesk:  'a front desk user',
+  concierge:  'a concierge',
+  chauffeur:  'a chauffeur',
+  driver:     'a chauffeur',
+  admin:      'an administrator',
+};
+
+/**
+ * El perfil de este correo, si lo hay, con su rol.
+ *
+ * Sirve para elegir la salida cuando el email ya existe en Auth, y el rol es
+ * imprescindible: el primer caso real fue una **valet** dándose de alta como
+ * conductora. Decirle «ya tienes cuenta, inicia sesión» la habría mandado al
+ * login de conductor, que la rechaza por rol — otro callejón. Con el rol se le
+ * puede decir la verdad: ese correo ya está usado para otra cosa.
+ *
+ * Nunca lanza: ante un fallo de lectura se devuelve `undefined` y se usa el
+ * mensaje neutro de «ya existe una cuenta».
+ */
+async function buscarPerfilPorEmail(email: string): Promise<{ role: string } | null | undefined> {
+  try {
+    const { data } = await supabaseAdmin
+      .from('profiles')
+      .select('id, role')
+      .eq('email', email)
+      .maybeSingle();
+    if (!data) return null;
+    return { role: String((data as { role?: string }).role ?? '') };
+  } catch {
+    return undefined;
+  }
+}
+
 /* ── Password strength validator ── */
 function validatePasswordStrength(password: string): { error: string; errorCode: string } | null {
   if (!password || password.length < 8)
@@ -245,10 +301,16 @@ chauffeurAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Reques
     const role = (profile?.role as string) || (appMeta.role as string) || 'chauffeur';
 
     if (role !== 'chauffeur' && role !== 'admin') {
+      // El mensaje mandaba a todos «a la app de pasajero», también a un valet,
+      // que tiene la suya. Se dice qué es esa cuenta y adónde va.
+      const destino = role === 'valet' || role === 'frontdesk' || role === 'concierge'
+        ? 'Please sign in from the URBONT Valet app.'
+        : 'Please use the URBONT passenger app.';
       return res.status(403).json({
-        error: 'This account is not registered as a chauffeur. Please use the passenger app.',
+        error: `This email is registered as ${NOMBRE_ROL[role] ?? 'another kind of user'}, not as a chauffeur. ${destino}`,
         errorCode: 'ACCESS_DENIED',
         field: 'email',
+        existingRole: role,
       });
     }
 
@@ -284,7 +346,19 @@ chauffeurAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Reques
     });
   } catch (err) {
     log.error(`[Chauffeur] Login error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Authentication failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    const e = err as { message?: string; status?: number };
+    if (esFalloDeServicio(e)) {
+      return res.status(503).json({
+        error: "We couldn't reach our sign-in service. Check your connection and try again in a moment.",
+        errorCode: 'AUTH_SERVICE_UNAVAILABLE',
+        action: 'retry',
+      });
+    }
+    return res.status(500).json({
+      error: "Something went wrong on our side while signing you in. Your account is fine — please try again.",
+      errorCode: 'LOGIN_FAILED',
+      action: 'retry',
+    });
   }
 });
 
@@ -296,7 +370,11 @@ chauffeurAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Req
   };
 
   if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required.', errorCode: 'MISSING_FIELDS' });
+    return res.status(400).json({
+      error: !email ? 'Enter your email address to continue.' : 'Choose a password to continue.',
+      errorCode: 'MISSING_FIELDS',
+      field: !email ? 'email' : 'password',
+    });
   }
 
   const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -307,6 +385,40 @@ chauffeurAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Req
   const pwError = validatePasswordStrength(password);
   if (pwError) return res.status(400).json({ ...pwError, field: 'password' });
 
+  if (city !== undefined && String(city).trim() && String(city).trim().length < 2) {
+    return res.status(400).json({
+      error: 'Enter the city where you will be driving.',
+      errorCode: 'INVALID_CITY',
+      field: 'city',
+    });
+  }
+
+  if (dob) {
+    const edad = edadEnAnios(dob);
+    if (edad === null) {
+      return res.status(400).json({
+        error: 'Enter your date of birth as YYYY-MM-DD.',
+        errorCode: 'INVALID_DOB',
+        field: 'dob',
+      });
+    }
+    if (edad < MIN_DRIVER_AGE) {
+      return res.status(400).json({
+        error: `You must be at least ${MIN_DRIVER_AGE} years old to drive with URBONT.`,
+        errorCode: 'UNDERAGE',
+        field: 'dob',
+      });
+    }
+  }
+
+  if (phone && !/^\+?[1-9]\d{7,14}$/.test(String(phone).replace(/[\s()-]/g, ''))) {
+    return res.status(400).json({
+      error: 'Enter your phone number with country code, e.g. +13051234567.',
+      errorCode: 'INVALID_PHONE',
+      field: 'phone',
+    });
+  }
+
   try {
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email,
@@ -315,13 +427,61 @@ chauffeurAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Req
     });
 
     if (authError) {
-      if (authError.message?.includes('already registered') || authError.message?.includes('already exists')) {
+      // El duplicado se decide por `code`/`status`, no por el texto: comparar
+      // contra 'already registered' fallaba con el mensaje real de Supabase
+      // —«already **been** registered»— y este 409 no se alcanzaba nunca. El
+      // conductor recibía un 500 genérico y reintentaba en vano.
+      if (esEmailDuplicado(authError)) {
+        // Tres salidas distintas, porque son tres problemas distintos y con un
+        // único 409 la app no podía elegir qué ofrecer:
+        //
+        //  · ya es conductor        → iniciar sesión
+        //  · es valet o pasajero    → ese correo está ocupado para otro rol;
+        //                             iniciar sesión no serviría, el login de
+        //                             conductor rechaza por rol
+        //  · existe en Auth sin perfil → alta a medias (formulario web sin
+        //                             contraseña, o registro cuyo perfil falló)
+        const perfil = await buscarPerfilPorEmail(email);
+
+        if (perfil === null) {
+          return res.status(409).json({
+            error: 'This email was already used to start an application. Sign in, or reset your password if you never set one.',
+            errorCode: 'EMAIL_IN_USE',
+            field: 'email',
+            action: 'reset_password',
+          });
+        }
+
+        const rol = perfil?.role ?? '';
+        const esConductor = rol === 'chauffeur' || rol === 'driver' || rol === 'admin';
+
+        if (perfil && !esConductor) {
+          return res.status(409).json({
+            error: `This email is already registered as ${NOMBRE_ROL[rol] ?? 'another kind of user'}. Use a different email to sign up as a chauffeur.`,
+            errorCode: 'EMAIL_IN_USE_OTHER_ROLE',
+            field: 'email',
+            existingRole: rol,
+            action: 'use_different_email',
+          });
+        }
+
         return res.status(409).json({
-          error: 'An account with this email already exists.',
+          error: 'You already have an URBONT chauffeur account with this email. Sign in instead.',
           errorCode: 'EMAIL_IN_USE',
           field: 'email',
+          action: 'login',
         });
       }
+
+      if (esFalloDeServicio(authError)) {
+        log.error(`[Chauffeur] Register — auth service failure for ${email}: ${authError.message}`);
+        return res.status(503).json({
+          error: "We couldn't reach our sign-up service. Check your connection and try again in a moment.",
+          errorCode: 'AUTH_SERVICE_UNAVAILABLE',
+          action: 'retry',
+        });
+      }
+
       throw authError;
     }
 
@@ -350,7 +510,16 @@ chauffeurAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Req
 
     if (upsertErr) {
       log.error(`[Chauffeur] Profile upsert failed for ${email}: ${upsertErr.message}`);
-      return res.status(500).json({ error: 'Registration failed. Please try again.', errorCode: 'SERVER_ERROR' });
+      // La cuenta SÍ quedó creada — sólo falló el perfil. Decir «inténtalo de
+      // nuevo» mandaba al conductor a un callejón: al reintentar, el email ya
+      // existía y recibía otro error. Se le dice que la cuenta está hecha y que
+      // entre con ella, que es lo único que sí funciona.
+      return res.status(500).json({
+        error: 'Your account was created, but we could not save your profile. Sign in with this email to finish setting it up.',
+        errorCode: 'PROFILE_SAVE_FAILED',
+        action: 'login',
+        accountCreated: true,
+      });
     }
 
     const token = issueToken({ id: userId, phone: phone || email, role: 'chauffeur' });
@@ -362,8 +531,26 @@ chauffeurAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Req
       user: { id: userId, email, firstName: firstName || '', lastName: lastName || '', role: 'chauffeur' },
     });
   } catch (err) {
-    log.error(`[Chauffeur] Register error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Registration failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    // Último recurso. Antes TODO acababa aquí —incluido el email duplicado— y
+    // el conductor veía «Registration failed. Please try again.» sin más. Los
+    // casos conocidos se resuelven arriba con su propio código; lo que llegue
+    // hasta acá es un fallo nuestro de verdad, y se dice así en vez de sugerir
+    // un reintento que puede no arreglar nada.
+    const e = err as { message?: string; code?: string; status?: number };
+    if (esEmailDuplicado(e)) {
+      return res.status(409).json({
+        error: 'You already have an URBONT account with this email. Sign in instead.',
+        errorCode: 'EMAIL_IN_USE',
+        field: 'email',
+        action: 'login',
+      });
+    }
+    log.error(`[Chauffeur] Register error (unclassified): ${errMsg(err)} · code=${e.code ?? '-'} status=${e.status ?? '-'}`);
+    return res.status(500).json({
+      error: "Something went wrong on our side while creating your account. Nothing was charged and you can try again; if it keeps failing, contact support@urbont.com.",
+      errorCode: 'REGISTRATION_FAILED',
+      action: 'contact_support',
+    });
   }
 });
 
@@ -416,7 +603,11 @@ chauffeurAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: 
     });
   } catch (err) {
     log.error(`[Chauffeur] OAuth login error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Authentication failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: "Something went wrong while signing you in with Google. Please try again, or use your email and password instead.",
+      errorCode: 'OAUTH_LOGIN_FAILED',
+      action: 'retry',
+    });
   }
 });
 
@@ -456,10 +647,15 @@ chauffeurAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (
       .eq('id', userId)
       .maybeSingle();
 
-    if (existing && existing.role === 'passenger') {
+    // Antes sólo se frenaba a los pasajeros. Un valet pasaba de largo, se le
+    // guardaban los datos de conductor, conservaba su rol de valet y descubría
+    // el problema en el login, con un mensaje que le mandaba a la app que no es.
+    if (existing && existing.role && existing.role !== 'chauffeur' && existing.role !== 'driver' && existing.role !== 'admin') {
       return res.status(403).json({
-        error: 'This account is already registered as a passenger. Use a different account to register as a chauffeur.',
+        error: `This account is registered as ${NOMBRE_ROL[existing.role as string] ?? 'another kind of user'}. Use a different email to register as a chauffeur.`,
         errorCode: 'ACCESS_DENIED',
+        existingRole: existing.role,
+        action: 'use_different_email',
       });
     }
 
@@ -513,7 +709,11 @@ chauffeurAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (
 
     if (upsertErr) {
       log.error(`[Chauffeur] complete-profile upsert failed for userId=${userId}: ${upsertErr.message}`);
-      return res.status(500).json({ error: 'Profile creation failed. Please try again.', errorCode: 'SERVER_ERROR' });
+      return res.status(500).json({
+        error: "We could not save your profile. Your sign-in is fine — please try again, and contact support@urbont.com if it keeps failing.",
+        errorCode: 'PROFILE_SAVE_FAILED',
+        action: 'retry',
+      });
     }
 
     // Save city in profile if provided (belt-and-suspenders with the upsert above)
@@ -541,6 +741,10 @@ chauffeurAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (
     });
   } catch (err) {
     log.error(`[Chauffeur] complete-profile error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Profile creation failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: "Something went wrong while saving your profile. Please try again, or contact support@urbont.com if it keeps failing.",
+      errorCode: 'PROFILE_SAVE_FAILED',
+      action: 'retry',
+    });
   }
 });

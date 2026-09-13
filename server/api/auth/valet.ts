@@ -4,6 +4,7 @@ import { supabaseAdmin, supabasePublic, issueToken, KNOWN_SUPABASE_URL, KNOWN_AN
 import { pool } from '../../db/pool';
 import { sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
+import { esEmailDuplicado } from '../../lib/authErrors';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('VALET');
@@ -188,7 +189,11 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
     return res.json({ success: true, session: { access_token: token, refresh_token: token }, user: { id: userId, email: data.user.email, firstName: profile?.first_name || '', lastName: profile?.last_name || '', role } });
   } catch (err) {
     log.error(`[Valet] Login error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Authentication failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'Something went wrong on our side while signing you in. Your account is fine — please try again.',
+      errorCode: 'LOGIN_FAILED',
+      action: 'retry',
+    });
   }
 });
 
@@ -218,8 +223,17 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
     });
 
     if (authError) {
-      if (authError.message?.includes('already registered') || authError.message?.includes('already exists')) {
-        return res.status(409).json({ error: 'An account with this email already exists.', errorCode: 'EMAIL_IN_USE', field: 'email' });
+      // Mismo arreglo que en el alta de conductor: el duplicado se decide por
+      // `code`/`status`. Comparar contra 'already registered' no casaba con el
+      // mensaje real de Supabase —«already been registered»— y este 409 nunca
+      // se alcanzaba: salía un 500 genérico.
+      if (esEmailDuplicado(authError)) {
+        return res.status(409).json({
+          error: 'An account with this email already exists. Sign in instead.',
+          errorCode: 'EMAIL_IN_USE',
+          field: 'email',
+          action: 'login',
+        });
       }
       throw authError;
     }
@@ -248,7 +262,14 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
 
     if (upsertErr) {
       log.error(`[Valet] Register profile upsert failed for ${email}: ${upsertErr.message}`);
-      return res.status(500).json({ error: 'Registration failed. Please try again.', errorCode: 'SERVER_ERROR' });
+      // La cuenta quedó creada; sólo falló el perfil. Reintentar el alta daría
+      // «email en uso», así que se le dirige a iniciar sesión.
+      return res.status(500).json({
+        error: 'Your account was created, but we could not save your profile. Sign in with this email to finish setting it up.',
+        errorCode: 'PROFILE_SAVE_FAILED',
+        action: 'login',
+        accountCreated: true,
+      });
     }
 
     const token = issueToken({ id: userId, phone: phone || email, role: assignedRole });
@@ -258,8 +279,21 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
       user: { id: userId, email, firstName: firstName || '', lastName: lastName || '', role: assignedRole },
     });
   } catch (err) {
-    log.error(`[Valet] Register error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Registration failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    const e = err as { message?: string; code?: string; status?: number };
+    if (esEmailDuplicado(e)) {
+      return res.status(409).json({
+        error: 'An account with this email already exists. Sign in instead.',
+        errorCode: 'EMAIL_IN_USE',
+        field: 'email',
+        action: 'login',
+      });
+    }
+    log.error(`[Valet] Register error (unclassified): ${errMsg(err)} · code=${e.code ?? '-'} status=${e.status ?? '-'}`);
+    return res.status(500).json({
+      error: 'Something went wrong on our side while creating your account. Please try again, or contact support@urbont.com if it keeps failing.',
+      errorCode: 'REGISTRATION_FAILED',
+      action: 'contact_support',
+    });
   }
 });
 
@@ -310,7 +344,11 @@ valetAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: Requ
     });
   } catch (err) {
     log.error(`[Valet] OAuth login error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Authentication failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'Something went wrong while signing you in with Google. Please try again, or use your email and password instead.',
+      errorCode: 'OAUTH_LOGIN_FAILED',
+      action: 'retry',
+    });
   }
 });
 
@@ -378,7 +416,11 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
 
     if (upsertErr) {
       log.error(`[Valet] complete-profile upsert failed for ${email}: ${upsertErr.message}`);
-      return res.status(500).json({ error: 'Profile creation failed. Please try again.', errorCode: 'SERVER_ERROR' });
+      return res.status(500).json({
+        error: 'We could not save your profile. Your sign-in is fine — please try again, and contact support@urbont.com if it keeps failing.',
+        errorCode: 'PROFILE_SAVE_FAILED',
+        action: 'retry',
+      });
     }
 
     const token = issueToken({ id: userId, phone: phone || email || userId, role: assignedRole });
@@ -391,6 +433,10 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
     });
   } catch (err) {
     log.error(`[Valet] complete-profile error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Profile creation failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'Something went wrong while saving your profile. Please try again, or contact support@urbont.com if it keeps failing.',
+      errorCode: 'PROFILE_SAVE_FAILED',
+      action: 'retry',
+    });
   }
 });

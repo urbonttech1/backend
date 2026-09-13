@@ -26,6 +26,8 @@ supabase_schema.sql    Esquema base
 |---|---|
 | [`docs/API_PRECIOS_MOBILE.md`](docs/API_PRECIOS_MOBILE.md) | Contrato de precios para la app móvil: cotización por distancia y por hora, recargo por demanda, y qué constantes puede borrar el APK |
 | [`docs/API_MOBILE_GEOCERCA_TARIFA_CONDUCCION.md`](docs/API_MOBILE_GEOCERCA_TARIFA_CONDUCCION.md) | Guía de integración para la app móvil: geocerca (el contrato del 422), qué endpoint de tarifa usar en cada pantalla, y el ciclo completo del conductor con sus eventos de socket |
+| [`docs/Manual-tecnico-URBONT.md`](docs/Manual-tecnico-URBONT.md) | Manual de la app móvil, capítulo 01: creación de perfiles de chofer — pantallas, campos, contrato con el backend y datos en el teléfono |
+| [`docs/PLAN_ALTA_CONDUCTOR.md`](docs/PLAN_ALTA_CONDUCTOR.md) | Qué del manual ya está implementado y qué falta, en cuatro fases ordenadas para que ningún APK en la calle se rompa |
 | [`docs/Auditoria_Cobro_Stripe.html`](docs/Auditoria_Cobro_Stripe.html) | Ocho fallos en el flujo de cobro, cuatro críticos. **Sin corregir** |
 | [`docs/ZONAS_DE_SERVICIO.md`](docs/ZONAS_DE_SERVICIO.md) | Pasar la geocerca de código a base de datos, gestionable desde el panel. **Implementado y verificado** |
 | [`docs/GEOCERCA_INTERNACIONAL.md`](docs/GEOCERCA_INTERNACIONAL.md) | Qué falta para abrir un país, no una ciudad. La geocerca ya sirve; el cobro no. **Propuesta** |

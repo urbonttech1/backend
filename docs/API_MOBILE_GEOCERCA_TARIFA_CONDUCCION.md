@@ -950,4 +950,4 @@ respuestas conservan su forma. Lo único que hay que hacer del lado de la app es
 Código de referencia: geocerca en `server/services/serviceZones.ts`, tarifas en
 `server/config/pricing.ts` y `server/services/fareConfig.ts`, estados en
 `server/services/stateMachine.ts`, sockets en `server/services/socketService.ts`.
-Los tests que fijan estas reglas están junto a cada archivo (`*.test.ts`).
+Los tests que fijan estas reg`las están junto a cada archivo (`*.test.ts`).

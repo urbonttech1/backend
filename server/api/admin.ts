@@ -1676,8 +1676,34 @@ const aCiudad = (r: CityRow) => ({
 /** Quita acentos para que «Bogota» encuentre «Bogotá». */
 const sinAcentos = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-// GET /api/admin/cities?q=bogo[&country=CO]
+/**
+ * GET /api/admin/cities
+ *
+ * Dos usos en una sola ruta, y no por gusto: `/cities` estaba **declarado dos
+ * veces** —aquí el buscador del catálogo, y más abajo la lista de ciudades de
+ * servicio de la pantalla del panel—. Express se queda con la primera, así que la
+ * segunda era código muerto: la pantalla Ciudades pedía `/cities` sin `q`, el
+ * buscador respondía `{ cities: [] }` por exigir dos caracteres, y la pantalla se
+ * veía vacía sin que nadie viera un error.
+ *
+ * Se resuelve por parámetro en vez de separando rutas para no tener que desplegar
+ * el panel a la vez: con `q` busca en el catálogo, sin `q` devuelve la pantalla.
+ * Ambos llamadores siguen funcionando tal cual están hoy.
+ *
+ *   · con `q`  → catálogo geonames:  `?q=bogo[&country=CO]`
+ *   · sin `q`  → ciudades de servicio + plan de expansión
+ *
+ * `/cities/search` hace lo primero de forma explícita, para código nuevo.
+ */
 adminRouter.get("/cities", async (req: Request, res: Response) => {
+  if (!String(req.query.q ?? '').trim()) return ciudadesDeServicio(res);
+  return buscarCiudades(req, res);
+});
+
+// GET /api/admin/cities/search?q=bogo[&country=CO]
+adminRouter.get("/cities/search", buscarCiudades);
+
+async function buscarCiudades(req: Request, res: Response) {
   const q = sinAcentos(String(req.query.q ?? '').trim().toLowerCase());
   if (q.length < 2) return res.json({ cities: [] });
 
@@ -1702,7 +1728,7 @@ adminRouter.get("/cities", async (req: Request, res: Response) => {
     logger.error(`[admin/cities] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to search cities' });
   }
-});
+}
 
 // GET /api/admin/cities/near?lat=&lng=&radiusKm=
 adminRouter.get("/cities/near", async (req: Request, res: Response) => {
@@ -1870,7 +1896,12 @@ adminRouter.post("/vehicles/:driverId/reject", async (req: Request, res: Respons
 
 // ─── Cities ───────────────────────────────────────────────────────────────────
 
-adminRouter.get("/cities", async (_req: Request, res: Response) => {
+/**
+ * Ciudades de servicio de la pantalla del panel. Vivía en una segunda ruta
+ * `GET /cities` que Express nunca alcanzaba, porque la del catálogo se declara
+ * antes. Ahora la llama esa misma ruta cuando la petición no trae `q`.
+ */
+async function ciudadesDeServicio(res: Response) {
   try {
     const { rows } = await pgPool.query(`SELECT value FROM app_config WHERE key = 'service_cities'`).catch(() => ({ rows: [] }));
     let cities = rows[0]?.value ? JSON.parse(rows[0].value) : [];
@@ -1893,7 +1924,7 @@ adminRouter.get("/cities", async (_req: Request, res: Response) => {
     logger.error(`[admin/cities] ${errMsg(err)}`);
     res.json({ cities: [], expansion: [] });
   }
-});
+}
 
 adminRouter.post("/cities", async (req: Request, res: Response) => {
   try {

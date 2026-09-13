@@ -24,10 +24,48 @@ import { pool } from '../db/pool';
     rating:               number | null;
   }
 
+  /** Viajes tras los cuales toca volver a verificar identidad. */
+  export const SELFIE_TRIP_INTERVAL = 25;
+  /** Días tras los cuales toca volver a verificar identidad. */
+  export const SELFIE_MAX_AGE_DAYS  = 7;
+
+  /**
+   * ¿Le toca verificación de identidad?
+   *
+   * Estaba devuelto como `false` fijo, y eso dejaba muerto medio sistema:
+   * `POST /api/drivers/selfie-verify` sí escribe `last_selfie_at`,
+   * `trips_since_selfie` y `selfie_due_at`, pero nadie los leía, así que el campo
+   * que la app recibe nunca podía ser `true`. Aquí se calcula con esos tres.
+   *
+   * Tres motivos, los mismos que contempla la pantalla de la app: una fecha
+   * marcada a mano por el sistema, demasiados viajes desde la última, o demasiado
+   * tiempo. Quien nunca se ha verificado y ya lleva viajes hechos, también.
+   */
+  export function calcularSelfieDue(p: {
+    selfie_due_at?:      string | Date | null;
+    trips_since_selfie?: number | null;
+    last_selfie_at?:     string | Date | null;
+    trips_completed?:    number | null;
+  }): boolean {
+    const ahora = Date.now();
+
+    if (p.selfie_due_at && new Date(p.selfie_due_at).getTime() <= ahora) return true;
+    if ((p.trips_since_selfie ?? 0) >= SELFIE_TRIP_INTERVAL) return true;
+
+    if (p.last_selfie_at) {
+      const dias = (ahora - new Date(p.last_selfie_at).getTime()) / 86_400_000;
+      return dias >= SELFIE_MAX_AGE_DAYS;
+    }
+
+    // Nunca se verificó. No se le exige el primer día: sólo cuando ya trabaja.
+    return (p.trips_completed ?? 0) >= SELFIE_TRIP_INTERVAL;
+  }
+
   export async function getVerificationStatus(driverId: string): Promise<VerificationStatus> {
     const { rows } = await pool.query(
       `SELECT is_blocked, block_reason, priority_score, trips_completed, trips_rejected,
-              consecutive_rejections, total_requests_received, needs_review, rating
+              consecutive_rejections, total_requests_received, needs_review, rating,
+              last_selfie_at, trips_since_selfie, selfie_due_at
        FROM profiles WHERE id = $1`,
       [driverId]
     );
@@ -43,12 +81,12 @@ import { pool } from '../db/pool';
     return {
       isBlocked:             p.is_blocked ?? false,
       blockReason:           p.block_reason ?? undefined,
-      selfieDue:             false,
+      selfieDue:             calcularSelfieDue(p),
       priorityScore:         parseFloat(p.priority_score ?? '1.0'),
       tripsCompleted,
       tripsRejected:         p.trips_rejected  ?? 0,
       consecutiveRejections: p.consecutive_rejections ?? 0,
-      tripsSinceSelfie:      0,
+      tripsSinceSelfie:      p.trips_since_selfie ?? 0,
       acceptanceRate:        Math.min(100, Math.max(0, acceptanceRate)),
       needsReview:           p.needs_review ?? false,
       rating:                p.rating != null ? parseFloat(String(p.rating)) : null,

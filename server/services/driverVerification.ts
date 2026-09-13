@@ -14,73 +14,32 @@
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
 
-/**
- * Los once documentos que piden hoy la app y el signup web
- * (ChauffeurRegistrationScreen.tsx y driver-signup.tsx). Este es el esquema
- * vigente: es el que recibe `POST /api/chauffeur/documents` en producción.
- */
-export const REQUIRED_DOC_KEYS = [
-  'license', 'photo', 'bgCheck', 'registration', 'insurance',
-  'commercialInsurance', 'inspection', 'tncPermit', 'defensiveDriving',
-  'w9', 'drugTest',
-] as const;
-
-/**
- * Esquema anterior, de licencia de limusina. Hay conductores con estos once
- * documentos ya aprobados, así que se sigue aceptando y se sigue considerando
- * un alta completa; simplemente ya no se le pide a nadie nuevo.
- */
-export const LEGACY_DOC_KEYS = [
-  'limoPermit', 'airportPermit', 'inspection', 'portPermit',
-  'insurance', 'registration', 'corpFiles', 'w9', 'taxId',
-  'license', 'photo',
-] as const;
-
-/**
- * Esquema del signup web nuevo (websitev2, src/lib/driver-documents.ts): los
- * diecisiete que pide hoy /conductor. Une los permisos de Miami-Dade del
- * esquema de limusina con los federales del vigente, y suma dos claves que no
- * existían: `businessTaxes` y `backgroundCheck`.
+/* ── Catálogo de documentos ────────────────────────────────────────────────
  *
- * Sin esta lista, un conductor que completara el formulario web quedaba con
- * `defensiveDriving` faltando para siempre — ya no se le pide a nadie — y sus
- * dos documentos nuevos se rechazaban al subir por no estar en ACCEPTED.
+ * Las listas, los metadatos y la normalización de estados viven en
+ * `docCatalog.ts`, que no importa nada y por eso se puede probar sin base ni
+ * variables de entorno. Se re-exportan aquí para que quien ya importaba desde
+ * este módulo no tenga que cambiar nada.
  */
-export const WEB_DOC_KEYS = [
-  'license', 'photo', 'bgCheck', 'registration', 'insurance',
-  'commercialInsurance', 'inspection', 'airportPermit', 'portPermit',
-  'limoPermit', 'tncPermit', 'w9', 'businessTaxes', 'corpFiles',
-  'taxId', 'drugTest', 'backgroundCheck',
-] as const;
+import {
+  REQUIRED_DOC_KEYS,
+  LEGACY_DOC_KEYS,
+  WEB_DOC_KEYS,
+  normalizarEstadoDoc,
+  type DocKey,
+  type VerificationStatus,
+} from './docCatalog';
 
-/** Todo lo que se admite subir, sin importar el esquema. */
-export const ACCEPTED_DOC_KEYS = [
-  ...new Set<string>([...REQUIRED_DOC_KEYS, ...LEGACY_DOC_KEYS, ...WEB_DOC_KEYS]),
-] as readonly string[];
-
-export type DocKey =
-  | typeof REQUIRED_DOC_KEYS[number]
-  | typeof LEGACY_DOC_KEYS[number]
-  | typeof WEB_DOC_KEYS[number];
-
-export type VerificationStatus =
-  | 'pending_documents'  // faltan documentos, o falta el vehículo
-  | 'pending_review'     // están todos, esperan revisión del admin
-  | 'rejected'           // al menos uno rechazado
-  | 'approved';          // todos aprobados y vehículo cargado
-
-/**
- * `driver_documents` guarda el mismo estado con dos palabras, 'valid' y
- * 'approved', según por qué ruta se haya escrito. Contar solo una de las dos
- * hacía que la aprobación automática no se disparara nunca para quien tuviera
- * la otra.
- */
-export function normalizarEstadoDoc(estado: unknown): 'aprobado' | 'rechazado' | 'pendiente' {
-  const s = String(estado);
-  if (s === 'valid' || s === 'approved') return 'aprobado';
-  if (s === 'rejected') return 'rechazado';
-  return 'pendiente';
-}
+export {
+  REQUIRED_DOC_KEYS,
+  LEGACY_DOC_KEYS,
+  WEB_DOC_KEYS,
+  ACCEPTED_DOC_KEYS,
+  DOC_CATALOG,
+  docMeta,
+  normalizarEstadoDoc,
+} from './docCatalog';
+export type { DocKey, DocMeta, VerificationStatus } from './docCatalog';
 
 export interface EstadoVerificacion {
   status: VerificationStatus;

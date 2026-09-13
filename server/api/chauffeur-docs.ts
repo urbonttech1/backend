@@ -3,7 +3,12 @@ import { supabaseAdmin } from '../db/client';
 import { pool } from '../db/pool';
 import { requireSupabaseAuth } from '../middleware';
 import { logger } from '../lib/logger';
-import { recalcularVerificacion, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
+import {
+  recalcularVerificacion,
+  ACCEPTED_DOC_KEYS,
+  REQUIRED_DOC_KEYS,
+  docMeta,
+} from '../services/driverVerification';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -106,13 +111,53 @@ interface DocRecord {
   driver_name:   string;
   status:        string;
   updated_at:    string;
+  /** Vencimiento del documento, `YYYY-MM-DD`, o null si no aplica. */
+  expiry_date?:  string | null;
+}
+
+/**
+ * Fecha de vencimiento válida, o `null`.
+ *
+ * POR QUÉ EXISTE — la app lleva enviando `expiryDate` desde siempre y el servidor
+ * no lo leía. No era sólo un dato perdido: `driver_documents.expiry_date` alimenta
+ * el cron de `jobs/cron.ts`, que avisa al conductor a 30 y a 7 días del
+ * vencimiento y lo suspende cuando el documento caduca. Como ninguna fila tenía
+ * fecha, ese cron nunca encontró nada — un control de vencimientos completo,
+ * corriendo a diario, mirando una columna vacía.
+ *
+ * Una fecha inválida NO tumba la subida: el documento importa más que su fecha, y
+ * rechazar el archivo entero por un formato raro sería peor que guardarlo sin ella.
+ */
+function fechaVencimientoValida(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00Z`);
+  if (isNaN(d.getTime())) return null;
+  // Se comprueba el ida y vuelta: '2026-02-31' pasa el regex pero no es una fecha.
+  if (d.toISOString().slice(0, 10) !== s) return null;
+  return s;
+}
+
+/** ¿Esa fecha ya pasó? Se compara por día, en UTC. */
+function yaVencio(fecha: string): boolean {
+  return fecha < new Date().toISOString().slice(0, 10);
 }
 
 async function upsertDocRecord(record: DocRecord): Promise<{ error: string | null }> {
+  // La fecha sólo viaja si la hay. Mandarla como null la borraría en cada
+  // re-subida sin fecha, que es justo lo contrario de lo que se quiere.
+  // Y cuando sí hay fecha nueva, los avisos vuelven a cero: un documento
+  // renovado tiene que poder avisar otra vez a 30 y a 7 días.
+  const { expiry_date, ...base } = record;
+  const payload: Record<string, unknown> = expiry_date
+    ? { ...base, expiry_date, notified_30d: false, notified_7d: false }
+    : { ...base };
+
   // Attempt 1 — supabaseAdmin PostgREST (works when unique index exists)
   const { error: e1 } = await supabaseAdmin
     .from('driver_documents')
-    .upsert(record, { onConflict: 'driver_id,doc_key', ignoreDuplicates: false });
+    .upsert(payload, { onConflict: 'driver_id,doc_key', ignoreDuplicates: false });
 
   if (!e1) return { error: null };
 
@@ -123,7 +168,7 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
 
   const { error: e2 } = await supabaseAdmin
     .from('driver_documents')
-    .upsert(record, { onConflict: 'driver_id,doc_key', ignoreDuplicates: false });
+    .upsert(payload, { onConflict: 'driver_id,doc_key', ignoreDuplicates: false });
 
   if (!e2) return { error: null };
 
@@ -133,8 +178,9 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
   try {
     await pool.query(
       `INSERT INTO driver_documents
-         (driver_id, doc_key, document_type, storage_url, image_url, file_name, driver_name, status, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         (driver_id, doc_key, document_type, storage_url, image_url, file_name, driver_name,
+          status, updated_at, expiry_date, notified_30d, notified_7d)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false)
        ON CONFLICT (driver_id, doc_key)
        DO UPDATE SET
          document_type = EXCLUDED.document_type,
@@ -143,11 +189,19 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
          file_name     = EXCLUDED.file_name,
          driver_name   = EXCLUDED.driver_name,
          status        = 'pending',
-         updated_at    = EXCLUDED.updated_at`,
+         updated_at    = EXCLUDED.updated_at,
+         -- Una fecha nueva sustituye a la vieja; si la subida no trae fecha se
+         -- conserva la que hubiera, para no borrar un vencimiento al re-subir.
+         expiry_date   = COALESCE(EXCLUDED.expiry_date, driver_documents.expiry_date),
+         -- Documento renovado, avisos a cero: si no, un documento que ya avisó a
+         -- 30 y 7 días no volvería a avisar nunca tras renovarse.
+         notified_30d  = false,
+         notified_7d   = false`,
       [
         record.driver_id, record.doc_key, record.document_type,
         record.storage_url, record.image_url, record.file_name,
         record.driver_name, record.status, record.updated_at,
+        record.expiry_date ?? null,
       ],
     );
     return { error: null };
@@ -155,6 +209,37 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
     return { error: errMsg(poolErr) };
   }
 }
+
+/* ──────────────────────────────────────────────
+   GET /api/chauffeur/required-docs
+   Público: es un catálogo, no lleva datos de nadie. Lo pide también el signup web.
+
+   Existe porque hasta ahora cada pantalla de la app traía su propia lista fija, y
+   las dos no coincidían: el registro pedía once documentos y Cuenta → Documentos
+   otros once, con seis claves en común. El aviso del panel decía «upload all 11
+   required documents» sin poder decir cuáles.
+
+   Con esto la lista es una sola y vive donde se puede cambiar sin publicar una
+   versión de la app.
+────────────────────────────────────────────── */
+chauffeurDocsRouter.get('/required-docs', (_req: Request, res: Response) => {
+  res.json({
+    // Hoy una sola lista para todos. El día que se decida qué se pide fuera de
+    // EE. UU., este endpoint pasa a responder por país y la app no cambia: ya
+    // estará leyendo de aquí. `country` viaja desde el principio para eso.
+    country: 'US',
+    docs: REQUIRED_DOC_KEYS.map((k) => docMeta(k)),
+    totalRequired: REQUIRED_DOC_KEYS.length,
+    // Todo lo que el servidor acepta guardar, más allá de lo que exige. Incluye
+    // los permisos de condado y los papeles de empresa del esquema anterior.
+    acceptedDocKeys: ACCEPTED_DOC_KEYS,
+    // Los límites que la app necesita para comprimir ANTES de subir, en vez de
+    // descubrirlos con un error a mitad de una carga de once archivos.
+    acceptedMimeTypes: ALLOWED_MIME_TYPES,
+    maxFileBytes:  MAX_FILE_SIZE_BYTES,
+    maxBatchBytes: 50 * 1024 * 1024,
+  });
+});
 
 /* ──────────────────────────────────────────────
    POST /api/chauffeur/upload-doc
@@ -169,18 +254,48 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
   if (!uid)             return res.status(401).json({ error: 'Unauthorized.',                errorCode: 'UNAUTHORIZED'  });
   if (role !== 'chauffeur' && role !== 'driver') return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
 
-  const { docKey, fileName, mimeType, base64 } = req.body as {
-    docKey?: string; fileName?: string; mimeType?: string; base64?: string;
+  const { docKey, fileName, mimeType, base64, expiryDate } = req.body as {
+    docKey?: string; fileName?: string; mimeType?: string; base64?: string; expiryDate?: string;
   };
 
-  if (!docKey || !fileName || !mimeType || !base64)
-    return res.status(400).json({ error: 'Missing required fields.', errorCode: 'MISSING_FIELDS' });
+  // Decir cuál de los cuatro falta: 'Missing required fields' obligaba a
+  // adivinar, y el que falla casi siempre es el archivo.
+  const faltaDoc = !docKey ? 'docKey' : !fileName ? 'fileName' : !mimeType ? 'mimeType' : !base64 ? 'base64' : null;
+  if (faltaDoc)
+    return res.status(400).json({
+      error: faltaDoc === 'base64'
+        ? 'The file did not reach us. Please pick the file again.'
+        : `Missing required field: ${faltaDoc}.`,
+      errorCode: 'MISSING_FIELDS',
+      field: faltaDoc,
+    });
 
   if (!ACCEPTED_DOC_KEYS.includes(docKey))
-    return res.status(400).json({ error: 'Invalid document type.', errorCode: 'INVALID_DOC_KEY' });
+    return res.status(400).json({
+      error: `"${docKey}" is not a document we ask for. Please upload it in the matching slot.`,
+      errorCode: 'INVALID_DOC_KEY',
+      field: 'docKey',
+      acceptedDocKeys: ACCEPTED_DOC_KEYS,
+    });
 
   if (!ALLOWED_MIME_TYPES.includes(mimeType.toLowerCase()))
-    return res.status(400).json({ error: 'Invalid file type. Only PDF and images are allowed.', errorCode: 'INVALID_MIME_TYPE' });
+    return res.status(400).json({
+      error: 'That file type is not supported. Upload a PDF or a photo (JPG, PNG, WEBP or HEIC).',
+      errorCode: 'INVALID_MIME_TYPE',
+      field: 'file',
+      allowedTypes: ALLOWED_MIME_TYPES,
+    });
+
+  // Una fecha ilegible se ignora y el documento se guarda igual; una ya vencida se
+  // rechaza, porque aceptarla sería registrar como válido algo que no lo es.
+  const vencimiento = fechaVencimientoValida(expiryDate);
+  if (vencimiento && yaVencio(vencimiento))
+    return res.status(400).json({
+      error: `That document expired on ${vencimiento}. Upload a current one.`,
+      errorCode: 'DOCUMENT_EXPIRED',
+      field: 'expiryDate',
+      expiryDate: vencimiento,
+    });
 
   const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 100);
 
@@ -189,7 +304,13 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
     const buffer    = Buffer.from(rawBase64, 'base64');
 
     if (buffer.length > MAX_FILE_SIZE_BYTES)
-      return res.status(400).json({ error: 'File too large. Maximum size is 10 MB.', errorCode: 'FILE_TOO_LARGE' });
+      return res.status(400).json({
+        error: `That file is ${(buffer.length / 1048576).toFixed(1)} MB. Please upload a file under 10 MB — a photo taken in "medium" quality usually fits.`,
+        errorCode: 'FILE_TOO_LARGE',
+        field: 'file',
+        maxBytes: MAX_FILE_SIZE_BYTES,
+        actualBytes: buffer.length,
+      });
 
     // Stable storage path: re-uploads overwrite the previous file (Uber-style).
     // Format: <uid>/<docKey>.<ext>  — no timestamp, deterministic per driver+doc.
@@ -202,7 +323,12 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
 
     if (uploadError) {
       logger.error(`[DocUpload] Storage error for ${docKey}: ${uploadError.message}`);
-      return res.status(500).json({ error: 'File upload failed. Please try again.', errorCode: 'UPLOAD_FAILED' });
+      return res.status(500).json({
+        error: 'We could not store your document. Check your connection and upload it again.',
+        errorCode: 'UPLOAD_FAILED',
+        field: 'file',
+        action: 'retry',
+      });
     }
 
     const { data: urlData } = supabaseAdmin.storage.from('chauffeur-docs').getPublicUrl(storagePath);
@@ -224,6 +350,7 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       driver_name:   driverName,
       status:        'pending',
       updated_at:    new Date().toISOString(),
+      expiry_date:   vencimiento,
     });
 
     if (dbErr) {
@@ -247,18 +374,78 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       success: true,
       storageUrl,
       docKey,
+      // Se devuelve lo que quedó guardado, no lo que llegó: si la fecha venía en
+      // un formato que no se pudo leer, aquí llega `null` y la app se entera.
+      expiryDate: vencimiento,
       verificationStatus: verificacion.status,
       missingDocs: verificacion.missingDocs,
     });
   } catch (err) {
     logger.error(`[DocUpload] Unexpected error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Upload failed. Please try again.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'Something went wrong while uploading your document. Please try again, or contact support@urbont.com if it keeps failing.',
+      errorCode: 'UPLOAD_FAILED',
+      action: 'retry',
+    });
   }
 });
+
+/**
+ * Cuerpo común de `/submit` y `/submit-documents`.
+ *
+ * Las dos rutas hacían casi lo mismo con el código duplicado, y la única
+ * diferencia real es que `submit-documents` corta con 400 si faltan documentos.
+ * Se mantienen las dos —hay APK en la calle usando cada una— pero con una sola
+ * implementación detrás.
+ *
+ * La respuesta lleva la unión de los campos que devolvía cada una. Añadir campos
+ * no rompe a nadie; quitarlos sí, así que no se quita ninguno.
+ */
+async function responderEstadoAlta(
+  uid: string,
+  res: Response,
+  opciones: { exigirCompletos: boolean; etiqueta: string },
+) {
+  try {
+    const verificacion = await recalcularVerificacion(uid);
+
+    if (opciones.exigirCompletos && verificacion.missingDocs.length > 0) {
+      return res.status(400).json({
+        error: `Missing documents: ${verificacion.missingDocs.map((k) => docMeta(k).label).join(', ')}`,
+        errorCode: 'INCOMPLETE_DOCUMENTS',
+        missingDocs: verificacion.missingDocs,
+        // Con la etiqueta legible al lado, la app puede listar lo que falta sin
+        // llevar su propio diccionario de claves internas.
+        missingDocsDetail: verificacion.missingDocs.map((k) => docMeta(k)),
+      });
+    }
+
+    return res.json({
+      success: true,
+      status: verificacion.status,
+      verificationStatus: verificacion.status,
+      missingDocs: verificacion.missingDocs,
+      missingDocsDetail: verificacion.missingDocs.map((k) => docMeta(k)),
+      rejectedDocs: verificacion.rejectedDocs,
+      hasVehicle: verificacion.hasVehicle,
+      reason: verificacion.reason,
+    });
+  } catch (err) {
+    logger.error(`[${opciones.etiqueta}] Error: ${errMsg(err)}`);
+    return res.status(500).json({
+      error: 'We could not submit your application for review. Your documents are saved — please try again in a moment.',
+      errorCode: 'SUBMIT_FAILED',
+      action: 'retry',
+    });
+  }
+}
 
 /* ──────────────────────────────────────────────
    POST /api/chauffeur/submit-documents
    Validates all required docs are present, then marks as pending_review.
+
+   OBSOLETA en favor de /submit, que hace lo mismo sin exigir que estén todos.
+   Se mantiene porque hay APK publicados que la llaman.
 ────────────────────────────────────────────── */
 chauffeurDocsRouter.post('/submit-documents', requireSupabaseAuth, async (req: Request, res: Response) => {
   const uid  = req.supabaseUid;
@@ -267,29 +454,7 @@ chauffeurDocsRouter.post('/submit-documents', requireSupabaseAuth, async (req: R
   if (!uid)             return res.status(401).json({ error: 'Unauthorized.',                errorCode: 'UNAUTHORIZED'  });
   if (role !== 'chauffeur' && role !== 'driver') return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
 
-  try {
-    const verificacion = await recalcularVerificacion(uid);
-
-    if (verificacion.missingDocs.length > 0) {
-      return res.status(400).json({
-        error: `Missing documents: ${verificacion.missingDocs.join(', ')}`,
-        errorCode: 'INCOMPLETE_DOCUMENTS',
-        missingDocs: verificacion.missingDocs,
-      });
-    }
-
-    return res.json({
-      success: true,
-      status: verificacion.status,
-      verificationStatus: verificacion.status,
-      rejectedDocs: verificacion.rejectedDocs,
-      hasVehicle: verificacion.hasVehicle,
-      reason: verificacion.reason,
-    });
-  } catch (err) {
-    logger.error(`[DocSubmit] Error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Submission failed.', errorCode: 'SERVER_ERROR' });
-  }
+  return responderEstadoAlta(uid, res, { exigirCompletos: true, etiqueta: 'DocSubmit' });
 });
 
 /* ──────────────────────────────────────────────
@@ -348,7 +513,11 @@ chauffeurDocsRouter.get('/verification-status', requireSupabaseAuth, async (req:
     });
   } catch (err) {
     logger.error(`[VerifStatus] Error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Failed to fetch status.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'We could not load your application status right now. Pull to refresh in a moment.',
+      errorCode: 'STATUS_UNAVAILABLE',
+      action: 'retry',
+    });
   }
 });
 
@@ -367,8 +536,35 @@ chauffeurDocsRouter.post('/set-vehicle', requireSupabaseAuth, async (req: Reques
     category?: string; vehicle_photo_url?: string;
   };
 
-  if (!make || !model || !year || !color || !plate)
-    return res.status(400).json({ error: 'All vehicle fields are required (make, model, year, color, plate).', errorCode: 'MISSING_FIELDS' });
+  // Se devuelve EL campo que falta, no la lista entera: con un `MISSING_FIELDS`
+  // pelado la app no podía marcar cuál de los cinco estaba vacío.
+  const camposVehiculo: Array<[string, string | undefined, string]> = [
+    ['make',  make,  'vehicle make'],
+    ['model', model, 'vehicle model'],
+    ['year',  year,  'vehicle year'],
+    ['color', color, 'vehicle color'],
+    ['plate', plate, 'license plate'],
+  ];
+  const faltante = camposVehiculo.find(([, valor]) => !valor || !String(valor).trim());
+  if (faltante) {
+    const [campo, , etiqueta] = faltante;
+    return res.status(400).json({
+      error: `Enter your ${etiqueta} to continue.`,
+      errorCode: 'MISSING_FIELDS',
+      field: campo,
+      missingFields: camposVehiculo.filter(([, v]) => !v || !String(v).trim()).map(([c]) => c),
+    });
+  }
+
+  const anio = parseInt(String(year).trim(), 10);
+  const anioMax = new Date().getFullYear() + 1;
+  if (!Number.isFinite(anio) || anio < 1980 || anio > anioMax) {
+    return res.status(400).json({
+      error: `Enter a vehicle year between 1980 and ${anioMax}.`,
+      errorCode: 'INVALID_YEAR',
+      field: 'year',
+    });
+  }
 
   try {
     const { data: existingRow } = await supabaseAdmin
@@ -393,7 +589,11 @@ chauffeurDocsRouter.post('/set-vehicle', requireSupabaseAuth, async (req: Reques
 
     if (error) {
       logger.error(`[SetVehicle] DB error: ${error.message}`);
-      return res.status(500).json({ error: 'Failed to save vehicle info.', errorCode: 'SERVER_ERROR' });
+      return res.status(500).json({
+        error: 'We could not save your vehicle details. Please try again in a moment.',
+        errorCode: 'VEHICLE_SAVE_FAILED',
+        action: 'retry',
+      });
     }
 
     // El vehículo es condición de aprobación, así que registrarlo puede ser lo
@@ -403,7 +603,11 @@ chauffeurDocsRouter.post('/set-vehicle', requireSupabaseAuth, async (req: Reques
     return res.json({ success: true, vehicle, verificationStatus: verificacion.status });
   } catch (err) {
     logger.error(`[SetVehicle] Error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Failed to save vehicle info.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'Something went wrong while saving your vehicle. Please try again, or contact support@urbont.com if it keeps failing.',
+      errorCode: 'VEHICLE_SAVE_FAILED',
+      action: 'retry',
+    });
   }
 });
 
@@ -429,13 +633,21 @@ chauffeurDocsRouter.post('/set-city', requireSupabaseAuth, async (req: Request, 
 
     if (error) {
       logger.error(`[SetCity] DB error: ${error.message}`);
-      return res.status(500).json({ error: 'Failed to set city.', errorCode: 'SERVER_ERROR' });
+      return res.status(500).json({
+        error: 'We could not save your operating city. Please try again in a moment.',
+        errorCode: 'CITY_SAVE_FAILED',
+        action: 'retry',
+      });
     }
 
     return res.json({ success: true, city: city.trim() });
   } catch (err) {
     logger.error(`[SetCity] Error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Failed to set city.', errorCode: 'SERVER_ERROR' });
+    return res.status(500).json({
+      error: 'Something went wrong while saving your city. Please try again.',
+      errorCode: 'CITY_SAVE_FAILED',
+      action: 'retry',
+    });
   }
 });
 
@@ -452,9 +664,15 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
   if (!uid)             return res.status(401).json({ error: 'Unauthorized.',                errorCode: 'UNAUTHORIZED'  });
   if (role !== 'chauffeur' && role !== 'driver') return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
 
-  const { documents } = req.body as { documents?: Record<string, string> };
+  // El valor puede ser el data URL de siempre, o `{ dataUrl, expiryDate }`.
+  type EntradaDoc = string | { dataUrl?: string; expiryDate?: string };
+  const { documents } = req.body as { documents?: Record<string, EntradaDoc> };
   if (!documents || typeof documents !== 'object')
-    return res.status(400).json({ error: 'documents field is required.', errorCode: 'MISSING_FIELDS' });
+    return res.status(400).json({
+      error: 'No documents reached us. Please select your files again.',
+      errorCode: 'MISSING_FIELDS',
+      field: 'documents',
+    });
 
   // Fetch driver name once
   const { data: profileData } = await supabaseAdmin
@@ -467,7 +685,7 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
 
   // Run all uploads in parallel — Uber-style fast batch
   await Promise.all(
-    Object.entries(documents).map(async ([docKey, dataUrl]) => {
+    Object.entries(documents).map(async ([docKey, entrada]) => {
       // Esta ruta no comprobaba el tipo de documento, a diferencia de
       // /upload-doc. Por aquí entró un juego de once documentos con nombres que
       // no existen en la lista requerida, y ese conductor quedó imposible de
@@ -477,8 +695,22 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
         return;
       }
 
+      // Dos formas admitidas: la de siempre, un data URL suelto, y la nueva, un
+      // objeto con la fecha de vencimiento al lado. Así el registro puede mandar
+      // vencimientos sin que los APK que envían strings dejen de funcionar.
+      const esObjeto = !!entrada && typeof entrada === 'object';
+      const dataUrl  = esObjeto ? (entrada as { dataUrl?: string }).dataUrl : (entrada as unknown as string);
+      const vencimiento = esObjeto
+        ? fechaVencimientoValida((entrada as { expiryDate?: string }).expiryDate)
+        : null;
+
       if (!dataUrl || typeof dataUrl !== 'string') {
         results[docKey] = { success: false, error: 'No data provided' };
+        return;
+      }
+
+      if (vencimiento && yaVencio(vencimiento)) {
+        results[docKey] = { success: false, error: `Document expired on ${vencimiento}` };
         return;
       }
 
@@ -531,6 +763,7 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
           driver_name:   driverName,
           status:        'pending',
           updated_at:    new Date().toISOString(),
+          expiry_date:   vencimiento,
         });
 
         if (dbErr) {
@@ -573,21 +806,7 @@ chauffeurDocsRouter.post('/submit', requireSupabaseAuth, async (req: Request, re
   const uid = req.supabaseUid;
   if (!uid) return res.status(401).json({ error: 'Unauthorized.', errorCode: 'UNAUTHORIZED' });
 
-  try {
-    // Esta ruta ponía `pending_review` sin comprobar absolutamente nada: bastaba
-    // llamarla. Ahora el estado lo decide el recálculo sobre los documentos.
-    const verificacion = await recalcularVerificacion(uid);
-
-    return res.json({
-      success: true,
-      verificationStatus: verificacion.status,
-      missingDocs: verificacion.missingDocs,
-      rejectedDocs: verificacion.rejectedDocs,
-      hasVehicle: verificacion.hasVehicle,
-      reason: verificacion.reason,
-    });
-  } catch (err) {
-    logger.error(`[Submit] Error: ${errMsg(err)}`);
-    return res.status(500).json({ error: 'Failed to submit application.', errorCode: 'SERVER_ERROR' });
-  }
+  // Esta ruta ponía `pending_review` sin comprobar absolutamente nada: bastaba
+  // llamarla. Ahora el estado lo decide el recálculo sobre los documentos.
+  return responderEstadoAlta(uid, res, { exigirCompletos: false, etiqueta: 'Submit' });
 });

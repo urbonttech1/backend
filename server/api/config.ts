@@ -2,7 +2,8 @@ import { Router, Request, Response } from "express";
 import { requireSupabaseAuth } from "../middleware";
 import { createContextLogger } from "../lib/logger";
 import { pool } from "../db/pool";
-import { getTimeSurge } from "../config/pricing";
+import { getTimeSurge, getFareClasses, VEHICLE_ALIAS } from "../config/pricing";
+import { ensureZonesFresh, getZones } from "../services/serviceZones";
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -46,6 +47,41 @@ export async function getEffectiveSurge(now: Date = new Date()): Promise<number>
   }
 }
 
+/**
+ * Categorías de vehículo, con sus alias.
+ *
+ * Hay tres vocabularios en circulación: el registro de la app ofrece `SUV` y
+ * `Sedan`, el editor de perfil usa `executive`/`suv`/`van`/`signature`, y las
+ * tarifas se guardan bajo `sedan`/`suv`/`van`. Hoy no rompe nada porque
+ * `normalizeVehicleCategory` y `VEHICLE_ALIAS` traducen entre ellos, pero son
+ * tres listas que se mantienen por acuerdo tácito y ya hay una grieta:
+ * `signature` y `concierge` tienen sala de reparto y **no tienen tarifa**.
+ *
+ * Publicarlas es el primer paso para que la app deje de llevar la suya. El campo
+ * `bookable` es el que expone la grieta sin taparla.
+ */
+function categoriasVehiculo() {
+  const tarifas = getFareClasses();
+  const canonicas = ['sedan', 'suv', 'van'] as const;
+
+  const aliasDe = (clave: string) =>
+    Object.entries(VEHICLE_ALIAS).filter(([, v]) => v === clave).map(([k]) => k);
+
+  return canonicas.map((clave) => ({
+    key:      clave,
+    label:    tarifas[clave]?.name ?? clave,
+    aliases:  aliasDe(clave),
+    bookable: !!tarifas[clave],
+    minFare:  tarifas[clave]?.minFare ?? null,
+    perHour:  tarifas[clave]?.perHour ?? null,
+  }));
+}
+
+// GET /api/config/vehicle-categories — público
+configRouter.get('/vehicle-categories', (_req: Request, res: Response) => {
+  res.json({ categories: categoriasVehiculo() });
+});
+
 // GET /api/config — public: returns maintenance_mode, min_version, surge_multiplier, googleMapsApiKey
 configRouter.get("/", async (_req: Request, res: Response) => {
   const stripePublishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
@@ -70,6 +106,89 @@ configRouter.get("/", async (_req: Request, res: Response) => {
   } catch (err: any) {
     log.warn({ err: err.message }, 'config fetch error — returning defaults');
     res.json({ ...DEFAULTS, stripePublishableKey, googleMapsApiKey, googleMapsMapId });
+  }
+});
+
+/**
+ * GET /api/config/cities — público: ciudades donde el conductor puede darse de alta.
+ *
+ * POR QUÉ — la app lleva una lista fija de 20 ciudades de EE. UU. escrita a mano,
+ * así que un conductor de Barranquilla no puede elegir su ciudad aunque el
+ * servidor ya opere allí. Abrir una ciudad exigía publicar una versión del APK.
+ *
+ * Sale de cruzar dos cosas que ya existen y no se estaban usando juntas: las
+ * zonas activas (`service_zones`, con su país) y el catálogo `cities` de
+ * geonames. Se devuelven las ciudades del catálogo que caen dentro de una zona
+ * activa, ordenadas por población.
+ *
+ * Es un selector, no la geocerca: quién puede pedir un viaje lo sigue decidiendo
+ * `resolveZone` sobre coordenadas. Una ciudad de esta lista es donde el conductor
+ * dice que va a trabajar.
+ */
+configRouter.get('/cities', async (_req: Request, res: Response) => {
+  await ensureZonesFresh();
+  const zonas = getZones().filter((z) => z.active && z.centerLat !== null && z.centerLng !== null);
+
+  if (zonas.length === 0) return res.json({ cities: [], default: null });
+
+  try {
+    // Una consulta por zona, con su caja envolvente. Son dos o tres zonas: no
+    // compensa montar nada más elaborado.
+    const porZona = await Promise.all(
+      zonas.map(async (z) => {
+        const gradoLat = (z.radiusKm ?? 100) / 111;
+        const cos = Math.max(0.01, Math.cos((z.centerLat! * Math.PI) / 180));
+        const gradoLng = (z.radiusKm ?? 100) / (111 * cos);
+
+        const { rows } = await pool.query<{
+          geoname_id: number; name: string; admin1: string | null;
+          country_code: string; population: number; timezone: string;
+        }>(
+          `SELECT geoname_id, name, admin1, country_code, population, timezone
+             FROM cities
+            WHERE country_code = $1
+              AND lat BETWEEN $2 AND $3
+              AND lng BETWEEN $4 AND $5
+            ORDER BY population DESC
+            LIMIT 40`,
+          [
+            z.countryCode,
+            z.centerLat! - gradoLat, z.centerLat! + gradoLat,
+            z.centerLng! - gradoLng, z.centerLng! + gradoLng,
+          ],
+        );
+
+        return rows.map((r) => ({
+          id:       `${r.name.toLowerCase().replace(/\s+/g, '-')}-${r.country_code.toLowerCase()}`,
+          name:     r.name,
+          region:   r.admin1,
+          country:  r.country_code,
+          timezone: r.timezone,
+          zoneId:   z.id,
+        }));
+      }),
+    );
+
+    // El valor por defecto es la ciudad principal de la zona MÁS GRANDE, no la
+    // primera que devuelva la base: las zonas vienen ordenadas por id, así que
+    // sin esto el selector abría en Barranquilla por ir antes que Miami en el
+    // alfabeto. Es el mismo criterio que ya usa el sesgo de búsqueda.
+    const mayor = zonas.reduce((a, b) => ((b.radiusKm ?? 0) > (a.radiusKm ?? 0) ? b : a));
+    const cities = porZona.flat();
+    const porDefecto = cities.find((c) => c.zoneId === mayor.id) ?? cities[0];
+
+    res.json({ cities, default: porDefecto?.id ?? null });
+  } catch (err: any) {
+    // Si el catálogo no está cargado, se responde con las zonas a secas en vez
+    // de un error: es preferible ofrecer dos opciones que ninguna, y la app
+    // conserva su lista de respaldo igualmente.
+    log.warn({ err: err.message }, 'cities fetch error — se devuelven sólo las zonas');
+    const cities = zonas.map((z) => ({
+      id: `${z.id}-${z.countryCode.toLowerCase()}`,
+      name: z.name, region: null, country: z.countryCode,
+      timezone: z.timezone, zoneId: z.id,
+    }));
+    res.json({ cities, default: cities[0]?.id ?? null });
   }
 });
 
