@@ -23,8 +23,7 @@ import { logger } from '../lib/logger';
  */
 import {
   REQUIRED_DOC_KEYS,
-  LEGACY_DOC_KEYS,
-  WEB_DOC_KEYS,
+  elegirEsquema,
   normalizarEstadoDoc,
   type DocKey,
   type VerificationStatus,
@@ -37,6 +36,7 @@ export {
   ACCEPTED_DOC_KEYS,
   DOC_CATALOG,
   docMeta,
+  elegirEsquema,
   normalizarEstadoDoc,
 } from './docCatalog';
 export type { DocKey, DocMeta, VerificationStatus } from './docCatalog';
@@ -101,21 +101,12 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
       porTipo.set(key, estado);
     }
 
-    // Se evalúa contra el esquema que el conductor haya empezado. Sin esto, los
-    // que completaron un esquema aparecerían con todo faltando al medirlos
-    // contra otro, porque las listas sólo comparten una parte de los nombres.
-    //
-    // Se compara por PROPORCIÓN cubierta, no por número de claves. Contando
-    // claves, un conductor con el esquema de limusina completo (11 de 11)
-    // empataba con las 11 que ese mismo esquema cubre del web, y al desempatar
-    // hacia el web le aparecían seis documentos faltantes: conductores ya
-    // aprobados volvían a `pending_documents`. La proporción da 1.0 al esquema
-    // que sí completó. A igualdad de proporción gana el que cubre más claves,
-    // que es el esquema más específico de los dos.
-    const cubiertos = (lista: readonly string[]) => lista.filter(k => porTipo.has(k)).length;
-    const esquema: readonly string[] = [WEB_DOC_KEYS, REQUIRED_DOC_KEYS, LEGACY_DOC_KEYS]
-      .map(lista => ({ lista, n: cubiertos(lista) }))
-      .sort((a, b) => (b.n / b.lista.length) - (a.n / a.lista.length) || b.n - a.n)[0].lista;
+    // Se evalúa contra el esquema que el conductor haya empezado. La elección
+    // vive en `docCatalog.elegirEsquema` para que `GET /required-docs` pueda
+    // responder EXACTAMENTE la misma lista contra la que se le va a medir: si
+    // cada uno usara su criterio, el endpoint le pediría documentos distintos de
+    // los que el servidor comprueba.
+    const esquema = elegirEsquema([...porTipo.keys()]);
 
     const missingDocs  = esquema.filter(k => !porTipo.has(k)) as DocKey[];
     const rejectedDocs = esquema.filter(k => porTipo.get(k) === 'rechazado') as DocKey[];

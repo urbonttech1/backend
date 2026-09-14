@@ -5,6 +5,9 @@ import {
   DOC_CATALOG,
   docMeta,
   normalizarEstadoDoc,
+  elegirEsquema,
+  LEGACY_DOC_KEYS,
+  WEB_DOC_KEYS,
 } from './docCatalog';
 
 /**
@@ -67,5 +70,33 @@ describe('normalizarEstadoDoc', () => {
     expect(normalizarEstadoDoc('pending')).toBe('pendiente');
     expect(normalizarEstadoDoc(null)).toBe('pendiente');
     expect(normalizarEstadoDoc(undefined)).toBe('pendiente');
+  });
+});
+
+describe('elegirEsquema — contra qué lista se mide a cada conductor', () => {
+  it('a quien no ha subido nada, el esquema del alta móvil', () => {
+    expect(elegirEsquema([])).toBe(REQUIRED_DOC_KEYS);
+  });
+
+  it('a quien completó el esquema de limusina, ése', () => {
+    // Contando claves empataba con el web y le aparecían seis faltantes:
+    // conductores ya aprobados volvían a pending_documents.
+    expect(elegirEsquema([...LEGACY_DOC_KEYS])).toBe(LEGACY_DOC_KEYS);
+  });
+
+  it('a quien completó el del signup web, ése', () => {
+    expect(elegirEsquema([...WEB_DOC_KEYS])).toBe(WEB_DOC_KEYS);
+  });
+
+  it('con un esquema a medias, gana el que cubre mayor proporción', () => {
+    expect(elegirEsquema(['license', 'photo', 'bgCheck'])).toBe(REQUIRED_DOC_KEYS);
+  });
+
+  it('es la misma elección que usa el recálculo, no una copia', () => {
+    // Si divergieran, `required-docs` pediría documentos distintos de los que
+    // el servidor comprueba para aprobar.
+    const subidas = ['limoPermit', 'airportPermit', 'portPermit', 'license', 'photo'];
+    const esquema = elegirEsquema(subidas);
+    expect(esquema).toBe(LEGACY_DOC_KEYS);
   });
 });

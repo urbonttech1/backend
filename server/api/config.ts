@@ -3,7 +3,7 @@ import { requireSupabaseAuth } from "../middleware";
 import { createContextLogger } from "../lib/logger";
 import { pool } from "../db/pool";
 import { getTimeSurge, getFareClasses, VEHICLE_ALIAS } from "../config/pricing";
-import { ensureZonesFresh, getZones } from "../services/serviceZones";
+import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -125,9 +125,16 @@ configRouter.get("/", async (_req: Request, res: Response) => {
  * `resolveZone` sobre coordenadas. Una ciudad de esta lista es donde el conductor
  * dice que va a trabajar.
  */
-configRouter.get('/cities', async (_req: Request, res: Response) => {
+configRouter.get('/cities', async (req: Request, res: Response) => {
   await ensureZonesFresh();
   const zonas = getZones().filter((z) => z.active && z.centerLat !== null && z.centerLng !== null);
+
+  // El GPS del conductor, si lo manda. Decide cuál se le propone por defecto —
+  // sin esto, a un conductor de Barranquilla se le proponía Miami por ser la
+  // zona más grande. Mismo criterio que ya usa la búsqueda de direcciones.
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const zonaPropia = resolveZone(lat, lng);
 
   if (zonas.length === 0) return res.json({ cities: [], default: null });
 
@@ -169,15 +176,21 @@ configRouter.get('/cities', async (_req: Request, res: Response) => {
       }),
     );
 
-    // El valor por defecto es la ciudad principal de la zona MÁS GRANDE, no la
-    // primera que devuelva la base: las zonas vienen ordenadas por id, así que
-    // sin esto el selector abría en Barranquilla por ir antes que Miami en el
-    // alfabeto. Es el mismo criterio que ya usa el sesgo de búsqueda.
+    // Por defecto, la ciudad principal de la zona DEL CONDUCTOR si mandó GPS; si
+    // no, la de la zona más grande. Sin ninguna de las dos cosas se abriría en la
+    // primera que devuelva la base, que van ordenadas por id: el selector
+    // proponía Barranquilla por ir antes que Miami en el alfabeto.
     const mayor = zonas.reduce((a, b) => ((b.radiusKm ?? 0) > (a.radiusKm ?? 0) ? b : a));
+    const zonaDefecto = zonaPropia ?? mayor;
     const cities = porZona.flat();
-    const porDefecto = cities.find((c) => c.zoneId === mayor.id) ?? cities[0];
+    const porDefecto = cities.find((c) => c.zoneId === zonaDefecto.id) ?? cities[0];
 
-    res.json({ cities, default: porDefecto?.id ?? null });
+    res.json({
+      cities,
+      default: porDefecto?.id ?? null,
+      /** 'gps' si salió de las coordenadas del conductor; 'largest_zone' si no. */
+      defaultFrom: zonaPropia ? 'gps' : 'largest_zone',
+    });
   } catch (err: any) {
     // Si el catálogo no está cargado, se responde con las zonas a secas en vez
     // de un error: es preferible ofrecer dos opciones que ninguna, y la app

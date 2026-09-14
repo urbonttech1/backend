@@ -106,6 +106,34 @@ export const DOC_CATALOG: Record<string, Omit<DocMeta, 'key'>> = {
   backgroundCheck:     { label: 'Background Check Report',    category: 'Personal Identity',       hint: 'Third-party report',                       expires: true  },
 };
 
+/**
+ * El esquema contra el que se evalúa a un conductor, según lo que ya subió.
+ *
+ * Hay tres listas vivas a la vez y sólo comparten una parte de los nombres, así
+ * que medir a todo el mundo contra una sola dejaría a media plantilla con
+ * documentos «faltando» que nunca se le pidieron.
+ *
+ * Se compara por PROPORCIÓN cubierta, no por número de claves. Contando claves,
+ * un conductor con el esquema de limusina completo (11 de 11) empataba con las 11
+ * que ese mismo esquema cubre del web, y al desempatar hacia el web le aparecían
+ * seis documentos faltantes: conductores ya aprobados volvían a
+ * `pending_documents`. La proporción da 1.0 al esquema que sí completó. A igualdad
+ * gana el que cubre más claves, que es el más específico de los dos.
+ *
+ * Con la lista vacía —un conductor que no ha subido nada— devuelve el esquema del
+ * alta móvil, que es lo que se le va a pedir.
+ */
+export function elegirEsquema(clavesSubidas: readonly string[]): readonly string[] {
+  const subidas = new Set(clavesSubidas);
+  if (subidas.size === 0) return REQUIRED_DOC_KEYS;
+
+  const cubiertos = (lista: readonly string[]) => lista.filter((k) => subidas.has(k)).length;
+
+  return [WEB_DOC_KEYS, REQUIRED_DOC_KEYS, LEGACY_DOC_KEYS]
+    .map((lista) => ({ lista, n: cubiertos(lista) }))
+    .sort((a, b) => (b.n / b.lista.length) - (a.n / a.lista.length) || b.n - a.n)[0].lista;
+}
+
 /** Metadatos de un documento, con un respaldo razonable si la clave es nueva. */
 export function docMeta(key: string): DocMeta {
   const m = DOC_CATALOG[key];

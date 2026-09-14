@@ -480,19 +480,48 @@ adminRouter.get("/passengers", async (req: Request, res: Response) => {
       .order('created_at', { ascending: false })
       .limit(limit);
     if (error) throw error;
-    const passengers = (data ?? []).map((p: Record<string, unknown>) => ({
-      id: p.id,
-      name: [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Unnamed Passenger',
-      phone: p.phone || '',
-      email: p.email || '',
-      status: p.account_status || 'active',
-      totalRides: p.total_rides || 0,
-      rating: p.rating || 0,
-      membership: p.membership || 'standard',
-      joinedDate: (p.created_at as string | undefined)?.split('T')[0] || '',
-      stripeCustomerId: p.stripe_customer_id || null,
-      infractionCount: p.infraction_count || 0,
-    }));
+
+    // La ficha del pasajero lee `lastRide`, `totalSpent` y `createdAt`, pero el
+    // perfil no guarda ninguno de los tres y aquí nunca se enviaban: el panel
+    // pintaba "—". Se calculan contra la tabla de viajes, igual que en /drivers.
+    const ids = (data ?? []).map((p: Record<string, unknown>) => String(p.id));
+    const viajes = new Map<string, { ultimo: string | null; gastado: number }>();
+    if (ids.length) {
+      const { data: rides, error: ridesError } = await supabaseAdmin
+        .from('rides')
+        .select('passenger_id, ride_status, fare, created_at, completed_at')
+        .in('passenger_id', ids);
+      if (ridesError) throw ridesError;
+      for (const v of (rides ?? []) as Record<string, unknown>[]) {
+        if (v.ride_status !== 'completed') continue;
+        const id = String(v.passenger_id);
+        const c = viajes.get(id) ?? { ultimo: null, gastado: 0 };
+        c.gastado += Number(v.fare) || 0;
+        const fin = (v.completed_at || v.created_at) as string | null;
+        if (fin && (!c.ultimo || fin > c.ultimo)) c.ultimo = fin;
+        viajes.set(id, c);
+      }
+    }
+
+    const passengers = (data ?? []).map((p: Record<string, unknown>) => {
+      const via = viajes.get(String(p.id));
+      return {
+        id: p.id,
+        name: [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Unnamed Passenger',
+        phone: p.phone || '',
+        email: p.email || '',
+        status: p.account_status || 'active',
+        totalRides: p.total_rides || 0,
+        rating: p.rating || 0,
+        membership: p.membership || 'standard',
+        createdAt: p.created_at || null,
+        joinedDate: (p.created_at as string | undefined)?.split('T')[0] || '',
+        lastRide: via?.ultimo ?? null,
+        totalSpent: via ? Math.round(via.gastado * 100) / 100 : null,
+        stripeCustomerId: p.stripe_customer_id || null,
+        infractionCount: p.infraction_count || 0,
+      };
+    });
     res.json({ passengers });
   } catch (err: any) {
     logger.error(`[admin/passengers] ${errMsg(err)}`);
