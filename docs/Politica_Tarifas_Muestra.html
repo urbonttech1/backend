@@ -1,0 +1,1073 @@
+<title>Política de tarifas Urbont</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap">
+
+<style>
+  /* ── Tokens ────────────────────────────────────────────────────────────────
+     El tema claro completo vive aquí. Los bloques de abajo sólo redefinen. */
+  :root {
+    --paper:        #FBFCFD;
+    --surface:      #FFFFFF;
+    --ink:          #14202A;
+    --ink-soft:     #4A5B67;
+    --ink-faint:    #718491;
+    --rule:         #DCE3E8;
+    --rule-soft:    #EAEFF2;
+
+    --brand:        #2E668E;   /* azul acero de Urbont, hsl(205 51% 37%) */
+    --brand-strong: #1E4B6D;
+    --brand-wash:   #EEF4F8;
+
+    /* Valor de ejemplo: ámbar, separado del acento. */
+    --ex:           #8A5A00;
+    --ex-line:      #C89238;
+    --ex-wash:      #FBF3E1;
+
+    /* Nota «Cómo funciona hoy». */
+    --hoy:          #9A3B2A;
+    --hoy-wash:     #F8EDE9;
+    --hoy-line:     #EBCFC6;
+
+    --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --sans:  "Public Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono:  "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:        #0E151B;
+      --surface:      #141E26;
+      --ink:          #E3EAEF;
+      --ink-soft:     #A7B6C1;
+      --ink-faint:    #7C8E9A;
+      --rule:         #26343E;
+      --rule-soft:    #1D2A33;
+      --brand:        #7FB0D2;
+      --brand-strong: #A8CAE2;
+      --brand-wash:   #172631;
+      --ex:           #E1B45E;
+      --ex-line:      #A8812F;
+      --ex-wash:      #2A2213;
+      --hoy:          #E89C8B;
+      --hoy-wash:     #2A1815;
+      --hoy-line:     #4E2A22;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:        #0E151B;
+    --surface:      #141E26;
+    --ink:          #E3EAEF;
+    --ink-soft:     #A7B6C1;
+    --ink-faint:    #7C8E9A;
+    --rule:         #26343E;
+    --rule-soft:    #1D2A33;
+    --brand:        #7FB0D2;
+    --brand-strong: #A8CAE2;
+    --brand-wash:   #172631;
+    --ex:           #E1B45E;
+    --ex-line:      #A8812F;
+    --ex-wash:      #2A2213;
+    --hoy:          #E89C8B;
+    --hoy-wash:     #2A1815;
+    --hoy-line:     #4E2A22;
+  }
+
+  /* ── Base ──────────────────────────────────────────────────────────────── */
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .doc {
+    max-width: 780px;
+    margin: 0 auto;
+    padding-block: 56px 96px;
+    padding-inline: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  h1, h2, h3 { margin: 0; text-wrap: balance; }
+  p { margin: 0; }
+  a { color: var(--brand); }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 3px; }
+
+  /* ── Marcas de estado ──────────────────────────────────────────────────── */
+  .va { color: var(--brand-strong); font-weight: 600; }
+  .ve {
+    color: var(--ex);
+    font-weight: 600;
+    text-decoration: underline dashed var(--ex-line);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    line-height: 1.5;
+    padding: 0 7px;
+    border-radius: 3px;
+    vertical-align: 2px;
+    margin-left: 6px;
+    white-space: nowrap;
+  }
+  .tag.a { background: var(--brand-wash); color: var(--brand-strong); border: 1px solid transparent; }
+  .tag.e { background: var(--ex-wash);    color: var(--ex);           border: 1px dashed var(--ex-line); }
+
+  /* ── Encabezado ────────────────────────────────────────────────────────── */
+  .cab { display: flex; flex-direction: column; gap: 18px; }
+
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--brand);
+  }
+
+  h1 {
+    font-family: var(--serif);
+    font-size: clamp(34px, 6vw, 48px);
+    font-weight: 700;
+    letter-spacing: -.01em;
+    line-height: 1.1;
+  }
+
+  .lede { font-size: 18px; color: var(--ink-soft); max-width: 62ch; }
+
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px 24px;
+    padding-block: 16px;
+    border-block: 1px solid var(--rule);
+  }
+  .meta div { display: flex; flex-direction: column; gap: 2px; }
+  .meta span {
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .meta b { font-weight: 600; font-size: 15px; }
+
+  /* ── Leyenda ───────────────────────────────────────────────────────────── */
+  .leyenda {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .leyenda h2 { font-family: var(--serif); font-size: 21px; font-weight: 600; }
+  .leyenda p { color: var(--ink-soft); max-width: 64ch; }
+
+  .claves { display: flex; flex-direction: column; gap: 10px; }
+  .clave {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr);
+    gap: 14px;
+    align-items: baseline;
+    font-size: 15px;
+  }
+  .clave > span:first-child { font-size: 15px; }
+
+  /* ── Índice ────────────────────────────────────────────────────────────── */
+  .indice h2 {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-bottom: 10px;
+  }
+  .indice ol { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 36px; }
+  .indice li { break-inside: avoid; }
+  .indice a {
+    display: flex;
+    gap: 12px;
+    padding-block: 6px;
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .indice a:hover { color: var(--brand); }
+  .indice a span {
+    font-family: var(--serif);
+    font-weight: 700;
+    color: var(--brand);
+    min-width: 1.4em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Capítulos y cláusulas ─────────────────────────────────────────────── */
+  .cap { display: flex; flex-direction: column; gap: 22px; scroll-margin-top: 24px; }
+
+  .cap h2 {
+    font-family: var(--serif);
+    font-size: 27px;
+    font-weight: 600;
+    line-height: 1.2;
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .cap-n { color: var(--brand); font-weight: 700; min-width: 1.1em; font-variant-numeric: tabular-nums; }
+
+  /* Rejilla: número de cláusula a la izquierda, contenido a la derecha. Las
+     tablas y los recibos ocupan el ancho completo; las notas, la columna de
+     contenido. Así todo queda alineado sin márgenes sueltos. */
+  .cls {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    column-gap: 10px;
+    row-gap: 14px;
+  }
+  .cl-n {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+    padding-top: 3px;
+  }
+  .cls > p { max-width: 64ch; }
+  .full { grid-column: 1 / -1; min-width: 0; }
+  .ind  { grid-column: 2; min-width: 0; }
+
+  .formula {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    background: var(--brand-wash);
+    color: var(--ink);
+    border-radius: 4px;
+    padding: 12px 14px;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  .hoy {
+    background: var(--hoy-wash);
+    border: 1px solid var(--hoy-line);
+    border-radius: 5px;
+    padding: 12px 16px;
+    font-size: 14.5px;
+    color: var(--ink);
+    max-width: 64ch;
+  }
+  .hoy b.t {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--hoy);
+    margin-bottom: 2px;
+  }
+
+  /* ── Tablas ────────────────────────────────────────────────────────────── */
+  .scroll { overflow-x: auto; }
+
+  table.t { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  .t caption {
+    text-align: left;
+    font-size: 13px;
+    color: var(--ink-faint);
+    padding-bottom: 10px;
+  }
+  .t th {
+    text-align: left;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding: 0 14px 8px 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  .t td {
+    padding: 10px 14px 10px 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: top;
+  }
+  .t th:last-child, .t td:last-child { padding-right: 0; }
+  .t .n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ── Recibos: los ejemplos trabajados ──────────────────────────────────── */
+  .recibo {
+    margin: 0;
+    max-width: 580px;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 20px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .recibo figcaption { font-size: 14px; color: var(--ink-soft); }
+  .rc-k {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--brand);
+    margin-right: 8px;
+  }
+
+  .lineas { margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: 14.5px; }
+  .fila { display: flex; align-items: baseline; gap: 8px; }
+  .fila dt { flex: 0 1 auto; }
+  .fila .dots {
+    flex: 1 1 16px;
+    border-bottom: 1px dotted var(--ink-faint);
+    opacity: .45;
+    align-self: center;
+    height: 0;
+  }
+  .fila dd {
+    flex: none;
+    margin: 0;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+  .fila.sub   { padding-top: 8px;  border-top: 1px solid var(--rule-soft); font-weight: 600; }
+  .fila.total { padding-top: 10px; border-top: 2px solid var(--ink); font-weight: 700; font-size: 15.5px; }
+
+  .reparto {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--rule);
+  }
+  .reparto div { display: flex; flex-direction: column; gap: 2px; }
+  .reparto span {
+    font-size: 11px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  .reparto b { font-family: var(--mono); font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .reparto-nota { grid-column: 1 / -1; font-size: 13px; color: var(--ink-faint); }
+
+  /* ── Pie ───────────────────────────────────────────────────────────────── */
+  footer {
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    font-size: 13px;
+    color: var(--ink-faint);
+    max-width: 64ch;
+  }
+
+  @media (max-width: 560px) {
+    .doc { padding-block: 36px 64px; padding-inline: 16px; gap: 44px; }
+    .indice ol { columns: 1; }
+    .clave { grid-template-columns: 1fr; gap: 2px; }
+    .cls { grid-template-columns: 36px minmax(0, 1fr); }
+    .reparto { grid-template-columns: 1fr; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+
+  /* Impresión: siempre en claro, y sin partir recibos, tablas ni notas. */
+  @page { margin: 18mm; }
+  @media print {
+    :root, :root[data-theme="dark"] {
+      --paper: #FFFFFF; --surface: #FFFFFF; --ink: #14202A; --ink-soft: #4A5B67; --ink-faint: #6A7C88;
+      --rule: #D5DDE3; --rule-soft: #E6ECF0; --brand: #2E668E; --brand-strong: #1E4B6D; --brand-wash: #EEF4F8;
+      --ex: #8A5A00; --ex-line: #C89238; --ex-wash: #FBF3E1; --hoy: #9A3B2A; --hoy-wash: #F8EDE9; --hoy-line: #EBCFC6;
+    }
+    body { font-size: 10.5pt; }
+    .doc { max-width: none; padding: 0; gap: 26px; }
+    .indice a { text-decoration: none; }
+    .recibo, .t, .hoy, .leyenda, .formula { break-inside: avoid; }
+    .cap h2 { break-after: avoid; }
+  }
+</style>
+
+<main class="doc">
+
+  <!-- ── Encabezado ─────────────────────────────────────────────────────── -->
+  <header class="cab">
+    <span class="eyebrow">Urbont · Documento de muestra</span>
+    <h1>Política de tarifas y comisiones</h1>
+    <p class="lede">
+      Modelo de cómo debe quedar definida la lógica de precios de Urbont: qué se cobra,
+      cómo se calcula y a quién va cada dólar. Donde la plataforma ya tiene un valor
+      configurado, se usa ese valor. Donde no hay nada definido, se propone uno de
+      ejemplo. Todos deben confirmarse o reemplazarse antes de aprobar el documento.
+    </p>
+    <div class="meta">
+      <div><span>Versión</span><b>0.1</b></div>
+      <div><span>Estado</span><b class="ve">Muestra, sin aprobar</b></div>
+      <div><span>Fecha</span><b>14 sep 2026</b></div>
+      <div><span>Aprobado por</span><b>—</b></div>
+    </div>
+  </header>
+
+  <!-- ── Cómo leer ──────────────────────────────────────────────────────── -->
+  <section class="leyenda" aria-labelledby="leer">
+    <h2 id="leer">Cómo leer este documento</h2>
+    <div class="claves">
+      <div class="clave">
+        <span class="va">$25,00</span>
+        <span>Valor configurado hoy en la plataforma.</span>
+      </div>
+      <div class="clave">
+        <span class="ve">$150,00</span>
+        <span>Valor de ejemplo. No está definido todavía: hay que confirmarlo o cambiarlo.</span>
+      </div>
+      <div class="clave">
+        <span><span class="tag a" style="margin-left:0">Actual</span> <span class="tag e">Ejemplo</span></span>
+        <span>Al final de cada regla indica si la regla existe hoy o es una propuesta.</span>
+      </div>
+      <div class="clave">
+        <span class="hoy" style="padding:2px 8px;font-size:12px"><b class="t" style="display:inline;margin:0">Hoy</b></span>
+        <span>Diferencias entre esta política y lo que la plataforma hace hoy.</span>
+      </div>
+    </div>
+    <p>
+      Los capítulos 1 a 10 siguen el mismo orden que el cuestionario enviado, para que
+      cada respuesta tenga su lugar. En las tablas, cada celda lleva el estilo de su
+      propio estado.
+    </p>
+  </section>
+
+  <!-- ── Índice ─────────────────────────────────────────────────────────── -->
+  <nav class="indice" aria-label="Índice">
+    <h2>Contenido</h2>
+    <ol>
+      <li><a href="#c1"><span>1</span>Precio de un viaje normal</a></li>
+      <li><a href="#c2"><span>2</span>Comisión de Urbont</a></li>
+      <li><a href="#c3"><span>3</span>Viajes en efectivo</a></li>
+      <li><a href="#c4"><span>4</span>Tarifa por hora</a></li>
+      <li><a href="#c5"><span>5</span>Recargo por demanda</a></li>
+      <li><a href="#c6"><span>6</span>Cargos adicionales</a></li>
+      <li><a href="#c7"><span>7</span>Aeropuertos y puertos</a></li>
+      <li><a href="#c8"><span>8</span>Conductores</a></li>
+      <li><a href="#c9"><span>9</span>Descuentos y planes</a></li>
+      <li><a href="#c10"><span>10</span>Impuestos, ciudades y moneda</a></li>
+      <li><a href="#c11"><span>11</span>Cambios y vigencia</a></li>
+    </ol>
+  </nav>
+
+  <!-- ── 1 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c1">
+    <h2><span class="cap-n">1</span>Precio de un viaje normal</h2>
+    <div class="cls">
+      <span class="cl-n">1.1</span>
+      <p>
+        El precio se calcula al reservar, con la distancia y la duración estimadas, y
+        queda fijo: el pasajero paga lo que vio al confirmar aunque la ruta real cambie.
+        Después sólo se suman los cargos del capítulo 6.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">1.2</span>
+      <p>El precio se forma así:<span class="tag a">Actual</span></p>
+      <div class="ind formula">precio del viaje = tarifa mínima + millas adicionales + tiempo + cargo de reserva
+total            = precio del viaje + cargo de servicio (10%)</div>
+
+      <span class="cl-n">1.3</span>
+      <p>Tarifas por clase de vehículo:<span class="tag a">Actual</span></p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Concepto</th><th class="n">Sedan</th><th class="n">SUV</th><th class="n">Van</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Tarifa mínima (incluye 3 millas)</td><td class="n va">$25,00</td><td class="n va">$38,00</td><td class="n va">$65,00</td></tr>
+            <tr><td>Por milla adicional</td><td class="n va">$4,00</td><td class="n va">$5,50</td><td class="n va">$8,00</td></tr>
+            <tr><td>Por minuto de viaje estimado</td><td class="n va">$0,25</td><td class="n va">$0,3125</td><td class="n va">$0,4375</td></tr>
+            <tr><td>Cargo de reserva</td><td class="n va">$2,50</td><td class="n va">$2,50</td><td class="n va">$2,50</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        La configuración guarda $1,00, $1,25 y $1,75 por minuto, pero cobra el 25% de ese
+        valor. La tabla muestra lo que realmente se cobra. Hay que decidir cuál de los dos
+        es el correcto.
+      </aside>
+
+      <span class="cl-n">1.4</span>
+      <p>
+        Cada importe se redondea a centavos en cada paso del cálculo, no sólo al
+        final.<span class="tag a">Actual</span>
+      </p>
+
+      <figure class="full recibo">
+        <figcaption><span class="rc-k">Ejemplo A</span>Sedan · 8 millas · 20 minutos · sin recargo</figcaption>
+        <dl class="lineas">
+          <div class="fila"><dt>Tarifa mínima (incluye 3 millas)</dt><i class="dots"></i><dd>$25,00</dd></div>
+          <div class="fila"><dt>5 millas adicionales × $4,00</dt><i class="dots"></i><dd>$20,00</dd></div>
+          <div class="fila"><dt>20 minutos × $0,25</dt><i class="dots"></i><dd>$5,00</dd></div>
+          <div class="fila"><dt>Cargo de reserva</dt><i class="dots"></i><dd>$2,50</dd></div>
+          <div class="fila sub"><dt>Precio del viaje</dt><i class="dots"></i><dd>$52,50</dd></div>
+          <div class="fila"><dt>Cargo de servicio · 10%</dt><i class="dots"></i><dd>$5,25</dd></div>
+          <div class="fila total"><dt>Total que paga el pasajero</dt><i class="dots"></i><dd>$57,75</dd></div>
+        </dl>
+        <div class="reparto">
+          <div><span>Pasajero paga</span><b>$57,75</b></div>
+          <div><span>Conductor recibe</span><b>$52,50</b></div>
+          <div><span>Urbont recibe</span><b>$5,25</b></div>
+          <p class="reparto-nota">Reparto según la regla 2.2 de esta muestra.</p>
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ── 2 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c2">
+    <h2><span class="cap-n">2</span>Comisión de Urbont</h2>
+    <div class="cls">
+      <span class="cl-n">2.1</span>
+      <p>La comisión es la misma para todos los conductores.<span class="tag a">Actual</span></p>
+
+      <span class="cl-n">2.2</span>
+      <p>
+        El cargo de servicio del <span class="ve">10%</span> lo paga el pasajero, y el
+        conductor recibe el precio del viaje completo.<span class="tag e">Ejemplo</span>
+      </p>
+      <div class="full scroll">
+        <table class="t">
+          <caption>Las cuatro formas posibles de repartir, en un viaje de $100</caption>
+          <thead>
+            <tr><th>Regla</th><th class="n">Pasajero paga</th><th class="n">Conductor recibe</th><th class="n">Urbont recibe</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>El pasajero paga el 10%<span class="tag e">Ejemplo</span></td><td class="n">$110,00</td><td class="n">$100,00</td><td class="n">$10,00</td></tr>
+            <tr><td>El conductor paga el 10%</td><td class="n">$100,00</td><td class="n">$90,00</td><td class="n">$10,00</td></tr>
+            <tr><td>Pagan los dos</td><td class="n">$110,00</td><td class="n">$90,00</td><td class="n">$20,00</td></tr>
+            <tr><td>Hoy<span class="tag a">Actual</span></td><td class="n">$110,00</td><td class="n">$99,00</td><td class="n">$11,00</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        Urbont se queda el 10% del total cobrado, no del precio del viaje. En el ejemplo A,
+        el pasajero paga los mismos $57,75, pero Urbont recibe $5,78 y el conductor $51,97.
+      </aside>
+
+      <span class="cl-n">2.3</span>
+      <p>Qué cargos llevan comisión:<span class="tag e">Ejemplo</span></p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Cargo</th><th>Lleva comisión</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Precio del viaje</td><td class="va">Sí</td></tr>
+            <tr><td>Espera</td><td class="va">Sí</td></tr>
+            <tr><td>Parada adicional</td><td class="ve">Sí</td></tr>
+            <tr><td>Cancelación tardía</td><td class="ve">No, íntegro para el conductor</td></tr>
+            <tr><td>No-show</td><td class="ve">No, íntegro para el conductor</td></tr>
+            <tr><td>Recogida lejana</td><td class="ve">No, íntegro para el conductor</td></tr>
+            <tr><td>Peajes y tasas de acceso</td><td class="ve">No, íntegro para el conductor</td></tr>
+            <tr><td>Propinas</td><td class="va">No</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="cl-n">2.4</span>
+      <p>
+        La comisión de Stripe por cada cobro la asume Urbont, de su
+        parte.<span class="tag a">Actual</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ── 3 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c3">
+    <h2><span class="cap-n">3</span>Viajes en efectivo</h2>
+    <div class="cls">
+      <span class="cl-n">3.1</span>
+      <p>Se aceptan pagos en efectivo.<span class="tag a">Actual</span></p>
+
+      <span class="cl-n">3.2</span>
+      <p>
+        La comisión de Urbont sobre un viaje en efectivo queda como saldo a favor de Urbont
+        y se descuenta del siguiente pago con tarjeta del conductor.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">3.3</span>
+      <p>
+        Si ese saldo supera <span class="ve">$100,00</span>, el conductor deja de recibir
+        viajes en efectivo hasta liquidarlo.<span class="tag e">Ejemplo</span>
+      </p>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        En un viaje normal en efectivo, la plataforma no registra ni cobra la comisión de
+        Urbont: el conductor se queda el total. Sólo se hace en los viajes de valet.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ── 4 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c4">
+    <h2><span class="cap-n">4</span>Tarifa por hora</h2>
+    <div class="cls">
+      <span class="cl-n">4.1</span>
+      <p>
+        Un chofer a disposición se cobra por bloque de horas, no por
+        distancia.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">4.2</span>
+      <p>Tarifas por hora:</p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Concepto</th><th class="n">Sedan</th><th class="n">SUV</th><th class="n">Van</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Por hora</td><td class="n va">$110,00</td><td class="n va">$145,00</td><td class="n va">$185,00</td></tr>
+            <tr><td>Mínimo</td><td class="n va">2 horas</td><td class="n va">2 horas</td><td class="n va">2 horas</td></tr>
+            <tr><td>Millas incluidas por hora</td><td class="n ve">20</td><td class="n ve">20</td><td class="n ve">20</td></tr>
+            <tr><td>Milla adicional sobre el límite</td><td class="n ve">$4,00</td><td class="n ve">$5,50</td><td class="n ve">$8,00</td></tr>
+            <tr><td>Cada 15 minutos extra</td><td class="n ve">$27,50</td><td class="n ve">$36,25</td><td class="n ve">$46,25</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="cl-n">4.3</span>
+      <p>Se cobran siempre las horas mínimas, aunque se reserven menos.<span class="tag a">Actual</span></p>
+
+      <span class="cl-n">4.4</span>
+      <p>
+        Se suman el cargo de reserva y el cargo de servicio, igual que en un viaje normal.
+        El recargo por demanda también se aplica.<span class="tag a">Actual</span>
+      </p>
+
+      <figure class="full recibo">
+        <figcaption><span class="rc-k">Ejemplo B</span>Sedan por hora · se piden 1 hora · sin recargo</figcaption>
+        <dl class="lineas">
+          <div class="fila"><dt>2 horas (mínimo) × $110,00</dt><i class="dots"></i><dd>$220,00</dd></div>
+          <div class="fila"><dt>Cargo de reserva</dt><i class="dots"></i><dd>$2,50</dd></div>
+          <div class="fila sub"><dt>Precio del viaje</dt><i class="dots"></i><dd>$222,50</dd></div>
+          <div class="fila"><dt>Cargo de servicio · 10%</dt><i class="dots"></i><dd>$22,25</dd></div>
+          <div class="fila total"><dt>Total que paga el pasajero</dt><i class="dots"></i><dd>$244,75</dd></div>
+        </dl>
+        <div class="reparto">
+          <div><span>Pasajero paga</span><b>$244,75</b></div>
+          <div><span>Conductor recibe</span><b>$222,50</b></div>
+          <div><span>Urbont recibe</span><b>$22,25</b></div>
+          <p class="reparto-nota">Reparto según la regla 2.2 de esta muestra.</p>
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ── 5 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c5">
+    <h2><span class="cap-n">5</span>Recargo por demanda</h2>
+    <div class="cls">
+      <span class="cl-n">5.1</span>
+      <p>
+        El recargo es automático según la franja horaria, en la hora local de la zona de
+        servicio.<span class="tag a">Actual</span>
+      </p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Franja</th><th>Días</th><th class="n">Multiplicador</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>10 pm – 2 am</td><td>Viernes y sábado</td><td class="n va">×1,35</td></tr>
+            <tr><td>7 am – 10 am</td><td>Lunes a viernes</td><td class="n va">×1,25</td></tr>
+            <tr><td>4 pm – 8 pm</td><td>Lunes a viernes</td><td class="n va">×1,22</td></tr>
+            <tr><td>2 am – 4 am</td><td>Todos los días</td><td class="n va">×1,15</td></tr>
+            <tr><td>Resto del día</td><td>Todos los días</td><td class="n va">Sin recargo</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="cl-n">5.2</span>
+      <p>
+        Desde el panel se puede fijar un recargo manual, por ejemplo por un evento. Si
+        coincide con una franja, se aplica el mayor de los dos, nunca la
+        suma.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">5.3</span>
+      <p>
+        El recargo multiplica la tarifa mínima, las millas y el tiempo. No multiplica el
+        cargo de reserva ni los cargos del capítulo 6.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">5.4</span>
+      <p>El recargo nunca supera <span class="ve">×2,00</span>.<span class="tag e">Ejemplo</span></p>
+
+      <span class="cl-n">5.5</span>
+      <p>
+        Fechas especiales: <span class="ve">×1,50</span> el 31 de diciembre de 8 pm a 4 am,
+        y <span class="ve">×1,40</span> durante la semana de Art Basel Miami Beach, de 6 pm
+        a 2 am.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">5.6</span>
+      <p>El pasajero ve el recargo antes de confirmar el viaje.<span class="tag a">Actual</span></p>
+
+      <figure class="full recibo">
+        <figcaption><span class="rc-k">Ejemplo C</span>El ejemplo A, un lunes a las 8 am · recargo ×1,25</figcaption>
+        <dl class="lineas">
+          <div class="fila"><dt>Tarifa mínima · $25,00 × 1,25</dt><i class="dots"></i><dd>$31,25</dd></div>
+          <div class="fila"><dt>5 millas × $4,00 × 1,25</dt><i class="dots"></i><dd>$25,00</dd></div>
+          <div class="fila"><dt>20 minutos × $0,25 × 1,25</dt><i class="dots"></i><dd>$6,25</dd></div>
+          <div class="fila"><dt>Cargo de reserva (no se multiplica)</dt><i class="dots"></i><dd>$2,50</dd></div>
+          <div class="fila sub"><dt>Precio del viaje</dt><i class="dots"></i><dd>$65,00</dd></div>
+          <div class="fila"><dt>Cargo de servicio · 10%</dt><i class="dots"></i><dd>$6,50</dd></div>
+          <div class="fila total"><dt>Total que paga el pasajero</dt><i class="dots"></i><dd>$71,50</dd></div>
+        </dl>
+        <div class="reparto">
+          <div><span>Pasajero paga</span><b>$71,50</b></div>
+          <div><span>Conductor recibe</span><b>$65,00</b></div>
+          <div><span>Urbont recibe</span><b>$6,50</b></div>
+          <p class="reparto-nota">Reparto según la regla 2.2 de esta muestra.</p>
+        </div>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ── 6 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c6">
+    <h2><span class="cap-n">6</span>Cargos adicionales</h2>
+    <div class="cls">
+      <span class="cl-n">6.1</span>
+      <p>
+        Estos cargos se suman al precio fijado al reservar, cuando ocurre el hecho que los
+        genera.<span class="tag a">Actual</span>
+      </p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Cargo</th><th class="n">Importe</th><th>Cuándo se aplica</th><th>Para quién</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Espera</td><td class="n va">$0,50 / min</td>
+              <td>Tras <span class="va">5 min</span> gratis, con un máximo de <span class="va">60 min</span></td>
+              <td class="va">90% conductor, 10% Urbont</td>
+            </tr>
+            <tr>
+              <td>Recogida lejana</td><td class="n va">$5,00</td>
+              <td>El conductor está a más de <span class="va">15 min</span> del punto de recogida</td>
+              <td class="ve">Íntegro para el conductor</td>
+            </tr>
+            <tr>
+              <td>No-show</td><td class="n va">$10,00</td>
+              <td>El pasajero no se presenta tras la espera gratuita</td>
+              <td class="ve">Íntegro para el conductor</td>
+            </tr>
+            <tr>
+              <td>Cancelación tardía</td><td class="n va">$10,00</td>
+              <td>Se cancela más de <span class="va">2 min</span> después de asignar conductor</td>
+              <td class="ve">Íntegro para el conductor</td>
+            </tr>
+            <tr>
+              <td>Peajes</td><td class="n ve">Coste real</td>
+              <td class="ve">Cuando la ruta los incluye</td>
+              <td class="ve">Íntegro para el conductor</td>
+            </tr>
+            <tr>
+              <td>Parada adicional</td><td class="n ve">$5,00</td>
+              <td class="ve">Por cada parada intermedia</td>
+              <td class="ve">90% conductor, 10% Urbont</td>
+            </tr>
+            <tr>
+              <td>Limpieza</td><td class="n ve">Hasta $150,00</td>
+              <td class="ve">Con fotos, aprobado por soporte</td>
+              <td class="ve">Íntegro para el conductor</td>
+            </tr>
+            <tr>
+              <td>Silla para niños</td><td class="n ve">$10,00</td>
+              <td class="ve">Pedida al reservar</td>
+              <td class="ve">Íntegro para el conductor</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="cl-n">6.2</span>
+      <p>
+        Ningún cargo adicional se cobra sin avisar al pasajero en la app, antes o en el
+        momento de aplicarlo.<span class="tag e">Ejemplo</span>
+      </p>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        No existen cargos por peajes, paradas adicionales, limpieza ni silla para niños.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ── 7 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c7">
+    <h2><span class="cap-n">7</span>Aeropuertos y puertos</h2>
+    <div class="cls">
+      <span class="cl-n">7.1</span>
+      <p>
+        Aeropuertos cubiertos: <span class="ve">Miami (MIA) y Fort Lauderdale (FLL)</span>.
+        Puerto cubierto: <span class="ve">Puerto de Miami</span>.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">7.2</span>
+      <p>
+        Recargo de aeropuerto o puerto: <span class="ve">$5,00</span> por viaje con recogida
+        o destino en ellos, íntegro para el conductor.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">7.3</span>
+      <p>
+        Si la autoridad del aeropuerto o del puerto cobra una tasa de acceso, se traslada al
+        pasajero por su importe real.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">7.4</span>
+      <p>
+        Espera en llegadas: <span class="ve">30 minutos</span> gratis desde el aterrizaje
+        del vuelo.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">7.5</span>
+      <p>
+        No hay tarifas fijas por ruta: los viajes a aeropuertos siguen las reglas del
+        capítulo 1.<span class="tag e">Ejemplo</span>
+      </p>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        No hay ninguna tarifa ni cargo especial para aeropuertos o puertos, aunque los
+        conductores deben tener permiso del aeropuerto de Miami-Dade y del Puerto de Miami.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ── 8 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c8">
+    <h2><span class="cap-n">8</span>Conductores</h2>
+    <div class="cls">
+      <span class="cl-n">8.1</span>
+      <p>
+        El pago al conductor se transfiere al terminar cada viaje pagado con
+        tarjeta.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">8.2</span>
+      <p>
+        Las propinas van íntegras al conductor, sin comisión. La comisión de tarjeta de ese
+        cobro la asume Urbont.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">8.3</span>
+      <p>
+        Bonos por viajes seguidos: <span class="va">$3,00</span> al 5.º viaje,
+        <span class="va">$7,00</span> al 10.º y <span class="va">$15,00</span> al
+        20.º.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">8.4</span>
+      <p>
+        La racha se reinicia si el conductor rechaza un viaje o pasa
+        <span class="ve">12 horas</span> sin completar ninguno.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">8.5</span>
+      <p>
+        Los bonos se pagan <span class="ve">cada lunes</span>, por los viajes de la semana
+        anterior.<span class="tag e">Ejemplo</span>
+      </p>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        Los bonos se anotan en un saldo del conductor, pero la plataforma no los paga.
+      </aside>
+
+      <span class="cl-n">8.6</span>
+      <p>
+        En los viajes de valet se suman <span class="va">$10,00</span> al precio, que van a
+        la propiedad. La comisión de Urbont no se calcula sobre esos
+        $10.<span class="tag e">Ejemplo</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ── 9 ──────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c9">
+    <h2><span class="cap-n">9</span>Descuentos y planes</h2>
+    <div class="cls">
+      <span class="cl-n">9.1</span>
+      <p>Planes disponibles:</p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Plan</th><th class="n">Precio</th><th class="n">Descuento</th><th class="n">Cuentas</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>URBONT Pass (individual)</td><td class="n va">$29 / mes</td><td class="n va">10%</td><td class="n va">1</td></tr>
+            <tr><td>Team</td><td class="n va">$0</td><td class="n ve">Sin descuento</td><td class="n va">Hasta 10</td></tr>
+            <tr><td>Business</td><td class="n va">$49 / mes</td><td class="n va">10%</td><td class="n va">Hasta 100</td></tr>
+            <tr><td>Enterprise</td><td class="n va">A medida</td><td class="n ve">A medida, máximo 10%</td><td class="n va">Ilimitadas</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <span class="cl-n">9.2</span>
+      <p>
+        El descuento se calcula sobre el precio del viaje, no sobre el total, y lo asume
+        Urbont: el conductor cobra lo mismo que sin descuento. Con esta regla Urbont no gana
+        nada en los viajes con descuento; su ingreso por el plan es la cuota
+        mensual.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <figure class="full recibo">
+        <figcaption><span class="rc-k">Ejemplo D</span>El ejemplo A, pedido por un miembro de una empresa Business</figcaption>
+        <dl class="lineas">
+          <div class="fila"><dt>Precio del viaje</dt><i class="dots"></i><dd>$52,50</dd></div>
+          <div class="fila"><dt>Cargo de servicio · 10%</dt><i class="dots"></i><dd>$5,25</dd></div>
+          <div class="fila"><dt>Descuento Business · 10% del precio del viaje</dt><i class="dots"></i><dd>−$5,25</dd></div>
+          <div class="fila total"><dt>Total que paga el pasajero</dt><i class="dots"></i><dd>$52,50</dd></div>
+        </dl>
+        <div class="reparto">
+          <div><span>Pasajero paga</span><b>$52,50</b></div>
+          <div><span>Conductor recibe</span><b>$52,50</b></div>
+          <div><span>Urbont recibe</span><b>$0,00</b></div>
+          <p class="reparto-nota">
+            Si el descuento se calculara sobre el total ($57,75) serían $5,78: el pasajero
+            pagaría $51,97 y Urbont perdería $0,53 en cada viaje.
+          </p>
+        </div>
+      </figure>
+
+      <span class="cl-n">9.3</span>
+      <p>
+        El descuento de Enterprise no puede superar el cargo de servicio del
+        <span class="ve">10%</span>, para que Urbont nunca pague de su
+        bolsillo.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">9.4</span>
+      <p>Los descuentos no se acumulan: se aplica el mayor.<span class="tag e">Ejemplo</span></p>
+
+      <span class="cl-n">9.5</span>
+      <p>
+        Si la empresa no paga la cuota, el descuento se mantiene <span class="ve">7 días</span>
+        y después se corta. Los viajes ya reservados conservan su
+        precio.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">9.6</span>
+      <p>
+        Los códigos promocionales pueden ser un porcentaje o un importe fijo, con fecha de
+        caducidad, límite de usos, importe mínimo de viaje y un solo uso por
+        pasajero.<span class="tag a">Actual</span>
+      </p>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        Ningún descuento se aplica todavía al cobro. URBONT Pass, los códigos promocionales
+        y los planes de empresa calculan o prometen la rebaja, pero la plataforma cobra el
+        precio completo.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ── 10 ─────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c10">
+    <h2><span class="cap-n">10</span>Impuestos, ciudades y moneda</h2>
+    <div class="cls">
+      <span class="cl-n">10.1</span>
+      <p>
+        Se cobra en dólares estadounidenses y las distancias se miden en
+        millas.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">10.2</span>
+      <p>Hay una sola tarifa para todas las zonas de servicio.<span class="tag a">Actual</span></p>
+
+      <span class="cl-n">10.3</span>
+      <p>
+        Los impuestos son los que indique el asesor fiscal de Urbont, y el recibo los muestra
+        por separado.<span class="tag e">Ejemplo</span>
+      </p>
+      <aside class="ind hoy">
+        <b class="t">Hoy</b>
+        En los viajes normales no se calcula ningún impuesto. Sólo el cobro de valet tiene
+        configuración de impuestos.
+      </aside>
+
+      <span class="cl-n">10.4</span>
+      <p>
+        Las empresas con plan Business o Enterprise reciben una factura mensual con el
+        detalle de sus viajes.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">10.5</span>
+      <p>
+        Si se abre servicio en otro país, tendrá tarifa propia, en su moneda y en
+        kilómetros.<span class="tag e">Ejemplo</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ── 11 ─────────────────────────────────────────────────────────────── -->
+  <section class="cap" id="c11">
+    <h2><span class="cap-n">11</span>Cambios y vigencia</h2>
+    <div class="cls">
+      <span class="cl-n">11.1</span>
+      <p>
+        Los cambios en esta política los aprueba <span class="ve">la dirección de
+        Urbont</span>.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">11.2</span>
+      <p>
+        Los cambios de tarifa se anuncian a los conductores con
+        <span class="ve">7 días</span> de antelación.<span class="tag e">Ejemplo</span>
+      </p>
+
+      <span class="cl-n">11.3</span>
+      <p>
+        Un viaje ya reservado conserva su precio aunque la tarifa cambie
+        después.<span class="tag a">Actual</span>
+      </p>
+
+      <span class="cl-n">11.4</span>
+      <p>Registro de cambios:</p>
+      <div class="full scroll">
+        <table class="t">
+          <thead>
+            <tr><th>Versión</th><th>Fecha</th><th>Cambio</th><th>Aprobado por</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="n" style="text-align:left">0.1</td><td>14 sep 2026</td><td>Documento de muestra</td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Documento de muestra preparado a partir de la configuración de la plataforma al 14 de
+    septiembre de 2026. No es una política aprobada: los valores de ejemplo son
+    ilustrativos y deben confirmarse o reemplazarse.
+  </footer>
+
+</main>

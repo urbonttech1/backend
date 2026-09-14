@@ -30,7 +30,10 @@ router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     const qRole = (req.query.role as string) || '';
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '20'), 10)));
 
-    if (type === 'scheduled' && qRole === 'driver') {
+    // La pestaña Upcoming de la app llama con `role=driver&status=…` sin `type`, y
+    // caía al caso por defecto, que devuelve los viajes donde el usuario es
+    // pasajero. `role=driver` basta para pedir los programados del conductor.
+    if (qRole === 'driver') {
       // Upcoming scheduled rides assigned to this driver
       if (role !== 'driver' && role !== 'chauffeur') {
         return res.status(403).json({ error: 'Drivers only' });
@@ -165,7 +168,7 @@ router.get("/driver-history", requireSupabaseAuth, async (req: Request, res: Res
     const to    = from + limit - 1;
 
     const { data, error, count } = await supabaseAdmin.from('rides')
-      .select('id, created_at, ride_status, fare, tip_amount, driver_earnings, surge_multiplier, base_fare_breakdown, vehicle_type, distance_meters, duration_minutes, pickup, dropoff, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, passenger_id, scheduled_at, booking_type, cancel_reason', { count: 'exact' })
+      .select('id, created_at, completed_at, ride_status, rating, fare, tip_amount, driver_earnings, surge_multiplier, base_fare_breakdown, vehicle_type, distance_meters, duration_minutes, pickup, dropoff, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, passenger_id, scheduled_at, booking_type, cancel_reason', { count: 'exact' })
       .eq('driver_id', driver_id)
       .in('ride_status', ['completed', 'cancelled'])
       .order('created_at', { ascending: false })

@@ -32,6 +32,7 @@ supabase_schema.sql    Esquema base
 | [`docs/ZONAS_DE_SERVICIO.md`](docs/ZONAS_DE_SERVICIO.md) | Pasar la geocerca de código a base de datos, gestionable desde el panel. **Implementado y verificado** |
 | [`docs/GEOCERCA_INTERNACIONAL.md`](docs/GEOCERCA_INTERNACIONAL.md) | Qué falta para abrir un país, no una ciudad. La geocerca ya sirve; el cobro no. **Propuesta** |
 | [`docs/PLANES_EMPRESA.md`](docs/PLANES_EMPRESA.md) | Planes Business y Enterprise con descuento para asociados, gestionados desde el panel. Empieza por un motor de descuentos: hoy ninguno llega al cobro. **Propuesta** |
+| [`docs/Politica_Tarifas_Muestra.html`](docs/Politica_Tarifas_Muestra.html) | Documento de muestra para el cliente: precios, comisiones, cargos y descuentos, con cada valor marcado como actual o de ejemplo. **Muestra** |
 | [`docs/AWS_ECS_DEPLOY.md`](docs/AWS_ECS_DEPLOY.md) | Despliegue en ECS Fargate |
 | [`docs/CRON_JOBS.md`](docs/CRON_JOBS.md) | Tareas programadas |
 | [`docs/PANEL_CONDUCTORES.md`](docs/PANEL_CONDUCTORES.md) · [`docs/PANEL_SISTEMA.md`](docs/PANEL_SISTEMA.md) | Panel de administración |

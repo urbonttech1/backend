@@ -49,8 +49,17 @@ async function incrementTotalRides(profileId: string): Promise<void> {
   }
 }
 
+// Las rutas fijas de valet.ts y stats.ts (/driver-history, /driver-active, /my…)
+// se registran después de este módulo (ver rides/index.ts). Sin este filtro caían
+// en /:id, Postgres rechazaba el id por no ser UUID y la app recibía un 500 con la
+// lista vacía. Un id que no es UUID sigue a la siguiente ruta que coincida.
+const RIDE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function registerStatusRoutes(router: Router): void {
-router.get("/:id", requireSupabaseAuth, async (req: Request, res: Response) => {
+router.get("/:id", (req: Request, _res: Response, next: (deferToNext?: 'route') => void) => {
+  if (RIDE_ID_RE.test(req.params.id)) return next();
+  return next('route');
+}, requireSupabaseAuth, async (req: Request, res: Response) => {
   try {
     const { data, error } = await supabaseAdmin.from('rides')
       .select('*')

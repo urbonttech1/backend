@@ -529,6 +529,55 @@ adminRouter.get("/passengers", async (req: Request, res: Response) => {
   }
 });
 
+// La pestaña "Viajes" de la ficha del pasajero llamaba a esta ruta y no existía,
+// así que siempre salía vacía. Devuelve el arreglo tal como lo pinta el panel,
+// derivando estado y direcciones de las columnas que sí se escriben (ver /rides).
+adminRouter.get("/passengers/:id/trips", async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt((req.query.limit as string) || '50');
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .select(`
+        id, created_at, completed_at, ride_status,
+        pickup, dropoff, pickup_address, dropoff_address,
+        fare, total_price,
+        driver:profiles!rides_driver_id_fkey(first_name, last_name, phone)
+      `)
+      .eq('passenger_id', req.params.id)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+
+    const direccion = (json: unknown, texto: unknown) => {
+      const j = json as { address?: string } | string | null;
+      if (typeof j === 'string' && j) return j;
+      if (j && typeof j === 'object' && j.address) return j.address;
+      return (texto as string) || null;
+    };
+    const conductor = (d: unknown) => {
+      const x = d as { first_name?: string; last_name?: string; phone?: string } | null;
+      if (!x) return 'Sin conductor asignado';
+      return `${x.first_name || ''} ${x.last_name || ''}`.trim() || x.phone || 'Conductor sin nombre';
+    };
+
+    const trips = (data ?? []).map((row: Record<string, unknown>) => ({
+      id: row.id,
+      driverName: conductor(row.driver),
+      origin: direccion(row.pickup, row.pickup_address) || '—',
+      destination: direccion(row.dropoff, row.dropoff_address) || '—',
+      status: row.ride_status,
+      fare: row.fare != null ? Number(row.fare) : null,
+      totalPrice: row.total_price != null ? Number(row.total_price) : null,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+    }));
+    res.json(trips);
+  } catch (err: any) {
+    logger.error(`[admin/passengers/trips] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load passenger trips' });
+  }
+});
+
 adminRouter.post("/passengers/:id/suspend", async (req: Request, res: Response) => {
   try {
     const { reason, suspendedUntil } = req.body || {};
