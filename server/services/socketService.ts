@@ -5,6 +5,7 @@ import { supabaseAdmin } from '../db/client';
 import { pool } from '../db/pool';
 import { getDriverPriorityTiers } from './driverScore';
 import { reassignRide, type ReassignReason } from './rideReassignment';
+import { recordRideOffers } from './driverRideHistory';
 
 // ── Redis Adapter (optional — activate by setting REDIS_URL env var) ──────────
 // Required for multi-instance / horizontal scaling so all instances share the
@@ -848,6 +849,7 @@ async function dispatchByDistance(
       notifiedIds.add(c.driverId);
     }
     bumpRequestCount(cands.map(c => c.driverId).filter(id => notifiedIds.has(id)));
+    recordRideOffers(rideId, cands.map(c => c.driverId).filter(id => notifiedIds.has(id)), 'socket');
     log.info(
       { rideId, wave: waveLabel, count: cands.length, topDist: cands[0]?.distanceKm, topScore: cands[0]?.score },
       `wave dispatch ${waveLabel}`,
@@ -903,6 +905,7 @@ function dispatchByScore(rideId: string, payload: object) {
         wave1Count++;
       }
       log.info({ rideId, wave: 1, tier: top.length, sent: wave1Count }, 'score wave 1');
+      recordRideOffers(rideId, top, 'socket');
 
       // Wave 2 — mid priority drivers (score 0.7 – 1.3)
       setTimeout(() => {
@@ -915,6 +918,7 @@ function dispatchByScore(rideId: string, payload: object) {
           wave2Count++;
         }
         log.info({ rideId, wave: 2, tier: mid.length, sent: wave2Count }, 'score wave 2');
+        recordRideOffers(rideId, mid, 'socket');
       }, 4000);
 
       // Wave 3 — lower priority drivers (score < 0.7)
@@ -928,6 +932,7 @@ function dispatchByScore(rideId: string, payload: object) {
           wave3Count++;
         }
         log.info({ rideId, wave: 3, tier: normal.length, sent: wave3Count }, 'score wave 3');
+        recordRideOffers(rideId, normal, 'socket');
       }, 8000);
     })
     .catch((err) => {

@@ -14,6 +14,7 @@ import {
   CONSECUTIVE_TRIP_BONUS,
 } from "../../config/pricing";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
+import { recordDriverRelease } from "../../services/driverRideHistory";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -58,6 +59,10 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
 
       const passengerIdStr = String((ride as any).passenger_id || '');
       const driverIdStr    = String((ride as any).driver_id || '');
+
+      // El viaje acaba de perder su driver_id: se guarda para que el conductor
+      // lo siga viendo como cancelado en su historial.
+      recordDriverRelease(req.params.id, driverIdStr, 'driver_cancelled', reason || 'driver_cancelled');
 
       // Notify passenger via socket: driver cancelled but we're searching again
       broadcastRideStatus(req.params.id, 'searching', {

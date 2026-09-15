@@ -1,5 +1,6 @@
 import { createContextLogger } from '../lib/logger';
 import { supabaseAdmin } from '../db/client';
+import { recordRideOffers } from './driverRideHistory';
 
 const log = createContextLogger('FCM');
 
@@ -161,7 +162,7 @@ export async function notifyNearbyDrivers(
     // Get their FCM tokens
     const { data: tokenRows } = await supabaseAdmin
       .from('user_push_tokens')
-      .select('token')
+      .select('user_id, token')
       .in('user_id', driverIds)
       .eq('active', true);
 
@@ -184,6 +185,8 @@ export async function notifyNearbyDrivers(
         screen: 'ride_offer',
       },
     });
+    // Sólo quienes tenían token recibieron la oferta.
+    recordRideOffers(rideId, (tokenRows ?? []).map((r: unknown) => (r as { user_id: string }).user_id), 'push');
   } catch (err: any) {
     log.error({ err: err.message, rideId }, 'notifyNearbyDrivers error');
   }

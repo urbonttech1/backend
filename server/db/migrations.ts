@@ -1254,6 +1254,25 @@ export async function runMigrations() {
     // trayecto no debe cambiarlo.
     await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS zone_id TEXT`);
 
+    // ─── Historial de viajes por conductor ──────────────────────────────────────
+    // `rides.driver_id` sólo guarda al conductor actual: cuando uno cancela un
+    // viaje aceptado o el sistema se lo reasigna, el viaje vuelve a `searching` y
+    // pierde ese dato, y a quien sólo se le ofreció nunca lo tuvo. Sin esta tabla
+    // su ficha del panel y su pestaña Trips no podían mostrar esos viajes.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS driver_ride_events (
+        id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        ride_id    UUID NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
+        driver_id  UUID NOT NULL,
+        event      VARCHAR(30) NOT NULL CHECK (event IN ('offered', 'driver_cancelled', 'reassigned')),
+        reason     TEXT,
+        metadata   JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS uq_driver_ride_events ON driver_ride_events (ride_id, driver_id, event)`);
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_driver_ride_events_driver ON driver_ride_events (driver_id, created_at DESC)`);
+
     // NOTA — `find_nearby_drivers` sigue rota: referencia
     // `driver_locations.location`, una columna GEOGRAPHY que nunca se creó, así
     // que el RPC falla en cada despacho y socketService cae a una consulta manual

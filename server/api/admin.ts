@@ -7,6 +7,7 @@ import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
+import { loadDriverHistoryExtras } from '../services/driverRideHistory';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
@@ -197,6 +198,30 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       return (texto as string) || null;
     };
 
+    const viajePanel = (v: Record<string, unknown>) => ({
+      id: v.id,
+      date: v.created_at,
+      createdAt: v.created_at,
+      completedAt: v.completed_at,
+      cancelledAt: v.cancelled_at,
+      status: v.ride_status,
+      passenger: nombrePasajero(v.passenger),
+      origin: direccionViaje(v.pickup, v.pickup_address),
+      destination: direccionViaje(v.dropoff, v.dropoff_address),
+      fare: v.fare,
+      totalPrice: v.total_price,
+      tipAmount: v.tip_amount,
+      distanceMiles: v.distance_miles as number | null,
+      durationMinutes: v.duration_minutes,
+      vehicleType: v.vehicle_type,
+      paymentMethod: v.payment_method,
+      paymentStatus: v.payment_status,
+      rating: v.rating,
+      cancelReason: v.cancel_reason,
+      // Sólo en entradas de historial: quién canceló y de dónde sale la fila.
+      ...(v.history_source ? { cancelledBy: v.cancelled_by, historySource: v.history_source } : {}),
+    });
+
     type Conteo = {
       completados: number; cancelados: number; total: number;
       facturado: number; ultimo: string | null;
@@ -214,28 +239,7 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
         if (fin && (!c.ultimo || fin > c.ultimo)) c.ultimo = fin;
       } else if (v.ride_status === 'cancelled') c.cancelados += 1;
 
-      const millas = v.distance_miles as number | null;
-      c.viajes.push({
-        id: v.id,
-        date: v.created_at,
-        createdAt: v.created_at,
-        completedAt: v.completed_at,
-        cancelledAt: v.cancelled_at,
-        status: v.ride_status,
-        passenger: nombrePasajero(v.passenger),
-        origin: direccionViaje(v.pickup, v.pickup_address),
-        destination: direccionViaje(v.dropoff, v.dropoff_address),
-        fare: v.fare,
-        totalPrice: v.total_price,
-        tipAmount: v.tip_amount,
-        distanceMiles: millas,
-        durationMinutes: v.duration_minutes,
-        vehicleType: v.vehicle_type,
-        paymentMethod: v.payment_method,
-        paymentStatus: v.payment_status,
-        rating: v.rating,
-        cancelReason: v.cancel_reason,
-      });
+      c.viajes.push(viajePanel(v));
       conteo.set(id, c);
     }
 
@@ -292,6 +296,29 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
     // en la lista, de modo que las sumas nunca cuadraban contra /rides. Se
     // incluye además a todo el que aparezca como `driver_id` en algún viaje.
     const idsQueManejaron = [...conteo.keys()];
+
+    // Viajes que el conductor ya no tiene asignados pero sí vivió: los que canceló
+    // o le reasignaron (el viaje pierde su driver_id) y los que se le ofrecieron y
+    // el pasajero canceló antes de asignarse. Van en su lista como cancelados;
+    // sólo los que él soltó cuentan en `ridesCancelled`. Se agregan después de
+    // armar `idsQueManejaron` para no sumar a la lista a quien sólo recibió ofertas.
+    const extrasPorConductor = await loadDriverHistoryExtras(null, `
+      id, driver_id, ride_status, fare, total_price, tip_amount,
+      created_at, completed_at, cancelled_at,
+      pickup, dropoff, pickup_address, dropoff_address,
+      distance_miles, duration_minutes, vehicle_type, payment_method,
+      payment_status, rating, cancel_reason,
+      passenger:profiles!rides_passenger_id_fkey(first_name, last_name, phone)
+    `);
+    for (const [driverId, filas] of extrasPorConductor) {
+      const c = conteo.get(driverId) ?? { completados: 0, cancelados: 0, total: 0, facturado: 0, ultimo: null, viajes: [] };
+      for (const v of filas) {
+        if (v.history_source !== 'offered') c.cancelados += 1;
+        c.viajes.push(viajePanel(v));
+      }
+      c.viajes.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+      conteo.set(driverId, c);
+    }
     let consulta = supabaseAdmin.from('profiles').select('*');
     consulta = idsQueManejaron.length
       ? consulta.or(`role.in.(chauffeur,driver),id.in.(${idsQueManejaron.join(',')})`)
@@ -1494,14 +1521,88 @@ adminRouter.get("/audit-logs", async (_req: Request, res: Response) => {
 
 adminRouter.get("/feedback", async (_req: Request, res: Response) => {
   try {
-    const { rows } = await pgPool.query(
-      `SELECT id, user_id, type, category, rating, area_ratings, comment,
-              chauffeur_id, trip_id, is_anonymous, created_at
-       FROM client_feedback
-       ORDER BY created_at DESC
-       LIMIT 500`
+    // Las calificaciones de viaje nunca llegaban aquí: `POST /api/rides/:id/rating`
+    // las guarda en `rides.rating` y esta ruta sólo leía `client_feedback`, que se
+    // llena con sugerencias y reclamos. Se unen ambas en la forma de fila que ya
+    // lee el panel. Sólo entra la calificación del pasajero al conductor: la del
+    // conductor al pasajero (`passenger_rating`) mezclaría el promedio de conductores.
+    const [ridesRes, feedbackRows] = await Promise.all([
+      supabaseAdmin
+        .from('rides')
+        .select(`
+          id, rating, passenger_review_comment, passenger_review_tags,
+          created_at, completed_at, passenger_id, driver_id,
+          passenger:profiles!rides_passenger_id_fkey(first_name, last_name, phone),
+          driver:profiles!rides_driver_id_fkey(first_name, last_name, phone)
+        `)
+        .not('rating', 'is', null)
+        .order('completed_at', { ascending: false })
+        .limit(500),
+      pgPool.query(
+        `SELECT id, user_id, type, category, rating, area_ratings, comment,
+                chauffeur_id, trip_id, is_anonymous, created_at
+         FROM client_feedback
+         ORDER BY created_at DESC
+         LIMIT 500`
+      ).then(
+        (r) => r.rows as Record<string, unknown>[],
+        (err: unknown) => {
+          logger.error(`[admin/feedback] client_feedback: ${errMsg(err)}`);
+          return [] as Record<string, unknown>[];
+        },
+      ),
+    ]);
+    if (ridesRes.error) throw ridesRes.error;
+
+    const nombre = (p: unknown) => {
+      const x = p as { first_name?: string; last_name?: string; phone?: string } | null;
+      if (!x) return null;
+      return `${x.first_name || ''} ${x.last_name || ''}`.trim() || x.phone || null;
+    };
+
+    const deViajes = ((ridesRes.data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: `ride-${r.id}`,
+      user_id: r.passenger_id,
+      user_name: nombre(r.passenger),
+      type: 'trip_review',
+      category: null,
+      rating: Number(r.rating),
+      area_ratings: null,
+      comment: r.passenger_review_comment ?? null,
+      tags: r.passenger_review_tags ?? null,
+      chauffeur_id: r.driver_id,
+      chauffeur_name: nombre(r.driver),
+      trip_id: r.id,
+      is_anonymous: false,
+      created_at: r.completed_at ?? r.created_at,
+      source: 'ride_rating',
+    }));
+
+    // Una reseña de `client_feedback` del mismo viaje ya calificado no se cuenta dos veces.
+    const viajesCalificados = new Set(deViajes.map((f) => String(f.trip_id)));
+    const filasFeedback = feedbackRows.filter(
+      (f) => !(f.trip_id && f.rating != null && viajesCalificados.has(String(f.trip_id))),
     );
-    res.json({ feedback: rows });
+
+    // `client_feedback` sólo trae ids: el panel pintaba el UUID donde dice pasajero y conductor.
+    const ids = [...new Set(filasFeedback.flatMap((f) => [f.user_id, f.chauffeur_id]).filter(Boolean).map(String))];
+    const nombres = new Map<string, string | null>();
+    if (ids.length) {
+      const { data: perfiles } = await supabaseAdmin
+        .from('profiles').select('id, first_name, last_name, phone').in('id', ids);
+      for (const p of (perfiles ?? []) as Record<string, unknown>[]) nombres.set(String(p.id), nombre(p));
+    }
+    const deFeedback = filasFeedback.map((f) => ({
+      ...f,
+      user_name: f.user_id ? nombres.get(String(f.user_id)) ?? null : null,
+      chauffeur_name: f.chauffeur_id ? nombres.get(String(f.chauffeur_id)) ?? null : null,
+      source: 'client_feedback',
+    }));
+
+    const feedback = ([...deViajes, ...deFeedback] as Record<string, unknown>[])
+      .sort((a, b) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime())
+      .slice(0, 500);
+    res.json({ feedback });
   } catch (err: any) {
     logger.error(`[admin/feedback] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to load feedback', feedback: [] });

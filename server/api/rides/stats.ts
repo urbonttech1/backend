@@ -20,6 +20,8 @@ import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
+import { loadDriverHistoryExtras } from '../../services/driverRideHistory';
+import { mergeDriverHistory } from '../../services/driverHistoryView';
 
 export function registerStatsRoutes(router: Router): void {
 router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -167,16 +169,25 @@ router.get("/driver-history", requireSupabaseAuth, async (req: Request, res: Res
     const from  = (page - 1) * limit;
     const to    = from + limit - 1;
 
+    const columnas = 'id, created_at, completed_at, ride_status, rating, fare, tip_amount, driver_earnings, surge_multiplier, base_fare_breakdown, vehicle_type, distance_meters, duration_minutes, pickup, dropoff, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, passenger_id, scheduled_at, booking_type, cancel_reason';
     const { data, error, count } = await supabaseAdmin.from('rides')
-      .select('id, created_at, completed_at, ride_status, rating, fare, tip_amount, driver_earnings, surge_multiplier, base_fare_breakdown, vehicle_type, distance_meters, duration_minutes, pickup, dropoff, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, passenger_id, scheduled_at, booking_type, cancel_reason', { count: 'exact' })
+      .select(columnas, { count: 'exact' })
       .eq('driver_id', driver_id)
       .in('ride_status', ['completed', 'cancelled'])
       .order('created_at', { ascending: false })
-      .range(from, to);
+      .range(0, to);
     if (error) throw error;
 
+    // Además de sus viajes asignados, los que canceló, le reasignaron o se le
+    // ofrecieron y el pasajero canceló antes de asignarse (ver driverHistoryView).
+    // Se unen antes de paginar para que cada página salga en orden.
+    const asignados = (data ?? []) as Record<string, unknown>[];
+    const extras = (await loadDriverHistoryExtras([String(driver_id)], columnas)).get(String(driver_id)) ?? [];
+    const unidos = mergeDriverHistory(asignados, extras);
+    const total = (count ?? 0) + (unidos.length - asignados.length);
+
     // Enrich with passenger name
-    const rides = data ?? [];
+    const rides = unidos.slice(from, to + 1);
     const passengerIds = [...new Set(rides.map((r: Record<string, unknown>) => r.passenger_id as string).filter(Boolean))];
     let passengerMap: Record<string, string> = {};
     if (passengerIds.length > 0) {
@@ -193,10 +204,10 @@ router.get("/driver-history", requireSupabaseAuth, async (req: Request, res: Res
     }));
     res.json({
       rides: enriched,
-      total: count ?? 0,
+      total,
       page,
       limit,
-      pages: Math.ceil((count ?? 0) / limit),
+      pages: Math.ceil(total / limit),
     });
   } catch (err: any) {
     logger.error(`[RIDES] driver-history error:: ${err.message}`);

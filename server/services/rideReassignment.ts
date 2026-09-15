@@ -17,6 +17,7 @@ import { createContextLogger } from '../lib/logger';
 import { supabaseAdmin } from '../db/client';
 import { broadcastRideStatus } from './socketService';
 import { sendToToken } from './fcm';
+import { recordDriverRelease } from './driverRideHistory';
 
 const log = createContextLogger('REASSIGN');
 
@@ -68,6 +69,7 @@ export async function reassignRide(
     }
 
     log.info({ rideId, reason, oldDriverId }, '[reassign] Ride reset to searching');
+    recordDriverRelease(rideId, oldDriverId, 'reassigned', reason);
 
     // Broadcast to all room listeners (passenger's SearchingScreen will update instantly)
     broadcastRideStatus(rideId, 'searching', {
