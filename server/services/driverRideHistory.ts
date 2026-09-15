@@ -1,6 +1,6 @@
 import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
-import { vistaDelConductor, type DriverRideEventRow, type DriverRideEventType } from './driverHistoryView';
+import { vistaDelConductor, liberacionPorViaje, type DriverRideEventRow, type DriverRideEventType } from './driverHistoryView';
 
 /**
  * Guarda y lee `driver_ride_events`: a qué conductores se les ofreció cada viaje
@@ -106,4 +106,30 @@ export async function loadDriverHistoryExtras(
     log.warn({ err: err instanceof Error ? err.message : String(err) }, 'driver history extras failed');
   }
   return resultado;
+}
+
+/**
+ * Para viajes sin driver_id, el conductor que los soltó (ver `liberacionPorViaje`).
+ * Si la tabla aún no existe devuelve un mapa vacío.
+ */
+export async function loadReleasedDrivers(rideIds: string[]): Promise<Map<string, DriverRideEventRow>> {
+  const eventos: DriverRideEventRow[] = [];
+  try {
+    for (let i = 0; i < rideIds.length; i += 100) {
+      const { data, error } = await supabaseAdmin
+        .from(TABLE)
+        .select('ride_id, driver_id, event, reason, created_at')
+        .in('event', ['driver_cancelled', 'reassigned'])
+        .in('ride_id', rideIds.slice(i, i + 100));
+      if (error) {
+        log.warn({ err: error.message }, 'driver ride events unavailable');
+        return new Map();
+      }
+      eventos.push(...((data ?? []) as DriverRideEventRow[]));
+    }
+  } catch (err: unknown) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'released drivers lookup failed');
+    return new Map();
+  }
+  return liberacionPorViaje(eventos);
 }

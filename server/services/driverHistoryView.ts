@@ -64,6 +64,24 @@ export function vistaDelConductor(driverId: string, events: DriverRideEventRow[]
   return filas;
 }
 
+/**
+ * Por viaje, el conductor que lo soltó: su cancelación manda sobre una
+ * reasignación del sistema y, entre eventos iguales, gana el más reciente.
+ * Las ofertas no cuentan: a quien sólo se le ofreció no soltó nada.
+ */
+export function liberacionPorViaje(events: DriverRideEventRow[]): Map<string, DriverRideEventRow> {
+  const porViaje = new Map<string, DriverRideEventRow>();
+  for (const e of events) {
+    if (e.event === 'offered') continue;
+    const previo = porViaje.get(e.ride_id);
+    const gana = !previo
+      || PRIORIDAD[e.event] > PRIORIDAD[previo.event]
+      || (PRIORIDAD[e.event] === PRIORIDAD[previo.event] && e.created_at > previo.created_at);
+    if (gana) porViaje.set(e.ride_id, e);
+  }
+  return porViaje;
+}
+
 /** Une viajes asignados y entradas de historial, sin repetir viaje y del más reciente al más antiguo. */
 export function mergeDriverHistory(assigned: Row[], extras: Row[]): Row[] {
   const vistos = new Set(assigned.map(r => String(r.id)));

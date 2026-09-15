@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { vistaDelConductor, mergeDriverHistory, type DriverRideEventRow } from './driverHistoryView';
+import { vistaDelConductor, mergeDriverHistory, liberacionPorViaje, type DriverRideEventRow } from './driverHistoryView';
 
 /**
  * La ficha del conductor en el panel y su pestaña Trips sólo listaban viajes con
@@ -87,6 +87,28 @@ describe('historial del conductor', () => {
       { id: 'r1', ride_status: 'cancelled', driver_id: null },
     ));
     expect(filas).toEqual([]);
+  });
+});
+
+describe('liberacionPorViaje', () => {
+  it('ignora las ofertas: a quien sólo se le ofreció no soltó el viaje', () => {
+    expect(liberacionPorViaje([evento('r1', 'offered')]).size).toBe(0);
+  });
+
+  it('la cancelación del conductor manda sobre una reasignación posterior del sistema', () => {
+    const l = liberacionPorViaje([
+      evento('r1', 'driver_cancelled', { driver_id: FELIPE, reason: 'vehicle_issue', created_at: '2026-09-14T22:45:00Z' }),
+      evento('r1', 'reassigned', { driver_id: OTRO, reason: 'driver_inactive', created_at: '2026-09-14T22:49:00Z' }),
+    ]);
+    expect(l.get('r1')).toMatchObject({ driver_id: FELIPE, event: 'driver_cancelled', reason: 'vehicle_issue' });
+  });
+
+  it('entre dos cancelaciones de conductor gana la más reciente', () => {
+    const l = liberacionPorViaje([
+      evento('r1', 'driver_cancelled', { driver_id: FELIPE, created_at: '2026-09-14T22:40:00Z' }),
+      evento('r1', 'driver_cancelled', { driver_id: OTRO, created_at: '2026-09-14T22:50:00Z' }),
+    ]);
+    expect(l.get('r1')?.driver_id).toBe(OTRO);
   });
 });
 

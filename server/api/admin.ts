@@ -7,7 +7,7 @@ import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
-import { loadDriverHistoryExtras } from '../services/driverRideHistory';
+import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
@@ -906,6 +906,38 @@ adminRouter.get("/rides", async (req: Request, res: Response) => {
         hasDriver:   row.driver_id != null,
       };
     });
+
+    // Quién canceló cada viaje cancelado, según driver_ride_events: el conductor
+    // (con su motivo) o el sistema al reasignarlo. Si además el viaje perdió su
+    // driver_id —salía "Sin asignar"— se muestra el conductor que lo soltó.
+    // `hasDriver` sigue en false: no tiene conductor actual.
+    const filas = rides as Record<string, unknown>[];
+    const canceladas = filas.filter((r) => r.ride_status === 'cancelled').map((r) => String(r.id));
+    const liberaciones = canceladas.length ? await loadReleasedDrivers(canceladas) : new Map();
+    if (liberaciones.size) {
+      const idsConductores = [...new Set([...liberaciones.values()].map((l) => l.driver_id))];
+      const { data: perfiles } = await supabaseAdmin
+        .from('profiles').select('id, first_name, last_name, email, phone').in('id', idsConductores);
+      const perfilPorId = new Map(((perfiles ?? []) as Record<string, unknown>[]).map((p) => [String(p.id), p]));
+      for (const r of filas) {
+        const l = liberaciones.get(String(r.id));
+        if (!l) continue;
+        Object.assign(r, {
+          releasedByDriverId: l.driver_id,
+          cancelledBy:        l.event === 'driver_cancelled' ? 'driver' : 'system',
+          driverCancelReason: l.reason,
+        });
+        if (!r.hasDriver) {
+          const p = perfilPorId.get(l.driver_id) ?? null;
+          Object.assign(r, {
+            driver:      nombre(p),
+            driverName:  nombre(p),
+            driverPhone: telefono(p),
+            driverEmail: correo(p),
+          });
+        }
+      }
+    }
 
     res.json({ rides });
   } catch (err: any) {

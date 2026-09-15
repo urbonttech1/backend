@@ -39,7 +39,16 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
     if (rideStatus === 'completed' || rideStatus === 'cancelled') {
       return res.status(400).json({ error: 'Ride cannot be cancelled in its current state' });
     }
-    if (rideStatus === 'in_progress') {
+    // Un conductor sí puede abandonar un viaje en curso (avería, emergencia). Antes
+    // se rechazaba con 400, la app lo ocultaba igual y el motivo se perdía: el viaje
+    // seguía activo a su nombre hasta que el watchdog lo reasignaba y terminaba
+    // cancelado "sin asignar". Se cancela conservando su driver_id y su motivo.
+    // Sólo el conductor asignado: el pasajero sigue sin poder cancelar un viaje en curso.
+    const conductorAbandona = rideStatus === 'in_progress'
+      && cancelledBy === 'driver'
+      && !!req.supabaseUid
+      && (ride as any).driver_id === req.supabaseUid;
+    if (rideStatus === 'in_progress' && !conductorAbandona) {
       return res.status(400).json({ error: 'Cannot cancel a ride that is already in progress' });
     }
 
@@ -114,6 +123,14 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
             await stripe.refunds.create({ payment_intent: piId });
           }
           // requires_payment_method / canceled → nothing to do
+
+        } else if (conductorAbandona) {
+          // ── El conductor abandonó el viaje: el pasajero no paga un viaje que no se completó.
+          if (pi.status === 'requires_capture') {
+            await stripe.paymentIntents.cancel(piId);
+          } else if (pi.status === 'succeeded') {
+            await stripe.refunds.create({ payment_intent: piId });
+          }
 
         } else if (rideStatus === 'accepted' || rideStatus === 'confirmed') {
           // ── Driver was dispatched ─────────────────────────────────────────
@@ -203,17 +220,32 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
     const ridePassengerId = String((ride as any).passenger_id || '');
     const rideDriverId    = String((ride as any).driver_id || '');
 
+    // El viaje conserva su driver_id, pero sin este evento no quedaba registro de
+    // que fue el conductor quien canceló (el panel no podía decirlo).
+    if (conductorAbandona) {
+      recordDriverRelease(req.params.id, rideDriverId, 'driver_cancelled', reason || 'driver_cancelled');
+    }
+
     // ── Socket broadcast: notify ALL participants instantly ───────────────────
     // This is the primary real-time signal for the driver dashboard and any
     // passenger screens (ConfirmedScreen, TrackingScreen) still open.
     broadcastRideStatus(req.params.id, 'cancelled', {
-      reason:      reason || 'passenger_cancelled',
+      reason:      reason || (conductorAbandona ? 'driver_cancelled' : 'passenger_cancelled'),
+      cancelledBy: conductorAbandona ? 'driver' : undefined,
       passengerId: ridePassengerId,
       driverId:    rideDriverId,
     });
 
-    // ── Push notification → driver (if assigned) ─────────────────────────────
-    if (rideDriverId) {
+    // ── Push notification → la otra parte ─────────────────────────────────────
+    if (conductorAbandona) {
+      if (ridePassengerId) {
+        notifyUser(ridePassengerId, {
+          title: 'Ride Cancelled',
+          body: 'Your driver had to end this ride.',
+          data: { type: 'ride_cancelled_by_driver', ride_id: req.params.id, screen: 'ride_tracking' },
+        }).catch(() => {});
+      }
+    } else if (rideDriverId) {
       notifyUser(rideDriverId, {
         title: 'Ride Cancelled',
         body: 'The passenger has cancelled this ride.',
