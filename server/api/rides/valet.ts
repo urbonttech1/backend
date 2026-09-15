@@ -8,9 +8,8 @@ import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
   calculateFareFromRules,
-  WAIT_TIME_FREE_MINUTES, WAIT_TIME_FEE_PER_MIN,
+  WAIT_TIME_FREE_MINUTES,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
-  NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
   normalizePaymentMethod,
 } from "../../config/pricing";

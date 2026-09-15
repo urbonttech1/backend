@@ -11,7 +11,7 @@ import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driver
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
-import { DEFAULT_FARE_CLASSES, type FareClass } from '../config/pricing';
+import { DEFAULT_FARE_CLASSES, type FareClass, getPricingPolicy } from '../config/pricing';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
 // cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
@@ -741,7 +741,10 @@ adminRouter.post("/documents/:id/request-reupload", async (req: Request, res: Re
 
 adminRouter.get("/fares", async (_req: Request, res: Response) => {
   const fares = await getFaresFromDB();
-  res.json({ fares });
+  // Las políticas (espera, no-show, cancelación) viajan con las tarifas para que
+  // la pantalla las muestre sin una segunda petición. Son de sólo lectura: se
+  // cambian en código.
+  res.json({ fares, pricingPolicy: getPricingPolicy() });
 });
 
 adminRouter.put("/fares", async (req: Request, res: Response) => {
@@ -752,16 +755,14 @@ adminRouter.put("/fares", async (req: Request, res: Response) => {
   }
   // Campos que el motor de cobro aplica de verdad.
   //
-  // La lista anterior tenía `perKm` —del esquema viejo por kilómetro— pero NO
-  // `perMile` ni `includedMiles`: el panel mostraba "Por milla", el operador lo
-  // editaba, la API respondía 200 y el valor se descartaba en silencio. Era el
-  // campo que más pesa en el precio después de las millas incluidas.
-  //
-  // `peakMultiplier`, `airportSurcharge` y `nightSurcharge` salen porque ningún
-  // cálculo los aplica: volverán cuando el motor los soporte.
+  // Con las tarifas del cliente el precio por milla pasa a tres tramos y la
+  // espera tiene tarifa propia. `includedMiles`, `perMile` y `cancellationFee`
+  // salen: ya no los aplica ningún cálculo. Quedan fuera A PROPÓSITO y vuelven en
+  // `rejected` — un panel sin actualizar que siga mandando `perMile` no puede
+  // pisar los tramos, y la pantalla ya avisa de lo que el servidor descartó.
   const allowed = [
-    'minFare', 'includedMiles', 'perMile', 'perMin',
-    'serviceFee', 'cancellationFee', 'perHour', 'minHours',
+    'minFare', 'perMileTier1', 'perMileTier2', 'perMileTier3',
+    'perMin', 'waitPerMin', 'serviceFee', 'perHour', 'minHours',
   ] as const satisfies readonly (keyof FareClass)[];
 
   const applied: Record<string, number> = {};

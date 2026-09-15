@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { requireSupabaseAuth } from "../middleware";
 import { createContextLogger } from "../lib/logger";
 import { pool } from "../db/pool";
-import { getTimeSurge, getFareClasses, VEHICLE_ALIAS } from "../config/pricing";
+import { getTimeSurge, getFareClasses, getPricingPolicy, VEHICLE_ALIAS } from "../config/pricing";
 import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
 
 const log = createContextLogger('CONFIG');
@@ -102,10 +102,13 @@ configRouter.get("/", async (_req: Request, res: Response) => {
       stripePublishableKey,
       googleMapsApiKey,
       googleMapsMapId,
+      // Espera gratis, topes, no-show y cancelación: la app y el panel los leen
+      // de aquí en vez de llevarlos escritos en su código.
+      pricingPolicy:    getPricingPolicy(),
     });
   } catch (err: any) {
     log.warn({ err: err.message }, 'config fetch error — returning defaults');
-    res.json({ ...DEFAULTS, stripePublishableKey, googleMapsApiKey, googleMapsMapId });
+    res.json({ ...DEFAULTS, stripePublishableKey, googleMapsApiKey, googleMapsMapId, pricingPolicy: getPricingPolicy() });
   }
 });
 

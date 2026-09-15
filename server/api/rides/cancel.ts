@@ -8,11 +8,15 @@ import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
   calculateFareFromRules,
-  WAIT_TIME_FREE_MINUTES, WAIT_TIME_FEE_PER_MIN,
+  calcularCancelacionReserva,
+  calcularNoShowDemanda,
+  minutosParaNoShowDemanda,
+  SCHEDULED_NO_SHOW_AFTER_MINUTES,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
-  NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
 } from "../../config/pricing";
+import { pagarChoferPorViaje } from "../../services/ridePayout";
+import type Stripe from 'stripe';
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { recordDriverRelease } from "../../services/driverRideHistory";
 import { sendSmsTwilio } from "../../services/twilio";
@@ -22,12 +26,40 @@ import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Libera el cobro retenido, o lo reembolsa entero si ya se había capturado. */
+async function liberarCobro(stripe: Stripe, pi: Stripe.PaymentIntent): Promise<void> {
+  if (pi.status === 'requires_capture') {
+    await stripe.paymentIntents.cancel(pi.id);
+  } else if (pi.status === 'succeeded') {
+    await stripe.refunds.create({ payment_intent: pi.id });
+  }
+}
+
+/**
+ * Cobra sólo `feeCents` y libera el resto. Devuelve si pudo cobrar: un
+ * PaymentIntent en otro estado (sin método de pago, ya cancelado) no se toca.
+ */
+async function cobrarParcial(stripe: Stripe, pi: Stripe.PaymentIntent, feeCents: number): Promise<boolean> {
+  if (pi.status === 'requires_capture') {
+    await stripe.paymentIntents.capture(pi.id, { amount_to_capture: Math.min(feeCents, pi.amount) });
+    return true;
+  }
+  if (pi.status === 'succeeded') {
+    const refundAmount = Math.max(0, pi.amount_received - feeCents);
+    if (refundAmount > 0) await stripe.refunds.create({ payment_intent: pi.id, amount: refundAmount });
+    return true;
+  }
+  return false;
+}
+
 export function registerCancelRoutes(router: Router): void {
 router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Response) => {
   try {
     const { reason, cancelledBy } = req.body;
     const { data: ride, error: fetchErr } = await supabaseAdmin.from('rides')
-      .select('fare, scheduled_at, ride_status, payment_intent_id, passenger_id, driver_id, updated_at, accepted_at')
+      .select('fare, scheduled_at, ride_status, payment_intent_id, passenger_id, driver_id, updated_at, accepted_at, locked_fare, vehicle_type, dispatched_by_valet')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -111,61 +143,37 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
     if (stripe && piId) {
       try {
         const pi = await stripe.paymentIntents.retrieve(piId);
+        const esValet     = (ride as any).dispatched_by_valet === true;
+        const horaReserva = (ride as any).scheduled_at ? new Date((ride as any).scheduled_at).getTime() : NaN;
+        const esReserva   = Number.isFinite(horaReserva);
 
-        if (rideStatus === 'searching' || rideStatus === 'scheduled') {
-          // ── No driver dispatched → full release, zero charge ──────────────
-          // 'scheduled' rides have no driver assigned (they haven't been dispatched yet)
-          // so they always get a full release with no cancellation fee.
-          if (pi.status === 'requires_capture') {
-            await stripe.paymentIntents.cancel(piId);
-          } else if (pi.status === 'succeeded') {
-            // Already captured (old automatic flow) → full refund
-            await stripe.refunds.create({ payment_intent: piId });
-          }
-          // requires_payment_method / canceled → nothing to do
-
-        } else if (conductorAbandona) {
+        if (conductorAbandona) {
           // ── El conductor abandonó el viaje: el pasajero no paga un viaje que no se completó.
-          if (pi.status === 'requires_capture') {
-            await stripe.paymentIntents.cancel(piId);
-          } else if (pi.status === 'succeeded') {
-            await stripe.refunds.create({ payment_intent: piId });
+          await liberarCobro(stripe, pi);
+
+        } else if (esReserva && !esValet) {
+          // ── Reserva: el cargo depende de la antelación ─────────────────────
+          // ≥ 2 h antes gratis · entre 2 h y 1 h el 50 % · menos de 1 h el 100 %.
+          //
+          // Se aplica sea cual sea el estado del viaje. Antes una reserva sin
+          // chofer asignado salía gratis siempre, y una ya asignada caía en la
+          // regla de $10 de los viajes a demanda. La función con los tramos
+          // existía (`calculateCancellationFee`), pero nadie la llamaba.
+          const horasAntes = (horaReserva - Date.now()) / 3_600_000;
+          const totalViaje = Number((ride as any).locked_fare ?? (ride as any).fare ?? 0);
+          const { fee } = calcularCancelacionReserva(horasAntes, totalViaje);
+          if (fee <= 0) {
+            await liberarCobro(stripe, pi);
+          } else if (await cobrarParcial(stripe, pi, Math.round(fee * 100))) {
+            cancellationFee = fee;
+            stripeChargeId = piId;
           }
 
-        } else if (rideStatus === 'accepted' || rideStatus === 'confirmed') {
-          // ── Driver was dispatched ─────────────────────────────────────────
-          // Grace period: CANCELLATION_GRACE_MINS from when the driver accepted (accepted_at)
-          const acceptedTimestamp = (ride as any).accepted_at || (ride as any).updated_at || Date.now();
-          const driverAssignedAt = new Date(acceptedTimestamp).getTime();
-          const minutesSinceAssigned = (Date.now() - driverAssignedAt) / 60000;
-          const withinGrace = minutesSinceAssigned <= CANCELLATION_GRACE_MINS;
-
-          if (withinGrace) {
-            // Within grace → release hold, no charge
-            if (pi.status === 'requires_capture') {
-              await stripe.paymentIntents.cancel(piId);
-            } else if (pi.status === 'succeeded') {
-              await stripe.refunds.create({ payment_intent: piId });
-            }
-          } else {
-            // Outside grace → charge CANCELLATION_FEE ($10), release the rest
-            cancellationFee = CANCELLATION_FEE;
-            const cancelFeeCents = Math.round(CANCELLATION_FEE * 100);
-
-            if (pi.status === 'requires_capture') {
-              // Capture only the cancellation fee, cancel the rest
-              const captureAmount = Math.min(cancelFeeCents, pi.amount);
-              await stripe.paymentIntents.capture(piId, { amount_to_capture: captureAmount });
-              stripeChargeId = piId;
-            } else if (pi.status === 'succeeded') {
-              // Already fully captured → refund everything except the cancellation fee
-              const refundAmount = Math.max(0, pi.amount_received - cancelFeeCents);
-              if (refundAmount > 0) {
-                await stripe.refunds.create({ payment_intent: piId, amount: refundAmount });
-              }
-              stripeChargeId = piId;
-            }
-          }
+        } else {
+          // ── A demanda, o viaje de valet: cancelar es gratis ────────────────
+          // Por decisión del cliente se quitó el cargo de $10 pasados 2 minutos
+          // desde que el chofer aceptaba. El chofer tampoco recibe nada.
+          await liberarCobro(stripe, pi);
         }
       } catch (stripeErr: unknown) {
         logger.error(`[RIDES] Stripe cancel handling failed (non-blocking):: ${errMsg(stripeErr)}`);
@@ -367,7 +375,8 @@ router.post('/:id/dispute', requireSupabaseAuth, async (req: Request, res: Respo
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // T003: POST /:id/no-show — driver marks passenger as no-show after arrival
-//   Charges NO_SHOW_FEE ($10) to passenger's saved payment method via Stripe
+//   A demanda: 10 min de espera a la tarifa de la clase + 10 % del viaje.
+//   Reserva: el 100 % del viaje, y el chofer cobra lo acordado. Valet: nada.
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Response) => {
   const uid  = req.supabaseUid!;
@@ -378,7 +387,7 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
   try {
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('id, ride_status, driver_id, passenger_id, payment_intent_id, wait_started_at')
+      .select('id, ride_status, driver_id, passenger_id, payment_intent_id, wait_started_at, scheduled_at, vehicle_type, locked_fare, fare, dispatched_by_valet')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -390,29 +399,69 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
       return res.status(409).json({ error: 'Driver must be at pickup location to mark no-show' });
     }
 
-    // Verify driver has waited at least the free window before charging
-    if (r.wait_started_at) {
-      const waitMins = (Date.now() - new Date(r.wait_started_at as string).getTime()) / 60000;
-      if (waitMins < WAIT_TIME_FREE_MINUTES) {
+    const esValet     = r.dispatched_by_valet === true;
+    const horaReserva = r.scheduled_at ? new Date(r.scheduled_at as string).getTime() : NaN;
+    const esReserva   = Number.isFinite(horaReserva);
+    const totalViaje  = Number(r.locked_fare ?? r.fare ?? 0);
+
+    // Antes bastaban 5 minutos —o ninguno, si no se había marcado la llegada—
+    // y se cobraban $10 fijos. Ahora el chofer tiene que haber llegado y
+    // esperado lo acordado con el cliente.
+    if (!r.wait_started_at) {
+      return res.status(409).json({
+        error: 'Mark your arrival at the pickup before marking a no-show.',
+        errorCode: 'NOT_ARRIVED',
+      });
+    }
+
+    if (esReserva) {
+      const minutosDesdeHora = (Date.now() - horaReserva) / 60000;
+      if (minutosDesdeHora < SCHEDULED_NO_SHOW_AFTER_MINUTES) {
         return res.status(409).json({
-          error: `Please wait at least ${WAIT_TIME_FREE_MINUTES} minutes before marking no-show`,
+          error: `You can mark a no-show ${SCHEDULED_NO_SHOW_AFTER_MINUTES} minutes after the reserved time.`,
+          errorCode: 'NO_SHOW_TOO_EARLY',
+          minutesRemaining: Math.ceil(SCHEDULED_NO_SHOW_AFTER_MINUTES - minutosDesdeHora),
+        });
+      }
+    } else {
+      const minimo = minutosParaNoShowDemanda();
+      const waitMins = (Date.now() - new Date(r.wait_started_at as string).getTime()) / 60000;
+      if (waitMins < minimo) {
+        return res.status(409).json({
+          error: `Please wait at least ${minimo} minutes before marking no-show`,
+          errorCode: 'NO_SHOW_TOO_EARLY',
           waitedMinutes: Math.round(waitMins),
+          minutesRemaining: Math.ceil(minimo - waitMins),
         });
       }
     }
 
-    // Charge passenger $10 no-show fee via Stripe (capture from existing PI)
+    const noShowFee = esValet ? 0
+      : esReserva ? r2(totalViaje)
+      : calcularNoShowDemanda(String(r.vehicle_type || 'sedan'), totalViaje);
+
     let noShowCharged = false;
     const piId = r.payment_intent_id as string | undefined;
-    if (piId) {
+    if (piId && noShowFee > 0) {
       const stripe = getStripe();
       if (stripe) {
         try {
           const pi = await stripe.paymentIntents.retrieve(piId);
-          const feeAmountCents = Math.round(NO_SHOW_FEE * 100);
-          if (pi.status === 'requires_capture') {
-            const captureAmount = Math.min(feeAmountCents, pi.amount);
-            await stripe.paymentIntents.capture(piId, { amount_to_capture: captureAmount });
+          if (esReserva) {
+            // Reserva: se captura el viaje completo y el chofer cobra su parte.
+            const cobrado = pi.status === 'requires_capture'
+              ? await stripe.paymentIntents.capture(piId)
+              : pi;
+            if (cobrado.status === 'succeeded') {
+              noShowCharged = true;
+              await pagarChoferPorViaje({
+                stripe, pi: cobrado, rideId: req.params.id, driverId: uid, concepto: 'scheduled no-show',
+              });
+            }
+          } else if (pi.status === 'requires_capture') {
+            await stripe.paymentIntents.capture(piId, {
+              amount_to_capture: Math.min(Math.round(noShowFee * 100), pi.amount),
+            });
             noShowCharged = true;
           }
         } catch (stripeErr: unknown) {
@@ -421,18 +470,17 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
       }
     }
 
+    const cargoAplicado = noShowCharged ? noShowFee : 0;
+
     // Cancel the ride and flag it as no-show.
     //
-    // El resultado SE COMPROBA: `no_show` y `no_show_fee` no existían en la tabla,
-    // así que PostgREST rechazaba el update completo y el viaje quedaba activo
-    // pese a haberle cobrado ya el cargo al pasajero — y sin error en el log,
-    // porque este update se ignoraba. Las columnas ya existen (ver migrations.ts),
-    // pero si esto vuelve a fallar hay dinero cobrado sin contraparte y tiene que
-    // quedar registrado con el importe para poder conciliarlo con Stripe.
+    // El resultado SE COMPRUEBA: si el update falla hay dinero cobrado sin
+    // contraparte, y tiene que quedar registrado con el importe para poder
+    // conciliarlo con Stripe.
     const { error: cancelErr } = await supabaseAdmin.from('rides').update({
       ride_status:  'cancelled',
       no_show:       true,
-      no_show_fee:   noShowCharged ? NO_SHOW_FEE : 0,
+      no_show_fee:   cargoAplicado,
       updated_at:    new Date().toISOString(),
       cancelled_at:  new Date().toISOString(),
       cancel_reason: 'passenger_no_show',
@@ -441,7 +489,7 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
     if (cancelErr) {
       logger.error(
         `[RIDES] No-show cancel FAILED for ride ${req.params.id}: ${cancelErr.message}. ` +
-        `Charged=${noShowCharged} fee=${noShowCharged ? NO_SHOW_FEE : 0}. Ride left ACTIVE — needs manual review.`,
+        `Charged=${noShowCharged} fee=${cargoAplicado}. Ride left ACTIVE — needs manual review.`,
       );
       return res.status(500).json({ error: 'Could not cancel the ride. Support has been notified.' });
     }
@@ -449,13 +497,15 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
     // Notify passenger
     notifyUser(String(r.passenger_id), {
       title: 'Ride Cancelled — No-Show',
-      body:  `Your driver waited but could not find you. A $${NO_SHOW_FEE} no-show fee was applied.`,
+      body:  noShowCharged
+        ? `Your driver waited but could not find you. A $${cargoAplicado.toFixed(2)} no-show fee was applied.`
+        : 'Your driver waited but could not find you. The ride was cancelled.',
       data: { type: 'ride_no_show', ride_id: req.params.id, screen: 'ride_summary' },
     }).catch(() => {});
 
     broadcastRideStatus(req.params.id, 'cancelled', { driverId: uid, passengerId: String(r.passenger_id) });
 
-    return res.json({ success: true, noShowFee: NO_SHOW_FEE, charged: noShowCharged });
+    return res.json({ success: true, noShowFee: cargoAplicado, charged: noShowCharged, scheduled: esReserva });
   } catch (err: any) {
     logger.error(`[RIDES] no-show error:: ${err.message}`);
     return res.status(500).json({ error: 'Failed to process no-show' });

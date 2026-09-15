@@ -9,9 +9,7 @@ import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } f
 import {
   calculateFareFromRules,
   calculateHourlyFare,
-  WAIT_TIME_FREE_MINUTES, WAIT_TIME_FEE_PER_MIN,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
-  NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
   normalizePaymentMethod,
 } from "../../config/pricing";
@@ -43,7 +41,11 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
       if (isNaN(hours) || hours <= 0) {
         return res.status(400).json({ error: 'hours must be a positive number when bookingType=hourly.' });
       }
-      const hourly = calculateHourlyFare({ vehicleType, hours, surgeMultiplier });
+      // `scheduled=true` cotiza con la reserva incluida: sólo la paga lo programado.
+      const hourly = calculateHourlyFare({
+        vehicleType, hours, surgeMultiplier,
+        bookingType: req.query.scheduled === 'true' ? 'scheduled' : undefined,
+      });
       if (!hourly) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
       return res.json(hourly);
     }
@@ -55,7 +57,9 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
     }
 
     const distanceMiles = distanceKm * 0.621371;
-    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, surgeMultiplier });
+    // Con `bookingType=scheduled` se cotiza con la reserva de la clase. La app ya
+    // lo manda; antes el servidor lo ignoraba en esta ruta.
+    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier });
     if (!breakdown) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
     return res.json(breakdown);
   } catch (err: any) {
@@ -83,6 +87,7 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
   const dropoffLat  = parseFloat(req.query.dropoffLat as string);
   const dropoffLng  = parseFloat(req.query.dropoffLng as string);
   const vehicleType = (req.query.vehicleType as string) || 'standard';
+  const bookingType = (req.query.bookingType as string) || 'now';
   const _isAirport  = req.query.isAirport === 'true'; // reserved: passed to fare calc once pricing.ts supports it
 
   if ([pickupLat, pickupLng, dropoffLat, dropoffLng].some(isNaN)) {
@@ -148,7 +153,7 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
     // cobraría con recargo — justo la dirección que no queremos.
     await ensureFaresFresh();
     const surgeMultiplier = await getEffectiveSurge();
-    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, surgeMultiplier })
+    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier })
       ?? { total: 0, distanceMiles, durationMinutes, surge_multiplier: surgeMultiplier };
     res.json({ ...breakdown, distanceMiles, durationMinutes });
   } catch (err: any) {
@@ -156,18 +161,6 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
     res.status(500).json({ error: 'Failed to calculate fare estimate.' });
   }
 });
-
-// --- Cancellation fee logic ---
-function calculateCancellationFee(scheduledAt: string | null, fare: number): number {
-  if (!scheduledAt) return 0;
-  const now = new Date();
-  const scheduled = new Date(scheduledAt);
-  if (isNaN(scheduled.getTime())) return 0; // guard: "Invalid Date" → NaN in fare math
-  const diffHours = (scheduled.getTime() - now.getTime()) / (1000 * 60 * 60);
-  if (diffHours < 2) return fare;
-  if (diffHours < 24) return fare * 0.5;
-  return 0;
-}
 
 // --- Haversine proximity check (500m threshold) ---
 function isDriverNearby(driverLat: number, driverLng: number, pickupLat: number, pickupLng: number): boolean {
@@ -370,6 +363,13 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       (req.body as { booking_type?: string; bookingType?: string }).booking_type ||
       (req.body as { booking_type?: string; bookingType?: string }).bookingType ||
       'now';
+
+    // La reserva sólo la paga un viaje programado, y eso lo decide el servidor
+    // por `scheduled_at` —ya validado arriba como fecha futura—, no el
+    // `booking_type` que manda el cliente, que podría omitirlo para no pagarla.
+    const fechaReserva = scheduledAt || scheduled_at;
+    const esReserva = !!fechaReserva && !isNaN(new Date(fechaReserva).getTime());
+    const bookingTypeTarifa = esReserva ? 'scheduled' : 'now';
     const requestedHours = Number(hourly_hours ?? hourlyHoursBody);
 
     let fareBreakdown: object | null = null;
@@ -380,6 +380,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       fareBreakdown = calculateHourlyFare({
         vehicleType: finalVehicleType,
         hours:       requestedHours,
+        bookingType: bookingTypeTarifa,
         surgeMultiplier,
       });
     } else if (typeof bodyMiles === 'number' && typeof bodyDuration === 'number') {
@@ -387,7 +388,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         vehicleType:     finalVehicleType,
         distanceMiles:   bodyMiles,
         durationMinutes: bodyDuration,
-        bookingType:     requestedBookingType,
+        bookingType:     bookingTypeTarifa,
         surgeMultiplier,
       });
     }

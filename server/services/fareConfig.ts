@@ -37,10 +37,17 @@ const LEGACY_CLASS_KEYS: Record<string, string> = {
 };
 
 /**
- * Normaliza una clase guardada. Tolera el esquema viejo del editor —`perKm` en
- * vez de `perMile`, `baseFare` en vez de `minFare`— y rellena con el default lo
- * que falte, de modo que una config parcial nunca deje un campo en `undefined`
- * y produzca un `NaN` en el precio.
+ * Normaliza una clase guardada y rellena con el default lo que falte, de modo que
+ * una config parcial nunca deje un campo en `undefined` y produzca un `NaN` en el
+ * precio.
+ *
+ * Tolera el esquema anterior a los tramos: si una config sólo trae el `perMile`
+ * de antes, se usa en los tres tramos. Y `baseFare` sigue valiendo por `minFare`.
+ *
+ * OJO con `waitPerMin`: en el esquema viejo del editor era un alias de `perMin`
+ * (tiempo de trayecto). Ahora es la tarifa de ESPERA, un concepto distinto, así
+ * que ya no se lee como `perMin`. En producción nunca hubo `fares_config`
+ * guardada, así que no hay datos viejos que malinterpretar.
  */
 function normalizeClass(key: string, raw: Record<string, unknown>): FareClass {
   const base = DEFAULT_FARE_CLASSES[key] ?? DEFAULT_FARE_CLASSES.sedan;
@@ -48,17 +55,19 @@ function normalizeClass(key: string, raw: Record<string, unknown>): FareClass {
     const n = typeof v === 'number' ? v : parseFloat(String(v));
     return Number.isFinite(n) && n >= 0 ? n : fallback;
   };
+  const perMileViejo = raw.perMile;
 
   return {
-    name:            typeof raw.name === 'string' && raw.name.trim() ? raw.name : base.name,
-    minFare:         num(raw.minFare ?? raw.baseFare, base.minFare),
-    includedMiles:   num(raw.includedMiles, base.includedMiles),
-    perMile:         num(raw.perMile, base.perMile),
-    perMin:          num(raw.perMin ?? raw.waitPerMin, base.perMin),
-    serviceFee:      num(raw.serviceFee, base.serviceFee),
-    cancellationFee: num(raw.cancellationFee, base.cancellationFee),
-    perHour:         num(raw.perHour, base.perHour),
-    minHours:        num(raw.minHours, base.minHours),
+    name:         typeof raw.name === 'string' && raw.name.trim() ? raw.name : base.name,
+    minFare:      num(raw.minFare ?? raw.baseFare, base.minFare),
+    perMileTier1: num(raw.perMileTier1 ?? perMileViejo, base.perMileTier1),
+    perMileTier2: num(raw.perMileTier2 ?? perMileViejo, base.perMileTier2),
+    perMileTier3: num(raw.perMileTier3 ?? perMileViejo, base.perMileTier3),
+    perMin:       num(raw.perMin, base.perMin),
+    waitPerMin:   num(raw.waitPerMin, base.waitPerMin),
+    serviceFee:   num(raw.serviceFee, base.serviceFee),
+    perHour:      num(raw.perHour, base.perHour),
+    minHours:     num(raw.minHours, base.minHours),
   };
 }
 

@@ -1,26 +1,53 @@
 /**
  * URBONT Pricing Configuration
- * All monetary values in USD. Change these to adjust prices without touching business logic.
- * Authoritative pricing: see VEHICLE_FARE_RULES below.
+ * All monetary values in USD.
+ *
+ * Tarifas acordadas con el cliente en `docs/relacion_tarifas.odt` y sus
+ * respuestas (plan en `docs/PLAN_TARIFAS_CLIENTE.md`). Los importes por clase
+ * son semilla y red: `fares_config` en la base manda sobre ellos, y se editan
+ * desde el panel. Las POLÍTICAS —minutos gratis, topes, umbrales de
+ * cancelación— son reglas de negocio y viven aquí.
  */
 
-// ── Platform fees ────────────────────────────────────────────────────────────
-export const BOOKING_FEE        = 2.50;    // Platform booking fee (always added) — must match frontend src/screens/booking/utils.ts
-export const PLATFORM_COMMISSION = 0.10;   // 10% URBONT app service fee on subtotal
+// ── Plataforma ───────────────────────────────────────────────────────────────
+export const PLATFORM_COMMISSION = 0.10;   // 10% URBONT sobre el subtotal
 
-// ── Uber-parity extra fees ───────────────────────────────────────────────────
-export const WAIT_TIME_FREE_MINUTES = 5;      // Free waiting period before meter starts
-export const WAIT_TIME_FEE_PER_MIN  = 0.50;  // $0.50 per minute after free period
+// ── Espera ───────────────────────────────────────────────────────────────────
+/** Minutos que el pasajero tiene para llegar al coche sin cargo. */
+export const WAIT_TIME_FREE_MINUTES = 5;
+/**
+ * Minutos de espera cobrables, como máximo. Antes el tope era 60: un pasajero que
+ * tardaba una hora pagaba 55 minutos. El cliente fija 10: pasado eso, el chofer
+ * puede cancelar por no-show.
+ */
+export const WAIT_TIME_MAX_BILLABLE_MINUTES = 10;
+
+// ── No-show ──────────────────────────────────────────────────────────────────
+/** Espera adicional, tras la gratis, antes de poder marcar no-show en un viaje a demanda. */
+export const NO_SHOW_EXTRA_WAIT_MINUTES = 10;
+/** En una reserva, minutos tras la hora pactada antes de poder marcar no-show. */
+export const SCHEDULED_NO_SHOW_AFTER_MINUTES = 30;
+
+// ── Cancelación de reservas por el pasajero ──────────────────────────────────
+/** Con al menos estas horas de antelación, cancelar una reserva es gratis. */
+export const SCHEDULED_CANCEL_FREE_HOURS = 2;
+/** Con al menos estas horas (y menos que las gratis), se cobra el 50 %. Por debajo, el 100 %. */
+export const SCHEDULED_CANCEL_HALF_HOURS = 1;
+
+// ── Otros cargos que se mantienen ────────────────────────────────────────────
 export const LONG_PICKUP_FEE        = 5.00;  // Added when driver is >15 min away from pickup
 export const LONG_PICKUP_THRESHOLD_MINS = 15; // Minutes threshold for long pickup fee
-export const NO_SHOW_FEE            = 10.00; // Charged to passenger if no-show after arrival
-export const CANCELLATION_FEE       = 10.00; // Late cancellation fee (after 2 min grace)
-export const CANCELLATION_GRACE_MINS = 2;    // Free cancellation window after driver assigned
 export const CONSECUTIVE_TRIP_BONUS: Record<number, number> = {
   5:  3.00,   // $3 bonus after 5 consecutive trips
   10: 7.00,   // $7 bonus after 10 consecutive trips
   20: 15.00,  // $15 bonus after 20 consecutive trips
 };
+
+// ── Tramos por milla ─────────────────────────────────────────────────────────
+/** Un viaje de hasta estas millas usa el tramo 1. */
+export const TIER1_MAX_MILES = 3;
+/** Un viaje de más del tramo 1 y hasta estas millas usa el tramo 2; por encima, el 3. */
+export const TIER2_MAX_MILES = 10;
 
 function r2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -82,27 +109,30 @@ export function getTimeSurge(now: Date = new Date()): number {
 /**
  * Una clase de vehículo con todo lo que se le puede cobrar.
  *
- * Antes esto vivía repartido en tres sitios que no se hablaban: `VEHICLE_FARE_RULES`
- * (lo que cobraba), `DEFAULT_FARES` en admin.ts (lo que el panel editaba, con
- * `businessClass` en vez de `sedan`) y `FARE_RULES`/`HOURLY_RATES` dentro del APK.
- * Los valores coincidían porque alguien los copió a mano en los tres lados.
+ * Hay un solo tipo, y `fares_config` en la base manda sobre estos valores, que
+ * quedan como semilla y como red si la base no responde.
  *
- * Ahora hay un solo tipo, y `fares_config` en la base manda sobre estos valores,
- * que quedan como semilla y como red si la base no responde.
+ * Cambió con las tarifas del cliente: el precio por milla ya no es uno solo más
+ * unas millas incluidas en la mínima, sino tres tramos según la distancia TOTAL
+ * del viaje; la espera tiene tarifa propia por clase; y `serviceFee` pasa a ser
+ * la reserva, que sólo pagan los viajes programados.
  */
 export interface FareClass {
   name:            string;
-  /** Tarifa mínima, cubre las millas incluidas. */
+  /** Lo mínimo que cuesta cualquier viaje. Es un piso, no se suma a la distancia. */
   minFare:         number;
-  includedMiles:   number;
-  /** Precio por milla pasadas las incluidas. */
-  perMile:         number;
-  /** Precio por minuto de espera o tráfico. Se llamaba `waitPerMin`. */
+  /** Por milla en un viaje de hasta TIER1_MAX_MILES. */
+  perMileTier1:    number;
+  /** Por milla en un viaje de más de TIER1_MAX_MILES y hasta TIER2_MAX_MILES. */
+  perMileTier2:    number;
+  /** Por milla en un viaje de más de TIER2_MAX_MILES. */
+  perMileTier3:    number;
+  /** Por minuto de trayecto (tráfico), aplicado al 25 % de la duración estimada. */
   perMin:          number;
-  /** Cargo fijo de reserva. Era la constante global BOOKING_FEE. */
+  /** Por minuto de espera, pasados los gratis y hasta el tope. */
+  waitPerMin:      number;
+  /** Reserva. Sólo la pagan los viajes programados y nunca lleva recargo. */
   serviceFee:      number;
-  /** Penalización por cancelar tarde. Era la constante global CANCELLATION_FEE. */
-  cancellationFee: number;
   /** Chofer a disposición: precio por hora y bloque mínimo. */
   perHour:         number;
   minHours:        number;
@@ -110,9 +140,9 @@ export interface FareClass {
 
 /** Valores por defecto. Los pisa `fares_config` cuando existe en la base. */
 export const DEFAULT_FARE_CLASSES: Record<string, FareClass> = {
-  sedan: { name: 'Standard (Sedan)', minFare: 25.00, includedMiles: 3, perMile: 4.00, perMin: 1.00, serviceFee: 2.50, cancellationFee: 10.00, perHour: 110.00, minHours: 2 },
-  suv:   { name: 'Premier (SUV)',    minFare: 38.00, includedMiles: 3, perMile: 5.50, perMin: 1.25, serviceFee: 2.50, cancellationFee: 10.00, perHour: 145.00, minHours: 2 },
-  van:   { name: 'Executive Van',    minFare: 65.00, includedMiles: 3, perMile: 8.00, perMin: 1.75, serviceFee: 2.50, cancellationFee: 10.00, perHour: 185.00, minHours: 2 },
+  sedan: { name: 'Standard (Sedan)', minFare: 17.00, perMileTier1: 2.90, perMileTier2: 3.00, perMileTier3: 2.50, perMin: 1.00, waitPerMin: 0.75, serviceFee: 10.00, perHour: 110.00, minHours: 2 },
+  suv:   { name: 'Premier (SUV)',    minFare: 22.00, perMileTier1: 3.50, perMileTier2: 3.50, perMileTier3: 3.00, perMin: 1.25, waitPerMin: 1.00, serviceFee: 15.00, perHour: 145.00, minHours: 2 },
+  van:   { name: 'Executive Van',    minFare: 27.00, perMileTier1: 3.75, perMileTier2: 4.00, perMileTier3: 3.50, perMin: 1.75, waitPerMin: 1.25, serviceFee: 20.00, perHour: 185.00, minHours: 2 },
 };
 
 /**
@@ -147,12 +177,6 @@ export function getFareClass(vehicleType: string): FareClass | null {
   return key ? (activeFareClasses[key] ?? null) : null;
 }
 
-/** Penalización por cancelar tarde, según la clase. Cae al global si no la resuelve. */
-export function getCancellationFee(vehicleType?: string): number {
-  const cls = vehicleType ? getFareClass(vehicleType) : null;
-  return cls?.cancellationFee ?? CANCELLATION_FEE;
-}
-
 // Normalized alias map: vehicle names/IDs that the server may receive → canonical FARE_RULES key
 export const VEHICLE_ALIAS: Record<string, string> = {
   'sedan':         'sedan',
@@ -169,17 +193,62 @@ export const VEHICLE_ALIAS: Record<string, string> = {
   'max':           'van',
 };
 
+/** ¿Es un viaje programado? Es lo único que decide si se cobra la reserva. */
+export function esProgramado(bookingType?: string | null): boolean {
+  return bookingType === 'scheduled';
+}
+
+// ── Distancia por tramos ─────────────────────────────────────────────────────
+export type MileTier = 1 | 2 | 3;
+
+/** El tramo del viaje según su distancia total, y la tarifa por milla que le toca. */
+export function tramoPorMilla(rule: FareClass, miles: number): { tier: MileTier; perMile: number } {
+  const d = Math.max(0, miles);
+  if (d <= TIER1_MAX_MILES) return { tier: 1, perMile: rule.perMileTier1 };
+  if (d <= TIER2_MAX_MILES) return { tier: 2, perMile: rule.perMileTier2 };
+  return { tier: 3, perMile: rule.perMileTier3 };
+}
+
+/**
+ * Importe por distancia: millas × tarifa del tramo al que pertenece el viaje
+ * COMPLETO (así lo definió el cliente).
+ *
+ * Cobrar todo el viaje al tramo final tiene una trampa: si el tramo siguiente es
+ * más barato, un viaje un poco más largo sale más barato. Con las tarifas del
+ * cliente, un sedan de 11 mi (11 × $2.50 = $27.50) costaría menos que uno de 10
+ * (10 × $3.00 = $30). Por eso el importe nunca baja de lo que cuesta el viaje
+ * más largo del tramo anterior: se toma el máximo entre el cálculo del tramo y
+ * el importe en cada límite ya superado. El precio queda no decreciente con la
+ * distancia sean cuales sean las tarifas que se carguen desde el panel.
+ */
+export function calcularImporteDistancia(rule: FareClass, miles: number): number {
+  const d = Math.max(0, miles);
+  const { perMile } = tramoPorMilla(rule, d);
+  let importe = d * perMile;
+  if (d > TIER1_MAX_MILES) importe = Math.max(importe, TIER1_MAX_MILES * rule.perMileTier1);
+  if (d > TIER2_MAX_MILES) importe = Math.max(importe, TIER2_MAX_MILES * rule.perMileTier2);
+  return importe;
+}
+
 export interface FareRulesBreakdown {
+  /** Tarifa mínima de la clase, con recargo. */
   base_fare:        number;
+  /** Lo que la distancia supera a la mínima, con recargo. base_fare + distance_charge = lo que cuesta el recorrido. */
   distance_charge:  number;
   time_charge:      number;
+  /** Reserva. 0 salvo en viajes programados. */
   booking_fee:      number;
   ride_fare:        number;
   platform_fee:     number;
   total:            number;
-  /** Recargo aplicado a base, distancia y espera. 1.0 = sin recargo. */
+  /** Recargo aplicado a base, distancia y tiempo. 1.0 = sin recargo. */
   surge_multiplier: number;
   distance_miles:   number;
+  /** Tarifa por milla aplicada al viaje, según su tramo. */
+  per_mile:         number;
+  /** Tramo del viaje: 1 (≤ 3 mi), 2 (≤ 10 mi) o 3 (> 10 mi). */
+  tier:             MileTier;
+  /** Heredados: se mantienen para no romper la app. Ya no hay millas incluidas. */
   extra_miles:      number;
   included_miles:   number;
   duration_minutes: number;
@@ -187,8 +256,17 @@ export interface FareRulesBreakdown {
 }
 
 /**
- * Calculate fare using the FARE_RULES model — matches frontend calculateFareBreakdown exactly.
- * Use this for all receipt/breakdown storage to ensure consistency with what was shown to the user.
+ * Precio de un viaje por distancia.
+ *
+ *   1. distancia = calcularImporteDistancia (tramo final, sin saltos a la baja)
+ *   2. base      = máx(tarifa mínima, distancia) × recargo
+ *   3. tiempo    = duración × perMin × 0.25 × recargo
+ *   4. reserva   = serviceFee, sólo si es programado, sin recargo
+ *   5. total     = (base + tiempo + reserva) × 1.10
+ *
+ * La forma de la respuesta es la de siempre, para no romper la app: `base_fare`
+ * es la mínima y `distance_charge` lo que la distancia la supera, así que la
+ * suma sigue dando el importe del recorrido.
  */
 export function calculateFareFromRules(opts: {
   vehicleType:      string;
@@ -201,29 +279,30 @@ export function calculateFareFromRules(opts: {
   const rule = getFareClass(opts.vehicleType);
   if (!rule) return null;
 
-  // El surge multiplica base, distancia y espera — NUNCA los cargos fijos.
-  // Antes esta función no recibía surge y no lo aplicaba en ningún término: la
-  // app mostraba un precio con recargo, el servidor recalculaba sin él y pisaba
-  // el valor, así que las noches de viernes y sábado se cobraba de menos.
-  const surge          = Math.max(1, opts.surgeMultiplier ?? 1);
-  const extraMiles     = Math.max(0, opts.distanceMiles - rule.includedMiles);
-  const base_fare      = r2(rule.minFare * surge);
-  const distance_charge = r2(extraMiles * rule.perMile * surge);
-  // Time charge: duration × perMin × 0.25 (matches frontend 25% factor for estimated time)
-  const time_charge    = opts.durationMinutes > 0 ? r2(opts.durationMinutes * rule.perMin * 0.25 * surge) : 0;
-  const schedulingFee  = opts.bookingType === 'scheduled' ? 5.00 : 0;
-  const booking_fee    = r2(rule.serviceFee + schedulingFee);
-  const ride_fare      = r2(base_fare + distance_charge + time_charge + booking_fee);
-  const platform_fee   = r2(ride_fare * PLATFORM_COMMISSION);
-  const total          = r2(ride_fare + platform_fee);
+  // El surge multiplica base, distancia y tiempo — NUNCA la reserva.
+  const surge           = Math.max(1, opts.surgeMultiplier ?? 1);
+  const miles           = Math.max(0, opts.distanceMiles);
+  const { tier, perMile } = tramoPorMilla(rule, miles);
+  const importeDistancia = calcularImporteDistancia(rule, miles);
+
+  const base_fare       = r2(rule.minFare * surge);
+  const distance_charge = r2(Math.max(0, importeDistancia - rule.minFare) * surge);
+  // Tiempo de trayecto: duración × perMin × 0.25 (el mismo factor del 25 % de siempre)
+  const time_charge     = opts.durationMinutes > 0 ? r2(opts.durationMinutes * rule.perMin * 0.25 * surge) : 0;
+  const booking_fee     = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;
+  const ride_fare       = r2(base_fare + distance_charge + time_charge + booking_fee);
+  const platform_fee    = r2(ride_fare * PLATFORM_COMMISSION);
+  const total           = r2(ride_fare + platform_fee);
 
   return {
     base_fare, distance_charge, time_charge, booking_fee,
     ride_fare, platform_fee, total,
     surge_multiplier: surge,
-    distance_miles:   r2(opts.distanceMiles),
-    extra_miles:      r2(extraMiles),
-    included_miles:   rule.includedMiles,
+    distance_miles:   r2(miles),
+    per_mile:         perMile,
+    tier,
+    extra_miles:      r2(miles),
+    included_miles:   0,
     duration_minutes: r2(opts.durationMinutes),
     currency: 'USD',
   };
@@ -245,11 +324,11 @@ export interface HourlyFareBreakdown {
 }
 
 /**
- * Tarifa por hora (chofer a disposición). Portado de
- * `calculateHourlyFareBreakdown` de la app móvil — anexo A.3.
+ * Tarifa por hora (chofer a disposición).
  *
  * Misma estructura que la tarifa por distancia: el surge multiplica el cargo
- * variable y nunca el fijo, y la comisión se calcula sobre el subtotal.
+ * variable y nunca el fijo, la comisión se calcula sobre el subtotal, y la
+ * reserva sólo se cobra si el servicio es programado.
  *
  * Se cobra siempre el mínimo de la clase, aunque se pidan menos horas: es un
  * bloque reservado, no un consumo medido.
@@ -257,6 +336,7 @@ export interface HourlyFareBreakdown {
 export function calculateHourlyFare(opts: {
   vehicleType:      string;
   hours:            number;
+  bookingType?:     string;
   surgeMultiplier?: number;
 }): HourlyFareBreakdown | null {
   const rule = getFareClass(opts.vehicleType);
@@ -266,7 +346,7 @@ export function calculateHourlyFare(opts: {
   const surge         = Math.max(1, opts.surgeMultiplier ?? 1);
   const billedHours   = Math.max(rule.minHours, opts.hours);
   const hourly_charge = r2(billedHours * rule.perHour * surge);
-  const booking_fee   = r2(rule.serviceFee);   // sin recargo, igual que por distancia
+  const booking_fee   = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;
   const ride_fare     = r2(hourly_charge + booking_fee);
   const platform_fee  = r2(ride_fare * PLATFORM_COMMISSION);
   const total         = r2(ride_fare + platform_fee);
@@ -279,6 +359,92 @@ export function calculateHourlyFare(opts: {
     per_hour:         rule.perHour,
     min_hours:        rule.minHours,
     currency: 'USD',
+  };
+}
+
+// ── Espera, no-show y cancelación ────────────────────────────────────────────
+
+/**
+ * Cargo por espera en la recogida.
+ *
+ * Se cobran los minutos completos pasados los gratis, con tope. Se redondea hacia
+ * abajo: el pasajero paga por minuto entero, no por fracción. Los viajes de
+ * valet nunca pagan espera (lo marca quien llama, con `esValet`).
+ */
+export function calcularCargoEspera(
+  vehicleType: string,
+  waitMinutes: number,
+  esValet = false,
+): { billableMinutes: number; fee: number } {
+  const rule = getFareClass(vehicleType);
+  if (!rule || esValet || !Number.isFinite(waitMinutes)) return { billableMinutes: 0, fee: 0 };
+  const billableMinutes = Math.min(
+    WAIT_TIME_MAX_BILLABLE_MINUTES,
+    Math.max(0, Math.floor(waitMinutes - WAIT_TIME_FREE_MINUTES)),
+  );
+  return { billableMinutes, fee: r2(billableMinutes * rule.waitPerMin) };
+}
+
+/** Minutos que tiene que haber esperado el chofer para marcar no-show en un viaje a demanda. */
+export function minutosParaNoShowDemanda(): number {
+  return WAIT_TIME_FREE_MINUTES + NO_SHOW_EXTRA_WAIT_MINUTES;
+}
+
+/**
+ * Cargo por no-show en un viaje a demanda: los minutos de espera adicionales a
+ * la tarifa de espera de la clase, más el 10 % del total del viaje.
+ */
+export function calcularNoShowDemanda(vehicleType: string, totalViaje: number, esValet = false): number {
+  const rule = getFareClass(vehicleType);
+  if (!rule || esValet) return 0;
+  const total = Number.isFinite(totalViaje) && totalViaje > 0 ? totalViaje : 0;
+  return r2(NO_SHOW_EXTRA_WAIT_MINUTES * rule.waitPerMin + total * PLATFORM_COMMISSION);
+}
+
+/**
+ * Cargo al pasajero por cancelar una reserva, según la antelación.
+ *
+ *   ≥ 2 h antes  → gratis
+ *   ≥ 1 h antes  → 50 %
+ *   < 1 h        → 100 %
+ */
+export function calcularCancelacionReserva(
+  horasAntes: number,
+  totalViaje: number,
+  esValet = false,
+): { porcentaje: 0 | 0.5 | 1; fee: number } {
+  if (esValet || !Number.isFinite(horasAntes)) return { porcentaje: 0, fee: 0 };
+  const total = Number.isFinite(totalViaje) && totalViaje > 0 ? totalViaje : 0;
+  const porcentaje: 0 | 0.5 | 1 =
+    horasAntes >= SCHEDULED_CANCEL_FREE_HOURS ? 0
+    : horasAntes >= SCHEDULED_CANCEL_HALF_HOURS ? 0.5
+    : 1;
+  return { porcentaje, fee: r2(total * porcentaje) };
+}
+
+/** Las políticas en un solo objeto, para publicarlas a la app y al panel. */
+export function getPricingPolicy() {
+  return {
+    currency: 'USD',
+    platformCommission: PLATFORM_COMMISSION,
+    mileTiers: { tier1MaxMiles: TIER1_MAX_MILES, tier2MaxMiles: TIER2_MAX_MILES },
+    wait: {
+      freeMinutes: WAIT_TIME_FREE_MINUTES,
+      maxBillableMinutes: WAIT_TIME_MAX_BILLABLE_MINUTES,
+    },
+    noShow: {
+      onDemandAfterMinutes: minutosParaNoShowDemanda(),
+      scheduledAfterMinutes: SCHEDULED_NO_SHOW_AFTER_MINUTES,
+    },
+    scheduledCancellation: {
+      freeHoursBefore: SCHEDULED_CANCEL_FREE_HOURS,
+      halfChargeHoursBefore: SCHEDULED_CANCEL_HALF_HOURS,
+    },
+    onDemandCancellationFee: 0,
+    bookingFeeAppliesTo: 'scheduled',
+    valetExempt: true,
+    longPickupFee: LONG_PICKUP_FEE,
+    longPickupThresholdMinutes: LONG_PICKUP_THRESHOLD_MINS,
   };
 }
 

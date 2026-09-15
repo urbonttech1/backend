@@ -9,11 +9,11 @@ import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
   calculateFareFromRules,
-  WAIT_TIME_FREE_MINUTES, WAIT_TIME_FEE_PER_MIN,
+  calcularCargoEspera,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
-  NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
 } from "../../config/pricing";
+import { pagarChoferPorViaje } from "../../services/ridePayout";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -196,7 +196,7 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
 
     // Fetch ride to validate ownership and current state
     const { data: ride, error: fetchErr } = await supabaseAdmin.from('rides')
-      .select('passenger_id, driver_id, ride_status, payment_intent_id, fare, locked_fare, wait_started_at, started_at, accepted_at, pickup_pin')
+      .select('passenger_id, driver_id, ride_status, payment_intent_id, fare, locked_fare, wait_started_at, started_at, accepted_at, pickup_pin, vehicle_type, scheduled_at, dispatched_by_valet')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -304,15 +304,26 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       // viaje terminado que nunca empezó. Se sella aquí como respaldo.
       if (!(r as Record<string, unknown>).started_at) updates.started_at = now;
 
-      // Wait time fee: charge $0.50/min after 5 free minutes
+      // Cargo por espera: tarifa de la clase, con minutos gratis y tope.
+      //
+      // Antes eran $0.50 por minuto para todas las clases y con tope de 60 min.
+      // En una reserva la espera empieza a la hora pactada aunque el chofer
+      // llegue antes: llegar temprano no puede costarle al pasajero. Los viajes
+      // de valet no pagan espera.
       const rideData = r as Record<string, unknown>;
       if (rideData.wait_started_at) {
-        const waitStart = new Date(rideData.wait_started_at as string).getTime();
+        let waitStart = new Date(rideData.wait_started_at as string).getTime();
+        const horaReserva = rideData.scheduled_at ? new Date(rideData.scheduled_at as string).getTime() : NaN;
+        if (Number.isFinite(horaReserva)) waitStart = Math.max(waitStart, horaReserva);
         const startedAt = rideData.started_at ? new Date(rideData.started_at as string).getTime() : Date.now();
         const waitMinutes = (startedAt - waitStart) / 60000;
-        const billableMinutes = Math.min(60, Math.max(0, waitMinutes - WAIT_TIME_FREE_MINUTES)); // cap: 60 min max
-        if (billableMinutes > 0) {
-          waitFeeAdded = Math.round(billableMinutes * WAIT_TIME_FEE_PER_MIN * 100) / 100;
+        const { fee } = calcularCargoEspera(
+          String(rideData.vehicle_type || 'sedan'),
+          waitMinutes,
+          rideData.dispatched_by_valet === true,
+        );
+        if (fee > 0) {
+          waitFeeAdded = fee;
           updates.wait_fee = waitFeeAdded;
         }
       }
@@ -432,83 +443,16 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
 
           // Distribute driver payout and valet commission once payment is settled
           if (pi.status === 'succeeded') {
-            const capturedAmountCents = pi.amount_received ?? pi.amount;
-            const fareUSD = capturedAmountCents / 100;
-            const metrics = calculateRideMetrics({ totalFareUSD: Math.max(1, fareUSD) });
-            const driverPayoutUSD = metrics.driverPayoutCents / 100;
-            const platformFeeUSD = metrics.applicationFeeCents / 100;
+            // El pago al chofer vive en services/ridePayout.ts: lo usa también el
+            // no-show de reservas, que paga al chofer lo acordado.
             const assignedDriverId = String(r.driver_id || updates.driver_id || (isDriver ? uid : ''));
-
-            let driverTransferId: string | null = null;
-            if (assignedDriverId) {
-              const { data: driverProfile } = await supabaseAdmin
-                .from('profiles')
-                .select('stripe_account_id, stripe_connect_status')
-                .eq('id', assignedDriverId)
-                .maybeSingle();
-
-              const driverAccountId = driverProfile?.stripe_account_id;
-              const isConnectActive = driverProfile?.stripe_connect_status === 'active';
-
-              if (driverAccountId && isConnectActive) {
-                try {
-                  const latestCharge = typeof pi.latest_charge === 'string' ? pi.latest_charge : undefined;
-                  const transfer = await stripe.transfers.create({
-                    amount: metrics.driverPayoutCents,
-                    currency: 'usd',
-                    destination: driverAccountId,
-                    source_transaction: latestCharge,
-                    description: `Driver payout (90%) for completed ride ${req.params.id}`,
-                    metadata: {
-                      ride_id: req.params.id,
-                      driver_id: assignedDriverId,
-                      type: 'driver_ride_payout',
-                      total_fare_cents: String(metrics.totalCents),
-                      driver_payout_cents: String(metrics.driverPayoutCents),
-                      platform_fee_cents: String(metrics.applicationFeeCents),
-                    },
-                  }, {
-                    idempotencyKey: `driver_payout_${req.params.id}_${pi.id}`,
-                  });
-                  driverTransferId = transfer.id;
-                  logger.info(`[RIDES] Dispersed driver payout $${driverPayoutUSD} (90%) to ${driverAccountId} (transfer: ${transfer.id}) for ride ${req.params.id}`);
-                } catch (transferErr: unknown) {
-                  logger.error(`[RIDES] Failed to transfer driver payout for ride ${req.params.id}: ${errMsg(transferErr)}`);
-                }
-              } else {
-                logger.warn(`[RIDES] Driver ${assignedDriverId} has no active Stripe Connect account (status: ${driverProfile?.stripe_connect_status || 'not_connected'}). Payout of $${driverPayoutUSD} logged as pending.`);
-              }
-            }
-
-            // Always update ride record with financial breakdown and transfer ID.
-            //
-            // `payment_status` used to be written only by the Stripe webhook, so a
-            // webhook that never arrived left a charged ride marked 'pending'
-            // forever. The capture already succeeded here, so record it now; the
-            // webhook writing 'paid' again later is harmless.
-            //
-            // `total_price` had no writer anywhere in the codebase — this is what
-            // was actually charged, tip and fees included.
-            // `driver_earnings` es lo que le corresponde al chofer, se haya
-            // transferido o no. Nunca se escribía —la columna ni siquiera existía—
-            // y el webhook `account.updated` la usa para encontrar los pagos
-            // pendientes: busca viajes completados con `driver_earnings > 0` y
-            // `stripe_transfer_id` nulo, para transferirlos cuando el chofer
-            // termina de activar su cuenta de Stripe Connect.
-            //
-            // Sin este campo esa búsqueda no devolvía nada nunca, y el dinero de
-            // un chofer que se conectaba tarde no se le enviaba jamás.
-            const { error: finErr } = await supabaseAdmin.from('rides').update({
-              payment_status: 'paid',
-              total_price: Math.round(fareUSD * 100) / 100,
-              platform_fee_amount: platformFeeUSD,
-              driver_earnings: driverPayoutUSD,
-              ...(driverTransferId ? { stripe_transfer_id: driverTransferId } : {}),
-              updated_at: new Date().toISOString(),
-            }).eq('id', req.params.id);
-            if (finErr) {
-              logger.error(`[RIDES] Could not persist payment outcome for ride ${req.params.id}: ${finErr.message}`);
-            }
+            await pagarChoferPorViaje({
+              stripe,
+              pi,
+              rideId:   req.params.id,
+              driverId: assignedDriverId,
+              concepto: 'completed ride',
+            });
 
             // Valet commission: if ride was referred/assisted by a valet and hasn't been paid yet
             const valetUserId = (r as Record<string, unknown>).valet_user_id as string | undefined;

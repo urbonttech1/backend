@@ -8,9 +8,7 @@ import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
   calculateFareFromRules,
-  WAIT_TIME_FREE_MINUTES, WAIT_TIME_FEE_PER_MIN,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
-  NO_SHOW_FEE, CANCELLATION_FEE, CANCELLATION_GRACE_MINS,
   CONSECUTIVE_TRIP_BONUS,
 } from "../../config/pricing";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
@@ -168,7 +166,7 @@ router.post('/:id/change-destination', requireSupabaseAuth, async (req: Request,
   try {
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('passenger_id, driver_id, ride_status, fare, locked_fare, vehicle_type, surge_multiplier, pickup_lat, pickup_lng')
+      .select('passenger_id, driver_id, ride_status, fare, locked_fare, vehicle_type, surge_multiplier, pickup_lat, pickup_lng, scheduled_at')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -188,6 +186,8 @@ router.post('/:id/change-destination', requireSupabaseAuth, async (req: Request,
         vehicleType:     String(r.vehicle_type || 'sedan'),
         distanceMiles,
         durationMinutes,
+        // Una reserva conserva su cargo de reserva al cambiar de destino.
+        bookingType:     r.scheduled_at ? 'scheduled' : undefined,
       });
       newFare = newBreakdown?.total ?? newFare;
     }
