@@ -15,7 +15,9 @@ const TABLE = 'driver_ride_events';
 type EventInsert = {
   ride_id: string;
   driver_id: string;
-  event: DriverRideEventType;
+  // `rejected` se guarda para medir la aceptación por viaje, pero no forma parte
+  // del historial del conductor: sus lectores filtran por los otros eventos.
+  event: DriverRideEventType | 'rejected';
   reason?: string | null;
   metadata?: Record<string, unknown>;
 };
@@ -49,6 +51,15 @@ export function recordDriverRelease(
 ): void {
   if (!rideId || !driverId) return;
   guardar([{ ride_id: rideId, driver_id: driverId, event, reason }], { rideId, driverId, event });
+}
+
+/**
+ * Un conductor rechazó la oferta de un viaje. Alimenta la tasa de aceptación de
+ * `/api/drivers/stats`; no aparece en su historial.
+ */
+export function recordRideRejection(rideId: string, driverId: string): void {
+  if (!rideId || !driverId) return;
+  guardar([{ ride_id: rideId, driver_id: driverId, event: 'rejected' }], { rideId, driverId, event: 'rejected' });
 }
 
 // Columnas que `vistaDelConductor` necesita, se pidan o no en el select del llamador.
@@ -106,6 +117,46 @@ export async function loadDriverHistoryExtras(
     log.warn({ err: err instanceof Error ? err.message : String(err) }, 'driver history extras failed');
   }
   return resultado;
+}
+
+/** Un evento de decisión del conductor sobre un viaje. */
+export interface DriverDecisionRow {
+  ride_id: string;
+  driver_id: string;
+  event: 'driver_cancelled' | 'reassigned' | 'rejected';
+  reason: string | null;
+  created_at: string;
+}
+
+/**
+ * Lo que el conductor hizo con los viajes que no figuran a su nombre en `rides`,
+ * del más reciente al más antiguo: los que aceptó y después soltó —los canceló él
+ * o el sistema se los reasignó— y los que rechazó.
+ *
+ * Es lo único que queda de esos viajes. Uno cancelado antes de empezar vuelve a
+ * `searching` y pierde su driver_id; uno rechazado nunca lo tuvo. Alimenta las
+ * tasas de cancelación y aceptación de `/api/drivers/stats`.
+ *
+ * Nunca lanza: si la tabla no está disponible, lista vacía.
+ */
+export async function loadDriverDecisions(driverId: string, limit = 1000): Promise<DriverDecisionRow[]> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from(TABLE)
+      .select('ride_id, driver_id, event, reason, created_at')
+      .eq('driver_id', driverId)
+      .in('event', ['driver_cancelled', 'reassigned', 'rejected'])
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) {
+      log.warn({ err: error.message, driverId }, 'driver ride events unavailable');
+      return [];
+    }
+    return (data ?? []) as DriverDecisionRow[];
+  } catch (err: unknown) {
+    log.warn({ driverId, err: err instanceof Error ? err.message : String(err) }, 'driver releases failed');
+    return [];
+  }
 }
 
 /**

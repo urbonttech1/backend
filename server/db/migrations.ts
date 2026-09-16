@@ -1264,7 +1264,7 @@ export async function runMigrations() {
         id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         ride_id    UUID NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
         driver_id  UUID NOT NULL,
-        event      VARCHAR(30) NOT NULL CHECK (event IN ('offered', 'driver_cancelled', 'reassigned')),
+        event      VARCHAR(30) NOT NULL CHECK (event IN ('offered', 'driver_cancelled', 'reassigned', 'rejected')),
         reason     TEXT,
         metadata   JSONB DEFAULT '{}',
         created_at TIMESTAMPTZ DEFAULT NOW()
@@ -1272,6 +1272,31 @@ export async function runMigrations() {
     `);
     await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS uq_driver_ride_events ON driver_ride_events (ride_id, driver_id, event)`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_driver_ride_events_driver ON driver_ride_events (driver_id, created_at DESC)`);
+
+    // `rejected`: el conductor rechazó la oferta. Hace falta para medir la
+    // aceptación por viaje —aceptadas ÷ (aceptadas + rechazadas)—. La restricción
+    // original no lo admitía, y en las bases que ya tenían la tabla el CREATE de
+    // arriba no hace nada: se reemplaza aquí. Sólo amplía los valores permitidos.
+    try {
+      await client.query(`
+        DO $$
+        DECLARE c text;
+        BEGIN
+          FOR c IN
+            SELECT conname FROM pg_constraint
+             WHERE conrelid = 'driver_ride_events'::regclass
+               AND contype = 'c'
+               AND pg_get_constraintdef(oid) ILIKE '%event%'
+          LOOP
+            EXECUTE format('ALTER TABLE driver_ride_events DROP CONSTRAINT %I', c);
+          END LOOP;
+          ALTER TABLE driver_ride_events ADD CONSTRAINT driver_ride_events_event_check
+            CHECK (event IN ('offered', 'driver_cancelled', 'reassigned', 'rejected'));
+        END $$;
+      `);
+    } catch (err) {
+      logger.warn(`[Migrations] driver_ride_events: no se pudo admitir el evento 'rejected': ${(err as Error).message}`);
+    }
 
     // NOTA — `find_nearby_drivers` sigue rota: referencia
     // `driver_locations.location`, una columna GEOGRAPHY que nunca se creó, así

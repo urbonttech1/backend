@@ -80,30 +80,42 @@ export interface DocMeta {
   expires:  boolean;
 }
 
+/*
+ * Nombres, ayudas y categorías iguales a los del alta web
+ * (websitev2/src/lib/driver-documents.ts), que son los acordados con el cliente.
+ * Antes aquí seguían los anteriores —«Personal Auto Insurance», «TNC / Chauffeur
+ * Permit»—, y la app, que lee de este catálogo, llamaba a un mismo documento de
+ * forma distinta que la web. Si se cambia un nombre, hay que cambiarlo en los dos.
+ *
+ * `defensiveDriving` no está en la web: ya no se le pide a nadie nuevo, pero
+ * sigue en el esquema del alta móvil y conserva su nombre.
+ */
 export const DOC_CATALOG: Record<string, Omit<DocMeta, 'key'>> = {
-  // Los once del alta móvil
-  license:             { label: "Driver's License",           category: 'Personal Identity',       hint: 'Front & back, clearly visible',            expires: true  },
-  photo:               { label: 'Profile Photo',              category: 'Personal Identity',       hint: 'Professional headshot, no sunglasses',     expires: false },
-  bgCheck:             { label: 'Background Check Consent',   category: 'Personal Identity',       hint: 'Signed authorization form',                expires: false },
-  registration:        { label: 'Vehicle Registration',       category: 'Vehicle Documents',       hint: 'Proof of ownership, must match vehicle',   expires: true  },
-  insurance:           { label: 'Personal Auto Insurance',    category: 'Vehicle Documents',       hint: 'Current policy, state minimum',            expires: true  },
-  commercialInsurance: { label: 'Commercial Auto Insurance',  category: 'Vehicle Documents',       hint: 'Required for TNC operations',              expires: true  },
-  inspection:          { label: 'Vehicle Inspection',         category: 'Vehicle Documents',       hint: 'Annual safety inspection certificate',     expires: true  },
-  tncPermit:           { label: 'TNC / Chauffeur Permit',     category: 'Professional Credentials',hint: 'State or local authority permit',          expires: true  },
-  defensiveDriving:    { label: 'Defensive Driving Cert.',    category: 'Professional Credentials',hint: 'Completed within last 3 years',            expires: true  },
-  w9:                  { label: 'Tax Form W-9',               category: 'Legal & Compliance',      hint: 'Required for IRS reporting',               expires: false },
-  drugTest:            { label: 'Drug Test Results',          category: 'Legal & Compliance',      hint: '10-panel test, within 30 days',            expires: true  },
+  // Identidad
+  license:             { label: "Driver's License",                   category: 'Personal Identity',        hint: 'Front & back, clearly visible',              expires: true  },
+  photo:               { label: 'Profile Photo',                      category: 'Personal Identity',        hint: 'Professional headshot, no sunglasses',       expires: false },
+  bgCheck:             { label: 'Background Check Consent',           category: 'Personal Identity',        hint: 'Signed authorization form',                  expires: false },
 
-  // Permisos de condado — esquema de limusina y signup web
-  limoPermit:          { label: 'Limousine Sticker',          category: 'Local Permits',           hint: 'Miami-Dade limousine sticker',             expires: true  },
-  airportPermit:       { label: 'Airport Permit',             category: 'Local Permits',           hint: 'MIA airport access permit',                expires: true  },
-  portPermit:          { label: 'Port Permit',                category: 'Local Permits',           hint: 'Port of Miami access permit',              expires: true  },
+  // Vehículo, incluidos los permisos de condado
+  registration:        { label: 'Vehicle Registration',               category: 'Vehicle Documents',        hint: 'Proof of ownership, must match vehicle',     expires: true  },
+  insurance:           { label: 'Auto Insurance Identification Card', category: 'Vehicle Documents',        hint: 'Current card, FL state minimum',             expires: true  },
+  commercialInsurance: { label: 'Commercial Auto Insurance',          category: 'Vehicle Documents',        hint: 'Required for TNC operations in FL',          expires: true  },
+  inspection:          { label: 'Vehicle Inspection',                 category: 'Vehicle Documents',        hint: 'Annual safety inspection certificate',       expires: true  },
+  airportPermit:       { label: 'Miami-Dade Airport Permit',          category: 'Vehicle Documents',        hint: 'Required to pick up at MIA',                 expires: true  },
+  portPermit:          { label: 'Port of Miami Permit',               category: 'Vehicle Documents',        hint: 'Required to pick up at PortMiami',           expires: true  },
+  limoPermit:          { label: 'Miami-Dade Limousine Sticker',       category: 'Vehicle Documents',        hint: 'Current county limousine decal',             expires: true  },
 
-  // Empresa
-  corpFiles:           { label: 'Company Documents',          category: 'Legal & Compliance',      hint: 'Incorporation or LLC filing',              expires: false },
-  taxId:               { label: 'Tax ID',                     category: 'Legal & Compliance',      hint: 'EIN or equivalent',                        expires: false },
-  businessTaxes:       { label: 'Business Tax Filing',        category: 'Legal & Compliance',      hint: 'Most recent filing',                       expires: false },
-  backgroundCheck:     { label: 'Background Check Report',    category: 'Personal Identity',       hint: 'Third-party report',                       expires: true  },
+  // Credenciales profesionales
+  tncPermit:           { label: 'Chauffeur License',                  category: 'Professional Credentials', hint: 'Miami-Dade County, current',                 expires: true  },
+  defensiveDriving:    { label: 'Defensive Driving Cert.',            category: 'Professional Credentials', hint: 'Completed within last 3 years',              expires: true  },
+
+  // Legal y empresa
+  w9:                  { label: 'Tax Form W-9',                       category: 'Legal & Compliance',       hint: 'Required for IRS reporting',                 expires: false },
+  businessTaxes:       { label: 'Local Business Taxes',               category: 'Legal & Compliance',       hint: 'Most recent business tax return',            expires: false },
+  corpFiles:           { label: 'Corporation Certificate',            category: 'Legal & Compliance',       hint: 'Certificate of incorporation',               expires: false },
+  taxId:               { label: 'Corporation Tax ID',                 category: 'Legal & Compliance',       hint: 'EIN confirmation letter from the IRS',       expires: false },
+  drugTest:            { label: 'Drug Test Results',                  category: 'Legal & Compliance',       hint: 'FMCSA 10-panel test, within 30 days',        expires: true  },
+  backgroundCheck:     { label: 'Background Check',                   category: 'Legal & Compliance',       hint: 'Completed report from an approved provider', expires: true  },
 };
 
 /**

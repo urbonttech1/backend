@@ -12,6 +12,8 @@ import {
 import { notifyUser } from "../services/fcm";
 import { puedeOperar } from "../services/driverVerification";
 import { driverNotif } from "../services/notificationTemplates";
+import { loadDriverDecisions, recordRideRejection } from "../services/driverRideHistory";
+import { tasaDeAceptacion, tasaDeCancelacion, valoracionMedia } from "../services/driverPerformance";
 
 // Streak milestones that deserve a push notification
 const STREAK_MILESTONES = new Set([3, 5, 7, 10, 14, 21, 30]);
@@ -391,6 +393,9 @@ driverRouter.post('/reject-ride', requireSupabaseAuth, async (req: Request, res:
   try {
     const { rideId } = req.body as { rideId?: string }; // FIX: read rideId for rejection attribution/metrics
     const result = await applyRejectionPenalty(driverId!);
+    // Por viaje, para la tasa de aceptación de /stats. Sin rideId no hay a qué
+    // asociarlo: la penalización se aplica igual, pero el rechazo no cuenta.
+    if (rideId) recordRideRejection(rideId, driverId!);
     log.warn({ driverId, rideId: rideId ?? null, ...result }, 'driver rejected ride');
     res.json(result);
   } catch (err: any) {
@@ -626,21 +631,22 @@ driverRouter.get('/stats', requireSupabaseAuth, async (req: Request, res: Respon
   const role = req.supabaseRole || 'passenger';
   if (role !== 'driver' && role !== 'chauffeur') return res.status(403).json({ error: 'Drivers only' });
   try {
-    const [profileRes, ridesRes] = await Promise.all([
-      supabaseAdmin.from('profiles').select('rating').eq('id', driverId).maybeSingle(),
+    const [ridesRes, eventos] = await Promise.all([
       supabaseAdmin.from('rides')
-        .select('ride_status, created_at, fare')
+        .select('id, ride_status, created_at, fare, rating')
         .eq('driver_id', driverId)
         .order('created_at', { ascending: false })
         .limit(500),
+      // Cancelaciones, reasignaciones y rechazos, que viven en driver_ride_events.
+      // Un viaje que soltó ya no está a su nombre en `rides`, y uno que rechazó
+      // nunca lo estuvo: sin esto las dos tasas saldrían mal.
+      loadDriverDecisions(driverId!),
     ]);
-    const profile = profileRes.data as { rating?: number | null } | null;
-    const rides = (ridesRes.data ?? []) as Array<{ ride_status: string; created_at: string; fare: number | null }>;
+    const rides = (ridesRes.data ?? []) as Array<{
+      id: string; ride_status: string; created_at: string; fare: number | null; rating: number | null;
+    }>;
 
     const completed = rides.filter(r => r.ride_status === 'completed');
-    const accepted = rides.filter(r => ['completed', 'in_progress', 'confirmed'].includes(r.ride_status));
-    const total = rides.length;
-    const acceptanceRate = total > 0 ? Math.round((accepted.length / total) * 100) : null;
 
     const nowMs = Date.now();
     const weekAgo = nowMs - 7 * 24 * 3600 * 1000;
@@ -654,10 +660,18 @@ driverRouter.get('/stats', requireSupabaseAuth, async (req: Request, res: Respon
     }
 
     res.json({
-      rating: profile?.rating ?? null,
+      // Media real de lo que valoraron los pasajeros en estos viajes, o null si
+      // aún no hay ninguna. Antes devolvía `profiles.rating`, que arranca en 5,0
+      // sin ninguna valoración detrás. Lo que ven los pasajeros no cambia.
+      rating: valoracionMedia(rides),
       completedRides: completed.length,
       completedThisWeek: weekCompleted.length,
-      acceptanceRate,
+      // Aceptadas ÷ (aceptadas + rechazadas). Las ofertas que tomó otro
+      // conductor antes de que éste respondiera no cuentan.
+      acceptanceRate: tasaDeAceptacion(rides, eventos),
+      // Nombre acordado con el equipo móvil: no cambiarlo. Entero 0–100, o null
+      // si el conductor aún no aceptó ningún viaje.
+      cancellationRate: tasaDeCancelacion(rides, eventos),
       weeklyEarnings: parseFloat(weeklyEarnings.toFixed(2)),
       weeklyChart: chart.map(v => parseFloat(v.toFixed(2))),
     });

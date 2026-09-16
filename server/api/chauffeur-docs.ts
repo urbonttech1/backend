@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { supabaseAdmin } from '../db/client';
+import { supabaseAdmin, verifySupabaseToken } from '../db/client';
 import { pool } from '../db/pool';
 import { requireSupabaseAuth } from '../middleware';
 import { logger } from '../lib/logger';
@@ -237,8 +237,13 @@ chauffeurDocsRouter.get('/required-docs', async (req: Request, res: Response) =>
   const auth = req.headers.authorization;
   if (auth?.startsWith('Bearer ')) {
     try {
-      const { data } = await supabaseAdmin.auth.getUser(auth.slice(7));
-      const uid = data?.user?.id;
+      // verifySupabaseToken, no supabaseAdmin.auth.getUser: la app de conductor
+      // inicia sesión con un token propio (login por teléfono) que getUser no
+      // reconoce. Con getUser, a ningún conductor de la app le llegaba su propio
+      // esquema, sino siempre el general de once, y la pantalla de Documentos
+      // mostraba «17/11». Es la misma validación que usa requireSupabaseAuth.
+      const usuario = await verifySupabaseToken(auth.slice(7));
+      const uid = usuario?.id;
       if (uid) {
         const { data: docs } = await supabaseAdmin
           .from('driver_documents').select('doc_key').eq('driver_id', uid);
@@ -504,7 +509,7 @@ chauffeurDocsRouter.get('/verification-status', requireSupabaseAuth, async (req:
         .select('verification_status, rejection_reason, operating_city')
         .eq('id', uid).maybeSingle(),
       supabaseAdmin.from('driver_documents')
-        .select('doc_key, status, storage_url, image_url, file_name, created_at, updated_at')
+        .select('doc_key, status, storage_url, image_url, file_name, created_at, updated_at, expiry_date')
         .eq('driver_id', uid),
     ]);
 
@@ -517,11 +522,14 @@ chauffeurDocsRouter.get('/verification-status', requireSupabaseAuth, async (req:
     const uploadedDocs: Record<string, {
       status: string; url: string; fileName: string;
       uploadedAt: string; updatedAt?: string;
+      /** YYYY-MM-DD, o null si el documento no vence o no se indicó la fecha. */
+      expiryDate: string | null;
     }> = {};
 
     for (const doc of (docs || []) as Array<{
       doc_key: string; status: string; storage_url: string;
       image_url: string; file_name: string; created_at: string; updated_at: string;
+      expiry_date: string | null;
     }>) {
       const existing = uploadedDocs[doc.doc_key];
       if (!existing || doc.updated_at > existing.updatedAt!) {
@@ -531,6 +539,10 @@ chauffeurDocsRouter.get('/verification-status', requireSupabaseAuth, async (req:
           fileName:   doc.file_name,
           uploadedAt: doc.created_at,
           updatedAt:  doc.updated_at,
+          // La fecha vive en la base, que es de donde la lee el cron de
+          // vencimientos. Antes no se devolvía, y la app la guardaba en el propio
+          // teléfono: se perdía al reinstalar o al cambiar de dispositivo.
+          expiryDate: doc.expiry_date ?? null,
         };
       }
     }
