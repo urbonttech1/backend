@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
 import { broadcastChatMessage } from '../services/socketService';
+import { vistaPreviaMensaje } from '../services/chatPreview';
 import { requireSupabaseAuth } from '../middleware';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -76,6 +77,7 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
   };
 
   if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+  if (!rideId) return res.status(400).json({ error: 'rideId required' });
 
   const originalText = content.trim();
 
@@ -99,9 +101,17 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
       .select('id')
       .single();
 
-    if (error) log.error({ err: error.message, rideId }, 'ride_chats insert error');
+    // Si no se guardó, no se anuncia. Antes sólo se registraba el error y se
+    // seguía: se emitía el mensaje con un id inventado (Date.now()) y se
+    // respondía 200, así que el remitente veía los dos checks de un mensaje que
+    // no existía y que desaparecía al recargar. Con un error, la app lo retira.
+    const guardado = (inserted as { id?: unknown } | null)?.id;
+    if (error || guardado === undefined || guardado === null) {
+      log.error({ err: error?.message ?? 'insert sin id', rideId }, 'ride_chats insert error');
+      return res.status(500).json({ error: 'Failed to save message', errorCode: 'MESSAGE_NOT_SAVED' });
+    }
 
-    const msgId = String((inserted as { id?: unknown } | null)?.id ?? Date.now());
+    const msgId = String(guardado);
     const createdAt = new Date().toISOString();
 
     // Broadcast to ride room via Socket.IO for instant delivery (no polling delay)
@@ -215,7 +225,10 @@ translationRouter.get('/driver-conversations', requireSupabaseAuth, async (req: 
         dropoff: r.dropoff_address,
         status: r.ride_status,
         date: r.completed_at || r.created_at,
-        lastMessage: lastMsgByRide[r.id]?.original_text || '',
+        // Una nota de voz llega como «Voice message», no como su audio en base64.
+        lastMessage: vistaPreviaMensaje(lastMsgByRide[r.id]?.original_text).text,
+        // Campo nuevo, 'voice' | 'text': para que la app pueda poner un ícono.
+        lastMessageType: vistaPreviaMensaje(lastMsgByRide[r.id]?.original_text).type,
         lastMessageRole: lastMsgByRide[r.id]?.sender_role || 'passenger',
         lastMessageAt: lastMsgByRide[r.id]?.created_at,
       }));

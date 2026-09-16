@@ -320,6 +320,13 @@ export async function runMigrations() {
     await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS description     TEXT`);
     await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS notes           TEXT`);
     await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS resolution      TEXT`);
+    // Reportes del conductor desde la pantalla Help (api/driver-incidents.ts):
+    // coordenadas exactas, cuándo ocurrió y las rutas de las fotos en el bucket
+    // privado `incident-photos`. `location` sigue como texto para el panel.
+    await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS lat             NUMERIC(9,6)`);
+    await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS lng             NUMERIC(9,6)`);
+    await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS occurred_at     TIMESTAMPTZ`);
+    await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS attachments     JSONB NOT NULL DEFAULT '[]'`);
     await safeAlter(`ALTER TABLE incidents ADD COLUMN IF NOT EXISTS updated_at      TIMESTAMPTZ DEFAULT NOW()`);
     // Legacy `type` and `details` columns may be NOT NULL — relax them so new INSERTs work
     await safeAlter(`ALTER TABLE incidents ALTER COLUMN type DROP NOT NULL`);

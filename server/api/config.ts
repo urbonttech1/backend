@@ -4,6 +4,7 @@ import { createContextLogger } from "../lib/logger";
 import { pool } from "../db/pool";
 import { getTimeSurge, getFareClasses, getPricingPolicy, VEHICLE_ALIAS } from "../config/pricing";
 import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
+import { telefonoEmergencias } from "../services/driverIncident";
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -90,7 +91,39 @@ configRouter.get('/vehicle-categories', (_req: Request, res: Response) => {
 });
 
 // GET /api/config — public: returns maintenance_mode, min_version, surge_multiplier, googleMapsApiKey
-configRouter.get("/", async (_req: Request, res: Response) => {
+/**
+ * Teléfonos de soporte para la app, según dónde esté el usuario.
+ *
+ * Con `?lat=&lng=` se resuelve la zona y se usa su país. Sin coordenadas, si
+ * todas las zonas activas son del mismo país se usa ese; si hay varios, el
+ * número queda en null y la app elige de `emergencyPhones` o conserva el suyo.
+ *
+ * El de despacho sale de SUPPORT_DISPATCH_PHONE_<PAÍS> o SUPPORT_DISPATCH_PHONE.
+ * No hay uno escrito en el código a propósito: la app llevaba +1 (800) 000-0000,
+ * que no es de nadie. Sin la variable, null.
+ */
+async function soporte(req: Request) {
+  await ensureZonesFresh();
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const conCoordenadas = req.query.lat !== undefined && req.query.lng !== undefined
+    && Number.isFinite(lat) && Number.isFinite(lng);
+  const zona = conCoordenadas ? resolveZone(lat, lng) : null;
+  const paises = [...new Set(getZones().map((z) => z.countryCode.toUpperCase()))];
+  const pais = zona?.countryCode?.toUpperCase() ?? (paises.length === 1 ? paises[0] : null);
+  const despacho = (p: string | null) =>
+    (p ? process.env[`SUPPORT_DISPATCH_PHONE_${p}`] : undefined) || process.env.SUPPORT_DISPATCH_PHONE || null;
+  return {
+    countryCode:     pais,
+    zoneId:          zona?.id ?? null,
+    dispatchPhone:   despacho(pais),
+    emergencyPhone:  telefonoEmergencias(pais),
+    emergencyPhones: Object.fromEntries(paises.map((p) => [p, telefonoEmergencias(p)])),
+  };
+}
+
+configRouter.get("/", async (req: Request, res: Response) => {
+  const support = await soporte(req).catch(() => null);
   const stripePublishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
   const googleMapsApiKey = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
   const googleMapsMapId   = process.env.VITE_GOOGLE_MAPS_MAP_ID  || process.env.GOOGLE_MAPS_MAP_ID  || '';
@@ -118,6 +151,8 @@ configRouter.get("/", async (_req: Request, res: Response) => {
       // Espera gratis, topes, no-show y cancelación: la app y el panel los leen
       // de aquí en vez de llevarlos escritos en su código.
       pricingPolicy:    getPricingPolicy(),
+      // Teléfonos de despacho y emergencias; ver `soporte()`.
+      support,
     });
   } catch (err: any) {
     log.warn({ err: err.message }, 'config fetch error — returning defaults');
@@ -127,6 +162,7 @@ configRouter.get("/", async (_req: Request, res: Response) => {
       effective_surge_multiplier: surgeEfectivo,
       stripePublishableKey, googleMapsApiKey, googleMapsMapId,
       pricingPolicy: getPricingPolicy(),
+      support,
     });
   }
 });

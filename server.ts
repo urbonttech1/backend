@@ -29,6 +29,7 @@ import { chauffeurDocsRouter } from "./server/api/chauffeur-docs";
 import { valetAuthRouter } from "./server/api/auth/valet";
 import { feedbackRouter } from "./server/api/feedback";
 import { driverRouter } from "./server/api/drivers";
+import { driverIncidentsRouter } from "./server/api/driver-incidents";
 import { notificationsRouter } from "./server/api/notifications";
 import { supportRouter } from "./server/api/support";
 import { configRouter } from "./server/api/config";
@@ -466,7 +467,7 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
 app.get('/', (_req: Request, res: Response) => {
   res.json({
     msg: 'URBONT API',
-    version: process.env.npm_package_version ?? '1.7.11',
+    version: process.env.npm_package_version ?? '1.7.12',
   });
 });
 
@@ -526,6 +527,7 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
   app.use("/api/valet", valetAuthRouter);
   app.use("/api/feedback", feedbackRouter);
   app.use("/api/drivers", driverRouter);
+  app.use("/api/drivers", driverIncidentsRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/support", supportRouter);
   app.use("/api/config", configRouter);

@@ -2,8 +2,7 @@ import { Router, Request, Response } from 'express';
 import { requireSupabaseAuth } from '../middleware';
 import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
-import { z } from 'zod';
-import { validate } from '../middleware/validation';
+import { normalizarTicket, ETIQUETA_CATEGORIA } from '../services/supportTicket';
 import { sendEmail, isEmailConfigured } from '../services/mailer';
 import { emailShell, section, row, badge, brand, FONT } from '../services/emailLayout';
 
@@ -12,13 +11,6 @@ function errMsg(e: unknown): string { return e instanceof Error ? e.message : St
 const log = createContextLogger('SUPPORT');
 export const supportRouter = Router();
 
-const ticketSchema = z.object({
-  category: z.enum(['lost_item', 'driver_issue', 'billing', 'app_issue', 'safety', 'other']),
-  subject: z.string().min(3, 'Subject must be at least 3 characters').max(150),
-  description: z.string().min(10, 'Please provide more detail').max(3000),
-  ride_id: z.string().uuid().optional().nullable(),
-  priority: z.enum(['low', 'normal', 'high', 'urgent']).default('normal'),
-});
 
 // ── Email helper ──────────────────────────────────────────────────────────────
 
@@ -43,14 +35,7 @@ export async function sendAdminEmail(ticket: {
     return;
   }
 
-  const categoryLabel: Record<string, string> = {
-    lost_item:    'Lost Item',
-    driver_issue: 'Driver Issue',
-    billing:      'Billing',
-    app_issue:    'App Issue',
-    safety:       'Safety',
-    other:        'Other',
-  };
+  const categoryLabel: Record<string, string> = ETIQUETA_CATEGORIA;
 
   const priorityColors: Record<string, string> = {
     low: brand.slate, normal: brand.navyMid, high: brand.amber, urgent: brand.red,
@@ -98,14 +83,70 @@ export async function sendAdminEmail(ticket: {
   });
 }
 
+/**
+ * Registra el SOS como incidente crítico: es lo que ve operaciones en la
+ * pantalla de Incidentes del panel, que ordena por severidad. Nunca lanza, para
+ * que un fallo aquí no impida guardar el ticket ni enviar el aviso.
+ */
+async function registrarIncidenteSOS(d: {
+  userId: string;
+  role?: string;
+  userName: string;
+  rideId: string | null;
+  description: string;
+}): Promise<void> {
+  try {
+    let viajeExiste = false;
+    let driverId: string | null = null;
+    let passengerId: string | null = null;
+    if (d.rideId) {
+      const { data: ride } = await supabaseAdmin
+        .from('rides').select('driver_id, passenger_id').eq('id', d.rideId).maybeSingle();
+      const r = ride as { driver_id?: string | null; passenger_id?: string | null } | null;
+      viajeExiste = !!r;
+      driverId = r?.driver_id ?? null;
+      passengerId = r?.passenger_id ?? null;
+    }
+    const esConductor = d.role === 'chauffeur' || d.role === 'driver';
+    if (esConductor && !driverId) driverId = d.userId;
+    if (!esConductor && !passengerId) passengerId = d.userId;
+
+    const { error } = await supabaseAdmin.from('incidents').insert({
+      ride_id:        viajeExiste ? d.rideId : null,
+      driver_id:      driverId,
+      passenger_id:   passengerId,
+      reported_by_id: d.userId,
+      reporter_role:  esConductor ? 'driver' : 'passenger',
+      reporter_name:  d.userName,
+      incid_type:     'sos',
+      severity:       'critical',
+      incid_status:   'open',
+      description:    d.description,
+    });
+    if (error) log.error({ err: error.message, userId: d.userId }, 'SOS: incident not saved');
+    else log.warn({ userId: d.userId, rideId: d.rideId }, 'SOS registered as critical incident');
+  } catch (err: unknown) {
+    log.error({ err: errMsg(err), userId: d.userId }, 'SOS: incident failed');
+  }
+}
+
 // POST /api/support/tickets — submit a new ticket
+//
+// Acepta el formato de todas las pantallas de la app (ver services/supportTicket.ts)
+// y responde los errores con `errorCode`, para que la app distinga un fallo de un
+// éxito.
 supportRouter.post(
   '/tickets',
   requireSupabaseAuth,
-  validate(ticketSchema),
   async (req: Request, res: Response) => {
     const user_id = req.supabaseUid!;
-    const { category, subject, description, ride_id, priority } = req.body;
+    const resultado = normalizarTicket((req.body ?? {}) as Record<string, unknown>);
+    // `in` y no `!resultado.ok`: sin modo estricto, TypeScript no distingue los
+    // casos por un literal booleano.
+    if ('errorCode' in resultado) {
+      return res.status(400).json({ error: resultado.error, errorCode: resultado.errorCode, field: resultado.field });
+    }
+    const { category, subject, description, rideId, priority, esSOS } = resultado.ticket;
 
     try {
       // Get user profile for email context
@@ -119,44 +160,64 @@ supportRouter.post(
       const userName  = p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'User' : 'User';
       const userPhone = p?.phone || 'N/A';
 
-      const { data: ticket, error } = await supabaseAdmin
-        .from('support_tickets')
-        .insert({
-          user_id,
-          category,
-          subject,
-          description,
-          ride_id: ride_id || null,
-          priority,
-          status: 'open',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .select('id')
-        .single();
+      // El SOS se registra como incidente ANTES que el ticket: una emergencia no
+      // puede depender de que el ticket se guarde bien.
+      if (esSOS) {
+        await registrarIncidenteSOS({ userId: user_id, role: req.supabaseRole, userName, rideId, description });
+      }
 
-      if (error) throw error;
+      const ahora = new Date().toISOString();
+      const fila = {
+        user_id, category, subject, description,
+        ride_id: rideId, priority, status: 'open',
+        // Quién lo envió, para el panel de soporte.
+        user_type: req.supabaseRole === 'chauffeur' || req.supabaseRole === 'driver'
+          ? 'driver'
+          : req.supabaseRole === 'passenger' || !req.supabaseRole ? 'passenger' : 'other',
+        user_name: userName,
+        user_phone: p?.phone || null,
+        created_at: ahora, updated_at: ahora,
+      };
+      const insertar = (datos: Record<string, unknown>) =>
+        supabaseAdmin.from('support_tickets').insert(datos).select('id, status, created_at').single();
+
+      let resp = await insertar(fila);
+      // Un viaje que no existe no debe tumbar el ticket, y menos un SOS: se
+      // guarda sin viaje (si venía en el texto, sigue en la descripción).
+      if (resp.error?.code === '23503' && rideId) {
+        log.warn({ user_id, rideId }, 'ticket ride not found — saving without ride');
+        resp = await insertar({ ...fila, ride_id: null });
+      }
+      if (resp.error || !resp.data) throw resp.error ?? new Error('insert returned no row');
+
+      const t = resp.data as { id: string; status: string | null; created_at: string | null };
 
       // Fire-and-forget admin email
       sendAdminEmail({
-        id: (ticket as Record<string,unknown>).id as string,
+        id: t.id,
         category,
         subject,
         description,
         priority,
-        ride_id,
+        ride_id: rideId,
         userName,
         userPhone,
       }).catch(err => log.warn({ err: err.message }, 'Admin email failed'));
 
       res.status(201).json({
         success: true,
-        ticket_id: (ticket as Record<string,unknown>).id,
+        ticket_id: t.id, // nombre anterior; la app lo sigue leyendo
+        ticketId: t.id,
+        status: t.status ?? 'open',
+        createdAt: t.created_at ?? ahora,
         message: 'Your support request has been received. Our team will review it shortly.',
       });
-    } catch (err: any) {
-      log.error({ err: err.message, user_id }, 'create ticket error');
-      res.status(500).json({ error: 'Failed to submit support request. Please try again.' });
+    } catch (err: unknown) {
+      log.error({ err: errMsg(err), user_id }, 'create ticket error');
+      res.status(500).json({
+        error: 'Failed to submit support request. Please try again.',
+        errorCode: 'TICKET_NOT_SAVED',
+      });
     }
   },
 );

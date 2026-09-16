@@ -1195,24 +1195,40 @@ adminRouter.get("/incidents", async (_req: Request, res: Response) => {
         i.created_at DESC
       LIMIT 500
     `);
-    res.json({
-      incidents: rows.map((r: Record<string, unknown>) => ({
-        id: r.id,
-        rideId: r.ride_id,
-        driverName: r.driverName,
-        passengerName: r.passengerName,
-        reportedBy: r.reporterName,
-        type: r.incid_type,
-        severity: r.severity || 'low',
-        status: r.incid_status || 'open',
-        location: r.location,
-        description: r.description,
-        notes: r.notes,
-        resolution: r.resolution,
-        date: r.created_at,
-        updatedAt: r.updated_at,
-      }))
-    });
+    // Las fotos viven en un bucket privado: se firman al pedir la lista, con una
+    // hora de validez, para que el panel pueda mostrarlas sin hacerlas públicas.
+    const firmar = async (adjuntos: unknown) => {
+      const lista = Array.isArray(adjuntos) ? (adjuntos as Array<{ path?: string; mimeType?: string }>) : [];
+      const urls = await Promise.all(lista.map(async (f) => {
+        if (!f?.path) return null;
+        const { data } = await supabaseAdmin.storage.from('incident-photos').createSignedUrl(f.path, 3600);
+        return data?.signedUrl ? { url: data.signedUrl, mimeType: f.mimeType ?? null } : null;
+      }));
+      return urls.filter((u) => u !== null);
+    };
+
+    const incidents = await Promise.all(rows.map(async (r: Record<string, unknown>) => ({
+      id: r.id,
+      rideId: r.ride_id,
+      driverName: r.driverName,
+      passengerName: r.passengerName,
+      reportedBy: r.reporterName,
+      reporterRole: r.reporter_role ?? null,
+      type: r.incid_type,
+      severity: r.severity || 'low',
+      status: r.incid_status || 'open',
+      location: r.location,
+      lat: r.lat != null ? Number(r.lat) : null,
+      lng: r.lng != null ? Number(r.lng) : null,
+      occurredAt: r.occurred_at ?? null,
+      photos: await firmar(r.attachments),
+      description: r.description,
+      notes: r.notes,
+      resolution: r.resolution,
+      date: r.created_at,
+      updatedAt: r.updated_at,
+    })));
+    res.json({ incidents });
   } catch (err: any) {
     logger.error(`[admin/incidents] ${errMsg(err)}`);
     res.json({ incidents: [] });
