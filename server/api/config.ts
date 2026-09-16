@@ -74,6 +74,13 @@ function categoriasVehiculo() {
     bookable: !!tarifas[clave],
     minFare:  tarifas[clave]?.minFare ?? null,
     perHour:  tarifas[clave]?.perHour ?? null,
+    minHours: tarifas[clave]?.minHours ?? null,
+    // Lo que la app mostraba escrito a mano: "$0.50/min" de espera para todas las
+    // clases, cuando cada una tiene su tarifa y se edita desde el panel.
+    waitPerMin:  tarifas[clave]?.waitPerMin ?? null,
+    perMin:      tarifas[clave]?.perMin ?? null,
+    /** Reserva: sólo la pagan los viajes programados. */
+    serviceFee:  tarifas[clave]?.serviceFee ?? null,
   }));
 }
 
@@ -87,6 +94,10 @@ configRouter.get("/", async (_req: Request, res: Response) => {
   const stripePublishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
   const googleMapsApiKey = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
   const googleMapsMapId   = process.env.VITE_GOOGLE_MAPS_MAP_ID  || process.env.GOOGLE_MAPS_MAP_ID  || '';
+  // El recargo que se va a cobrar de verdad: el mayor entre el manual del panel y
+  // el de la franja horaria. `surge_multiplier` sigue siendo sólo el manual, para
+  // no cambiarle el significado a lo que ya lee la app.
+  const surgeEfectivo = await getEffectiveSurge();
   try {
     const { rows } = await pool.query<{ key: string; value: string }>(
       'SELECT key, value FROM app_config'
@@ -99,6 +110,8 @@ configRouter.get("/", async (_req: Request, res: Response) => {
       surge_multiplier: parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier)),
       multiplier:       parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier)),
       surgeReason:      cfg['surge_reason'] ?? null,
+      time_surge_multiplier:      getTimeSurge(),
+      effective_surge_multiplier: surgeEfectivo,
       stripePublishableKey,
       googleMapsApiKey,
       googleMapsMapId,
@@ -108,7 +121,13 @@ configRouter.get("/", async (_req: Request, res: Response) => {
     });
   } catch (err: any) {
     log.warn({ err: err.message }, 'config fetch error — returning defaults');
-    res.json({ ...DEFAULTS, stripePublishableKey, googleMapsApiKey, googleMapsMapId, pricingPolicy: getPricingPolicy() });
+    res.json({
+      ...DEFAULTS,
+      time_surge_multiplier:      getTimeSurge(),
+      effective_surge_multiplier: surgeEfectivo,
+      stripePublishableKey, googleMapsApiKey, googleMapsMapId,
+      pricingPolicy: getPricingPolicy(),
+    });
   }
 });
 
@@ -216,12 +235,22 @@ configRouter.get("/surge", async (_req: Request, res: Response) => {
     );
     const cfg: Record<string, string> = {};
     for (const row of rows) cfg[row.key] = row.value;
+    // `surge_multiplier` es sólo el recargo manual del panel. El que se cobra es
+    // `effective_surge_multiplier`: el mayor entre ése y el de la franja horaria.
+    // La app lo pedía con una cotización de 0 km porque no se publicaba en ningún lado.
     res.json({
       surge_multiplier: parseFloat(cfg['surge_multiplier'] ?? '1.0'),
       surge_reason:     cfg['surge_reason'] ?? null,
+      time_surge_multiplier:      getTimeSurge(),
+      effective_surge_multiplier: await getEffectiveSurge(),
     });
   } catch {
-    res.json({ surge_multiplier: 1.0, surge_reason: null });
+    res.json({
+      surge_multiplier: 1.0,
+      surge_reason:     null,
+      time_surge_multiplier:      getTimeSurge(),
+      effective_surge_multiplier: await getEffectiveSurge(),
+    });
   }
 });
 

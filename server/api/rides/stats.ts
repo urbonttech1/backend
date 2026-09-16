@@ -44,7 +44,10 @@ router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         .from('rides')
         .select('id, pickup, dropoff, scheduled_at, vehicle_type, passenger_id, fare, notes, ride_status, guest_name, valet_booking_ref, passengers, luggage')
         .eq('driver_id', uid)
-        .in('ride_status', ['scheduled', 'searching', 'accepted'])
+        // `accepted` no existe: el CHECK de `rides` y la máquina de estados usan
+        // `confirmed` cuando un chofer acepta. Filtrando por `accepted`, las
+        // reservas ya asignadas no salían nunca en la pestaña Upcoming del chofer.
+        .in('ride_status', ['scheduled', 'searching', 'confirmed'])
         .gt('scheduled_at', now)
         .order('scheduled_at', { ascending: true })
         .limit(limit);
