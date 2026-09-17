@@ -15,10 +15,10 @@ export interface VistaPrevia {
  * Las notas de voz se guardan como `[VOICE_NOTE:<base64>]` en el mismo campo que
  * el texto. Devolver ese contenido en una lista mandaba el audio completo
  * —cientos de KB por conversación— para acabar pintado como texto en la vista
- * previa.
+ * previa. Las notas subidas como archivo (`audio_path`) también cuentan como voz.
  */
-export function vistaPreviaMensaje(texto: string | null | undefined): VistaPrevia {
+export function vistaPreviaMensaje(texto: string | null | undefined, audioPath?: string | null): VistaPrevia {
   const t = texto ?? '';
-  if (t.startsWith(VOICE_NOTE_PREFIX)) return { text: 'Voice message', type: 'voice' };
+  if (audioPath || t.startsWith(VOICE_NOTE_PREFIX)) return { text: 'Voice message', type: 'voice' };
   return { text: t, type: 'text' };
 }

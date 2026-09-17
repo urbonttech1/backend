@@ -547,6 +547,15 @@ export async function runMigrations() {
     `);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_ride_chats_ride_id ON ride_chats(ride_id)`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_ride_chats_created_at ON ride_chats(created_at ASC)`);
+    // Notas de voz subidas como archivo (bucket privado ride-chat-audio).
+    await client.query(`
+      ALTER TABLE ride_chats
+        ADD COLUMN IF NOT EXISTS audio_path        TEXT,
+        ADD COLUMN IF NOT EXISTS audio_mime        TEXT,
+        ADD COLUMN IF NOT EXISTS audio_duration_ms INTEGER;
+    `);
+    // Un archivo, un mensaje: evita que el mismo voiceNoteId se envíe dos veces.
+    await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ride_chats_audio_path ON ride_chats(audio_path) WHERE audio_path IS NOT NULL`);
 
     // ─── Driver Scoring & Verification ───────────────────────────────────────
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS priority_score     NUMERIC(4,2) DEFAULT 1.00`);

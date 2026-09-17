@@ -630,6 +630,11 @@ export function broadcastChatMessage(rideId: string, msg: {
   originalText: string;
   translatedText?: string;
   createdAt: string;
+  // Sólo en notas de voz subidas como archivo.
+  audioUrl?: string;
+  audioUrlExpiresAt?: string;
+  mimeType?: string;
+  durationMs?: number | null;
 }): void {
   if (!io) return;
   // Private room — only sockets whose authenticated userId matched this

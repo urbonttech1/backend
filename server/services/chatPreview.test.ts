@@ -12,6 +12,11 @@ describe('vistaPreviaMensaje', () => {
     expect(preview.text).not.toContain('UklGR');
   });
 
+  it('una nota subida como archivo también es voz', () => {
+    expect(vistaPreviaMensaje('Voice message', 'ride/nota.m4a')).toEqual({ text: 'Voice message', type: 'voice' });
+    expect(vistaPreviaMensaje('Hola', null).type).toBe('text');
+  });
+
   it('sin mensaje devuelve texto vacío', () => {
     expect(vistaPreviaMensaje(null)).toEqual({ text: '', type: 'text' });
     expect(vistaPreviaMensaje(undefined)).toEqual({ text: '', type: 'text' });
