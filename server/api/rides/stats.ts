@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { requireSupabaseAuth, validateBody } from "../../middleware";
 import { supabaseAdmin } from "../../db/client";
 import { totalDeViaje } from "../../services/rideTax";
+import { tasaImpuestoRespaldo } from "../../services/taxConfig";
 import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
@@ -100,8 +101,9 @@ router.get("/my", requireSupabaseAuth, async (req: Request, res: Response) => {
     // impuesto, así que veía $22,00 en el historial y $23,43 en la tarjeta.
     // El precio sin impuesto sigue disponible en `fare_subtotal`, y es el que
     // se reparte con el chofer. La base de datos no cambia.
+    const tasa = await tasaImpuestoRespaldo();
     const rides = ((data ?? []) as Record<string, unknown>[]).map((r) => {
-      const t = totalDeViaje(r);
+      const t = totalDeViaje(r, tasa);
       return {
         ...r,
         fare:           t.total,

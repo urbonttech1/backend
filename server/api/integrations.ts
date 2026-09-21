@@ -4,6 +4,7 @@ import Stripe from 'stripe';
 import { validateBody, requireSupabaseAuth, optionalSupabaseAuth } from "../middleware";
 import { supabaseAdmin } from '../db/client';
 import { calculateRideMetrics } from '../services/rideMetrics';
+import { tasaImpuestoRespaldo } from '../services/taxConfig';
 
 const log = createContextLogger('INTEGRATIONS');
 
@@ -440,8 +441,10 @@ async function calculateStripeTax(
   } catch {
     // Stripe Tax not enabled or unavailable â fall back to a flat 6.5% rate
     // (midpoint of the 6â7% applicable range)
-    const TAX_RATE = 0.065;
-    const taxAmountCents = Math.round(amountCents * TAX_RATE);
+    // La tasa de respaldo la configura el panel (Tarifas). Antes estaba escrita
+    // aquí, así que un viaje fuera de EE. UU. se estimaba con impuestos de Florida.
+    const taxRate = await tasaImpuestoRespaldo();
+    const taxAmountCents = Math.round(amountCents * taxRate);
     return { taxedAmountCents: amountCents + taxAmountCents, taxAmountCents };
   }
 }

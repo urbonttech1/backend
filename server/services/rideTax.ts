@@ -13,9 +13,9 @@
  */
 
 /**
- * Tasa de respaldo, la misma que usa el cobro cuando Stripe Tax no responde
- * (ver `calculateStripeTax` en api/integrations.ts): el punto medio del 6–7 %
- * que se aplica en Florida.
+ * Tasa de respaldo por defecto. La vigente la configura el panel y vive en
+ * `taxConfig.ts`; ésta es la que queda si nadie la cambió: el punto medio del
+ * 6–7 % que se aplica en Florida.
  */
 export const TASA_IMPUESTO_RESPALDO = 0.065;
 
@@ -44,7 +44,7 @@ export interface TotalDeViaje {
  * El total de un viaje, a partir de su fila. Usa el impuesto guardado si lo hay;
  * si no, lo estima. Sin precio, todo queda en cero.
  */
-export function totalDeViaje(fila: Record<string, unknown>): TotalDeViaje {
+export function totalDeViaje(fila: Record<string, unknown>, tasa = TASA_IMPUESTO_RESPALDO): TotalDeViaje {
   const subtotal = numero(fila.fare) ?? numero(fila.total_price) ?? numero(fila.locked_fare) ?? 0;
   if (subtotal <= 0) return { total: 0, subtotal: 0, impuesto: 0, estimado: false };
 
@@ -59,6 +59,6 @@ export function totalDeViaje(fila: Record<string, unknown>): TotalDeViaje {
     };
   }
 
-  const impuesto = r2(subtotal * TASA_IMPUESTO_RESPALDO);
+  const impuesto = r2(subtotal * (tasa >= 0 ? tasa : TASA_IMPUESTO_RESPALDO));
   return { subtotal: r2(subtotal), impuesto, total: r2(subtotal + impuesto), estimado: true };
 }

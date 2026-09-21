@@ -8,6 +8,7 @@ import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore';
+import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
 import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
@@ -780,10 +781,38 @@ adminRouter.post("/documents/:id/request-reupload", async (req: Request, res: Re
 
 adminRouter.get("/fares", async (_req: Request, res: Response) => {
   const fares = await getFaresFromDB();
+  // Tasa de respaldo del impuesto: sólo se aplica cuando Stripe Tax no responde
+  // o no cubre el país. La tasa real la calcula Stripe por jurisdicción y NO se
+  // configura aquí: es dinero del estado.
+  const taxFallbackRatePercent = comoPorcentaje(await tasaImpuestoRespaldo());
   // Las políticas (espera, no-show, cancelación) viajan con las tarifas para que
   // la pantalla las muestre sin una segunda petición. Son de sólo lectura: se
   // cambian en código.
-  res.json({ fares, pricingPolicy: getPricingPolicy() });
+  res.json({ fares, pricingPolicy: getPricingPolicy(), taxFallbackRatePercent });
+});
+
+// PUT /api/admin/fares/tax — tasa de respaldo del impuesto
+// Sólo entra en juego cuando Stripe Tax no responde o no cubre el país. La tasa
+// real de cada viaje la sigue calculando Stripe por jurisdicción.
+adminRouter.put("/fares/tax", async (req: Request, res: Response) => {
+  const { fallbackRatePercent } = (req.body ?? {}) as { fallbackRatePercent?: unknown };
+  const quien = (req as Request & { adminEmail?: string }).adminEmail || 'admin';
+
+  const tasa = await guardarTasa(fallbackRatePercent, quien).catch((err: unknown) => {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] guardar tasa de impuesto');
+    return undefined;
+  });
+
+  if (tasa === null) {
+    return res.status(400).json({
+      error: `La tasa debe ser un número entre 0 y ${comoPorcentaje(TASA_MAXIMA)}.`,
+      errorCode: 'INVALID_TAX_RATE',
+      field: 'fallbackRatePercent',
+    });
+  }
+  if (tasa === undefined) return res.status(500).json({ error: 'No se pudo guardar la tasa de impuesto.' });
+
+  return res.json({ success: true, taxFallbackRatePercent: comoPorcentaje(tasa) });
 });
 
 adminRouter.put("/fares", async (req: Request, res: Response) => {
