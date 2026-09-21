@@ -124,25 +124,25 @@ export const DOC_CATALOG: Record<string, Omit<DocMeta, 'key'>> = {
 export const ESQUEMA_GLOBAL = WEB_DOC_KEYS;
 
 /**
- * El esquema contra el que se evalúa a un conductor.
+ * El esquema contra el que se evalúa a un conductor: los diecisiete, para todo
+ * el mundo.
  *
- * La regla es la lista global de diecisiete. La única excepción son los
- * esquemas anteriores YA COMPLETOS: hay conductores aprobados con los once del
- * alta móvil o con los once de limusina, y medirlos contra los diecisiete les
- * sacaría seis documentos «faltando» que nunca se les pidieron, devolviéndolos
- * a `pending_documents`.
+ * Hasta ahora había tres listas vivas y se elegía una según lo que cada
+ * conductor tuviera subido, así que dos personas veían requisitos distintos —el
+ * alta móvil pedía once y la web diecisiete—. Con el proyecto todavía en
+ * desarrollo se unifica: una sola lista, sin excepciones por esquema anterior.
  *
- * Quien los tiene a medias —incluido quien no ha subido nada— pasa a los
- * diecisiete: es la lista vigente y lo que ya pedía el alta web.
+ * `REQUIRED_DOC_KEYS` y `LEGACY_DOC_KEYS` siguen existiendo porque describen lo
+ * que se pidió en su día y sus claves siguen en `ACCEPTED_DOC_KEYS`, así que
+ * nada de lo ya subido se rechaza ni se pierde.
+ *
+ * Efecto en quien completó un esquema de once: la próxima vez que se recalcule
+ * su verificación —al subir un documento o al revisarlo un admin— le van a
+ * faltar los seis que no tenía, y pasará a `pending_documents` hasta subirlos.
+ *
+ * Recibe las claves subidas por compatibilidad con quien la llama; ya no las usa.
  */
-export function elegirEsquema(clavesSubidas: readonly string[]): readonly string[] {
-  const subidas = new Set(clavesSubidas);
-  const completo = (lista: readonly string[]) => lista.every((k) => subidas.has(k));
-
-  if (completo(ESQUEMA_GLOBAL)) return ESQUEMA_GLOBAL;
-  // Aprobados bajo un esquema anterior: se respeta el suyo.
-  if (completo(REQUIRED_DOC_KEYS)) return REQUIRED_DOC_KEYS;
-  if (completo(LEGACY_DOC_KEYS)) return LEGACY_DOC_KEYS;
+export function elegirEsquema(_clavesSubidas: readonly string[] = []): readonly string[] {
   return ESQUEMA_GLOBAL;
 }
 

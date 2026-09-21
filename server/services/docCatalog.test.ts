@@ -79,10 +79,11 @@ describe('elegirEsquema — contra qué lista se mide a cada conductor', () => {
     expect(WEB_DOC_KEYS.length).toBe(17);
   });
 
-  it('a quien completó el esquema de limusina, ése', () => {
-    // Contando claves empataba con el web y le aparecían seis faltantes:
-    // conductores ya aprobados volvían a pending_documents.
-    expect(elegirEsquema([...LEGACY_DOC_KEYS])).toBe(LEGACY_DOC_KEYS);
+  it('a quien completó un esquema anterior, también los diecisiete', () => {
+    // Decisión del 2026-09-20: una sola lista para todos mientras el proyecto
+    // está en desarrollo. A estos conductores les faltarán seis documentos.
+    expect(elegirEsquema([...LEGACY_DOC_KEYS])).toBe(WEB_DOC_KEYS);
+    expect(elegirEsquema([...REQUIRED_DOC_KEYS])).toBe(WEB_DOC_KEYS);
   });
 
   it('a quien completó el del signup web, ése', () => {
@@ -93,15 +94,11 @@ describe('elegirEsquema — contra qué lista se mide a cada conductor', () => {
     expect(elegirEsquema(['license', 'photo', 'bgCheck'])).toBe(WEB_DOC_KEYS);
   });
 
-  it('a quien completó el alta móvil de once, ése: ya estaba aprobado', () => {
-    expect(elegirEsquema([...REQUIRED_DOC_KEYS])).toBe(REQUIRED_DOC_KEYS);
-  });
-
   it('es la misma elección que usa el recálculo, no una copia', () => {
     // Si divergieran, `required-docs` pediría documentos distintos de los que
     // el servidor comprueba para aprobar.
     const subidas = [...LEGACY_DOC_KEYS];
     const esquema = elegirEsquema(subidas);
-    expect(esquema).toBe(LEGACY_DOC_KEYS);
+    expect(esquema).toBe(WEB_DOC_KEYS);
   });
 });
