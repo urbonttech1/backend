@@ -3,6 +3,7 @@ import { Server as SocketIOServer, Socket } from 'socket.io';
 import { createContextLogger } from '../lib/logger';
 import { supabaseAdmin } from '../db/client';
 import { pool } from '../db/pool';
+import { guardarUbicacion, numeroOpcional } from './driverLocation';
 import { getDriverPriorityTiers } from './driverScore';
 import { reassignRide, type ReassignReason } from './rideReassignment';
 import { recordRideOffers } from './driverRideHistory';
@@ -378,8 +379,10 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
       rideId?: string;
       lat: number;
       lng: number;
-      heading: number;
-      speed: number;
+      heading: number | null;
+      speed: number | null;
+      /** Marca del dispositivo, para que el pasajero descarte posiciones viejas. */
+      ts?: number;
       rideStatus?: string;
     }) => {
       if (!userId || !payload.lat || !payload.lng) return;
@@ -393,9 +396,15 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
           driverId: userId,
           lat: payload.lat,
           lng: payload.lng,
-          heading: payload.heading ?? 0,
-          speed: payload.speed ?? 0,
+          // null, NO 0: el mapa del pasajero gira con el rumbo, y un 0 por «no se
+          // sabe» lo hacía saltar al norte cada vez que el GPS no lo calculaba.
+          heading: numeroOpcional(payload.heading),
+          speed: numeroOpcional(payload.speed),
+          /** Hora del servidor. */
           ts: Date.now(),
+          /** Hora del dispositivo, si la manda: es la que sirve para ordenar
+           *  entre el socket, la tabla y el endpoint REST. */
+          deviceTs: numeroOpcional(payload.ts),
         });
 
         // ── T014: Stop detection during in_progress rides ────────────────────
@@ -416,9 +425,10 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
         driverId: userId,
         lat: payload.lat,
         lng: payload.lng,
-        heading: payload.heading ?? 0,
-        speed: payload.speed ?? 0,
+        heading: numeroOpcional(payload.heading),
+        speed: numeroOpcional(payload.speed),
         ts: Date.now(),
+        deviceTs: numeroOpcional(payload.ts),
       });
 
       // Also persist to DB asynchronously (non-blocking)
@@ -947,36 +957,11 @@ function dispatchByScore(rideId: string, payload: object) {
 
 // ── Persist driver location to DB (fire-and-forget) ─────────────────────────
 
-async function persistDriverLocation(driverId: string, pos: { lat: number; lng: number; heading: number; speed: number }) {
-  // El cliente de Supabase DEVUELVE el error, no lo lanza: con `try/catch` el
-  // respaldo no se ejecutaba nunca. Si el RPC no existe —o falla por PostGIS—,
-  // la posición se quedaba sin guardar y en silencio, y sin posiciones los
-  // viajes no encuentran conductor. Ver también api/drivers.ts.
-  let fallo: string | null = null;
-  try {
-    const { error } = await supabaseAdmin.rpc('upsert_driver_location', {
-      p_driver_id: driverId,
-      p_lat: pos.lat,
-      p_lng: pos.lng,
-      p_heading: pos.heading ?? 0,
-      p_speed: pos.speed ?? 0,
-    });
-    if (error) fallo = error.message;
-  } catch (err: unknown) {
-    fallo = err instanceof Error ? err.message : String(err);
-  }
-
-  if (fallo) {
-    log.warn({ err: fallo, driverId }, 'upsert_driver_location falló — se guarda la posición sin PostGIS');
-    const { error } = await supabaseAdmin.from('driver_locations').upsert({
-      driver_id: driverId,
-      lat: pos.lat,
-      lng: pos.lng,
-      heading: pos.heading ?? 0,
-      speed: pos.speed ?? 0,
-      is_online: true,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'driver_id' });
-    if (error) log.error({ err: error.message, driverId }, 'no se pudo guardar la posición del conductor');
-  }
+async function persistDriverLocation(driverId: string, pos: { lat: number; lng: number; heading?: number | null; speed?: number | null }) {
+  // El mismo camino que POST /api/drivers/location: conserva el último rumbo
+  // conocido cuando el dispositivo no lo reporta y no depende de PostGIS.
+  // Antes esta vía usaba un RPC cuyo error el cliente de Supabase DEVUELVE en
+  // vez de lanzar, así que el `catch` nunca saltaba: la posición se perdía en
+  // silencio, y sin posiciones los viajes no encuentran conductor.
+  await guardarUbicacion({ driverId, lat: pos.lat, lng: pos.lng, heading: pos.heading, speed: pos.speed });
 }

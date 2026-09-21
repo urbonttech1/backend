@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { requireSupabaseAuth } from "../middleware";
 import { supabaseAdmin } from "../db/client";
 import { pool } from "../db/pool";
+import { guardarUbicacion } from "../services/driverLocation";
 import { validate, validateQuery, schemas } from "../middleware/validation";
 import { createContextLogger } from "../lib/logger";
 import {
@@ -67,70 +68,6 @@ driverRouter.get("/available-counts", async (_req: Request, res: Response) => {
 
 // POST /api/drivers/location â update driver GPS position
 // Uses ST_SetSRID(ST_MakePoint(lng, lat), 4326) â note: longitude FIRST in PostGIS
-/**
- * Guarda la posición del chofer.
- *
- * La columna `location` es de PostGIS y sólo existe si la extensión está
- * habilitada. En producción no lo estaba, así que TODAS las actualizaciones de
- * GPS fallaban con «column "location" does not exist»: `driver_locations` se
- * quedaba vacía, `notifyNearbyDrivers` no encontraba a nadie conectado y los
- * viajes se quedaban en «buscando» sin asignar.
- *
- * Ahora lat/lng se guardan siempre; `location` se rellena cuando se puede. Es
- * lo único que necesitan el aviso a los conductores y el respaldo por
- * Haversine de `/nearby`.
- */
-let hayPostGIS = true;
-
-async function guardarUbicacion(p: {
-  driver_id: string; lat: number; lng: number; heading?: number | null; speed?: number | null;
-}): Promise<void> {
-  const comunes = `
-        ON CONFLICT (driver_id) DO UPDATE SET
-          lat        = EXCLUDED.lat,
-          lng        = EXCLUDED.lng,
-          -- FIX: heading/speed used to fall back to 0 whenever the device sent
-          -- null (common when GPS briefly can't compute course/velocity, e.g.
-          -- while stationary). Overwriting with 0 made the passenger's map arrow
-          -- visibly "snap" to north / stop each time. Now we keep the previous
-          -- known value when the incoming reading is null.
-          heading    = COALESCE(EXCLUDED.heading, driver_locations.heading),
-          speed      = COALESCE(EXCLUDED.speed, driver_locations.speed),
-          is_online  = true,
-          updated_at = NOW()`;
-
-  const conGeografia = `
-        INSERT INTO driver_locations (driver_id, lat, lng, heading, speed, location, is_online, updated_at)
-        VALUES ($1, $2::float8, $3::float8, $4::float8, $5::float8,
-                ST_SetSRID(ST_MakePoint($3::float8, $2::float8), 4326)::geography, true, NOW())
-        ${comunes}, location = EXCLUDED.location`;
-
-  const sinGeografia = `
-        INSERT INTO driver_locations (driver_id, lat, lng, heading, speed, is_online, updated_at)
-        VALUES ($1, $2::float8, $3::float8, $4::float8, $5::float8, true, NOW())
-        ${comunes}`;
-
-  const valores = [p.driver_id, p.lat, p.lng, p.heading ?? null, p.speed ?? null];
-  const client = await pool.connect();
-  try {
-    if (hayPostGIS) {
-      try {
-        await client.query(conGeografia, valores);
-        return;
-      } catch (err: unknown) {
-        // 42703 columna inexistente, 42883 función inexistente (sin PostGIS).
-        const code = (err as { code?: string }).code;
-        if (code !== '42703' && code !== '42883') throw err;
-        hayPostGIS = false;
-        log.warn({ code }, 'driver_locations sin PostGIS — se guarda sólo lat/lng');
-      }
-    }
-    await client.query(sinGeografia, valores);
-  } finally {
-    client.release();
-  }
-}
-
 driverRouter.post(
   "/location",
   requireSupabaseAuth,
@@ -146,7 +83,7 @@ driverRouter.post(
     const { lat, lng, heading, speed } = req.body;
 
     try {
-      await guardarUbicacion({ driver_id, lat, lng, heading, speed });
+      await guardarUbicacion({ driverId: driver_id, lat, lng, heading, speed });
 
       res.json({ success: true });
     } catch (err: any) {
