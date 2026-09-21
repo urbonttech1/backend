@@ -948,17 +948,27 @@ function dispatchByScore(rideId: string, payload: object) {
 // ── Persist driver location to DB (fire-and-forget) ─────────────────────────
 
 async function persistDriverLocation(driverId: string, pos: { lat: number; lng: number; heading: number; speed: number }) {
+  // El cliente de Supabase DEVUELVE el error, no lo lanza: con `try/catch` el
+  // respaldo no se ejecutaba nunca. Si el RPC no existe —o falla por PostGIS—,
+  // la posición se quedaba sin guardar y en silencio, y sin posiciones los
+  // viajes no encuentran conductor. Ver también api/drivers.ts.
+  let fallo: string | null = null;
   try {
-    await supabaseAdmin.rpc('upsert_driver_location', {
+    const { error } = await supabaseAdmin.rpc('upsert_driver_location', {
       p_driver_id: driverId,
       p_lat: pos.lat,
       p_lng: pos.lng,
       p_heading: pos.heading ?? 0,
       p_speed: pos.speed ?? 0,
     });
-  } catch {
-    // If RPC doesn't exist yet, fall back to table upsert
-    await supabaseAdmin.from('driver_locations').upsert({
+    if (error) fallo = error.message;
+  } catch (err: unknown) {
+    fallo = err instanceof Error ? err.message : String(err);
+  }
+
+  if (fallo) {
+    log.warn({ err: fallo, driverId }, 'upsert_driver_location falló — se guarda la posición sin PostGIS');
+    const { error } = await supabaseAdmin.from('driver_locations').upsert({
       driver_id: driverId,
       lat: pos.lat,
       lng: pos.lng,
@@ -967,5 +977,6 @@ async function persistDriverLocation(driverId: string, pos: { lat: number; lng: 
       is_online: true,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'driver_id' });
+    if (error) log.error({ err: error.message, driverId }, 'no se pudo guardar la posición del conductor');
   }
 }
