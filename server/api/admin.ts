@@ -464,6 +464,43 @@ adminRouter.post("/drivers/:id/reactivate", async (req: Request, res: Response) 
   }
 });
 
+/* ──────────────────────────────────────────────
+   POST /api/admin/drivers/:id/recalculate-verification
+   Vuelve a medir al conductor contra el catálogo vigente y reescribe
+   `profiles.verification_status`.
+
+   Existe porque ese campo sólo se recalculaba al subir o revisar un documento:
+   si los documentos se aprobaban por otra vía, el perfil se quedaba con el
+   valor viejo y el panel avisaba de que «el estado no coincide» sin dar forma
+   de arreglarlo salvo volver a aprobar un documento a mano.
+────────────────────────────────────────────── */
+adminRouter.post("/drivers/:id/recalculate-verification", async (req: Request, res: Response) => {
+  const driverId = req.params.id;
+  try {
+    const { data: antes } = await supabaseAdmin
+      .from('profiles').select('verification_status').eq('id', driverId).maybeSingle();
+    if (!antes) return res.status(404).json({ error: 'Conductor no encontrado.', errorCode: 'DRIVER_NOT_FOUND' });
+
+    const estado = await recalcularVerificacion(driverId);
+    const previo = (antes as { verification_status?: string }).verification_status ?? null;
+
+    return res.json({
+      success: true,
+      previousStatus: previo,
+      status: estado.status,
+      changed: previo !== estado.status,
+      missingDocs: estado.missingDocs,
+      rejectedDocs: estado.rejectedDocs,
+      pendingDocs: estado.pendingDocs,
+      hasVehicle: estado.hasVehicle,
+      reason: estado.reason,
+    });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err), driverId }, '[ADMIN] recalcular verificación');
+    return res.status(500).json({ error: 'No se pudo recalcular la verificación.' });
+  }
+});
+
 adminRouter.post("/drivers/:id/verify", async (req: Request, res: Response) => {
   try {
     const { error } = await supabaseAdmin.from('profiles')
