@@ -32,14 +32,16 @@ export const LEGACY_DOC_KEYS = [
 ] as const;
 
 /**
- * Esquema del signup web nuevo (websitev2, src/lib/driver-documents.ts): los
- * diecisiete que pide hoy /conductor. Une los permisos de Miami-Dade del
- * esquema de limusina con los federales del vigente, y suma dos claves que no
- * existían: `businessTaxes` y `backgroundCheck`.
+ * ESQUEMA VIGENTE: los diecisiete documentos que se le piden a todo conductor
+ * nuevo, venga del alta web (websitev2, src/lib/driver-documents.ts) o de la
+ * app. Une los permisos de Miami-Dade del esquema de limusina con los federales
+ * del anterior, y suma `businessTaxes` y `backgroundCheck`.
  *
- * Sin esta lista, un conductor que completara el formulario web quedaba con
- * `defensiveDriving` faltando para siempre — ya no se le pide a nadie — y sus
- * dos documentos nuevos se rechazaban al subir por no estar en ACCEPTED.
+ * Antes el alta móvil pedía once y la web diecisiete, así que un mismo
+ * conductor veía una lista distinta según por dónde se hubiera dado de alta.
+ * La lista es una sola y global: `elegirEsquema` sólo conserva un esquema
+ * anterior a quien ya lo completó, para no devolver a `pending_documents` a
+ * conductores que ya estaban aprobados.
  */
 export const WEB_DOC_KEYS = [
   'license', 'photo', 'bgCheck', 'registration', 'insurance',
@@ -118,32 +120,30 @@ export const DOC_CATALOG: Record<string, Omit<DocMeta, 'key'>> = {
   backgroundCheck:     { label: 'Background Check',                   category: 'Legal & Compliance',       hint: 'Completed report from an approved provider', expires: true  },
 };
 
+/** Los diecisiete de hoy: la lista que se le pide a todo el mundo. */
+export const ESQUEMA_GLOBAL = WEB_DOC_KEYS;
+
 /**
- * El esquema contra el que se evalúa a un conductor, según lo que ya subió.
+ * El esquema contra el que se evalúa a un conductor.
  *
- * Hay tres listas vivas a la vez y sólo comparten una parte de los nombres, así
- * que medir a todo el mundo contra una sola dejaría a media plantilla con
- * documentos «faltando» que nunca se le pidieron.
+ * La regla es la lista global de diecisiete. La única excepción son los
+ * esquemas anteriores YA COMPLETOS: hay conductores aprobados con los once del
+ * alta móvil o con los once de limusina, y medirlos contra los diecisiete les
+ * sacaría seis documentos «faltando» que nunca se les pidieron, devolviéndolos
+ * a `pending_documents`.
  *
- * Se compara por PROPORCIÓN cubierta, no por número de claves. Contando claves,
- * un conductor con el esquema de limusina completo (11 de 11) empataba con las 11
- * que ese mismo esquema cubre del web, y al desempatar hacia el web le aparecían
- * seis documentos faltantes: conductores ya aprobados volvían a
- * `pending_documents`. La proporción da 1.0 al esquema que sí completó. A igualdad
- * gana el que cubre más claves, que es el más específico de los dos.
- *
- * Con la lista vacía —un conductor que no ha subido nada— devuelve el esquema del
- * alta móvil, que es lo que se le va a pedir.
+ * Quien los tiene a medias —incluido quien no ha subido nada— pasa a los
+ * diecisiete: es la lista vigente y lo que ya pedía el alta web.
  */
 export function elegirEsquema(clavesSubidas: readonly string[]): readonly string[] {
   const subidas = new Set(clavesSubidas);
-  if (subidas.size === 0) return REQUIRED_DOC_KEYS;
+  const completo = (lista: readonly string[]) => lista.every((k) => subidas.has(k));
 
-  const cubiertos = (lista: readonly string[]) => lista.filter((k) => subidas.has(k)).length;
-
-  return [WEB_DOC_KEYS, REQUIRED_DOC_KEYS, LEGACY_DOC_KEYS]
-    .map((lista) => ({ lista, n: cubiertos(lista) }))
-    .sort((a, b) => (b.n / b.lista.length) - (a.n / a.lista.length) || b.n - a.n)[0].lista;
+  if (completo(ESQUEMA_GLOBAL)) return ESQUEMA_GLOBAL;
+  // Aprobados bajo un esquema anterior: se respeta el suyo.
+  if (completo(REQUIRED_DOC_KEYS)) return REQUIRED_DOC_KEYS;
+  if (completo(LEGACY_DOC_KEYS)) return LEGACY_DOC_KEYS;
+  return ESQUEMA_GLOBAL;
 }
 
 /** Metadatos de un documento, con un respaldo razonable si la clave es nueva. */
