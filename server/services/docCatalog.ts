@@ -172,3 +172,107 @@ export function normalizarEstadoDoc(estado: unknown): 'aprobado' | 'rechazado' |
   if (s === 'rejected') return 'rechazado';
   return 'pendiente';
 }
+
+/* ── Catálogo administrable ────────────────────────────────────────────────
+ *
+ * El catálogo de arriba es la semilla. A partir de la migración vive en la tabla
+ * `document_catalog`, que el panel administra: nombre, categoría, ayuda, si
+ * caduca, el orden y —sobre todo— si se le pide o no al conductor.
+ *
+ * `docCatalogStore.ts` es quien lee esa tabla; aquí sólo van las reglas puras.
+ */
+
+/** Documentos que no se le piden al conductor cuando se siembra la tabla. */
+export const DESACTIVADOS_INICIALES = ['bgCheck', 'backgroundCheck', 'defensiveDriving'] as const;
+
+export interface DocumentoCatalogo extends DocMeta {
+  /** false: sigue aceptándose si ya está subido, pero no se le pide a nadie. */
+  active: boolean;
+  sortOrder: number;
+}
+
+/** La semilla: el catálogo del código, en el orden del esquema vigente. */
+export function catalogoSemilla(): DocumentoCatalogo[] {
+  const orden = [...ESQUEMA_GLOBAL, ...Object.keys(DOC_CATALOG).filter((k) => !ESQUEMA_GLOBAL.includes(k as never))];
+  return orden.map((key, i) => ({
+    ...docMeta(key),
+    active: ESQUEMA_GLOBAL.includes(key as never) && !(DESACTIVADOS_INICIALES as readonly string[]).includes(key),
+    sortOrder: (i + 1) * 10,
+  }));
+}
+
+export interface ErrorCampo { errorCode: string; field: string; error: string }
+
+const CATEGORIAS_CONOCIDAS = [
+  'Personal Identity', 'Vehicle Documents', 'Professional Credentials', 'Legal & Compliance', 'Other',
+];
+export { CATEGORIAS_CONOCIDAS };
+
+const CLAVE_VALIDA = /^[a-zA-Z][a-zA-Z0-9]{1,39}$/;
+
+/**
+ * Lo que manda el panel al crear o editar un documento. En una edición, los
+ * campos que no llegan no se tocan (`undefined`), así que el panel puede mandar
+ * sólo `active` para activar o desactivar.
+ */
+export function normalizarDocumentoAdmin(
+  body: Record<string, unknown>,
+  opciones: { nuevo?: boolean } = {},
+): { doc: Partial<DocumentoCatalogo> & { key?: string } } | ErrorCampo {
+  const doc: Partial<DocumentoCatalogo> & { key?: string } = {};
+
+  if (opciones.nuevo) {
+    const key = String(body.key ?? '').trim();
+    if (!CLAVE_VALIDA.test(key)) {
+      return { errorCode: 'INVALID_KEY', field: 'key', error: 'La clave debe ser alfanumérica, sin espacios, de 2 a 40 caracteres.' };
+    }
+    doc.key = key;
+  }
+
+  if (body.label !== undefined || opciones.nuevo) {
+    const label = String(body.label ?? '').trim();
+    if (label.length < 2 || label.length > 80) {
+      return { errorCode: 'INVALID_LABEL', field: 'label', error: 'El nombre debe tener entre 2 y 80 caracteres.' };
+    }
+    doc.label = label;
+  }
+
+  if (body.category !== undefined || opciones.nuevo) {
+    const category = String(body.category ?? '').trim();
+    if (category.length < 2 || category.length > 60) {
+      return { errorCode: 'INVALID_CATEGORY', field: 'category', error: 'La categoría debe tener entre 2 y 60 caracteres.' };
+    }
+    doc.category = category;
+  }
+
+  if (body.hint !== undefined) {
+    const hint = String(body.hint ?? '').trim();
+    if (hint.length > 200) {
+      return { errorCode: 'INVALID_HINT', field: 'hint', error: 'La ayuda no puede pasar de 200 caracteres.' };
+    }
+    doc.hint = hint;
+  }
+
+  for (const campo of ['expires', 'active'] as const) {
+    if (body[campo] !== undefined) {
+      const v = body[campo];
+      if (typeof v !== 'boolean' && v !== 'true' && v !== 'false') {
+        return { errorCode: 'INVALID_FLAG', field: campo, error: `El campo ${campo} tiene que ser verdadero o falso.` };
+      }
+      doc[campo] = v === true || v === 'true';
+    }
+  }
+
+  if (body.sortOrder !== undefined) {
+    const n = Number(body.sortOrder);
+    if (!Number.isFinite(n) || n < 0 || n > 9999) {
+      return { errorCode: 'INVALID_SORT_ORDER', field: 'sortOrder', error: 'El orden tiene que ser un número entre 0 y 9999.' };
+    }
+    doc.sortOrder = Math.round(n);
+  }
+
+  if (Object.keys(doc).length === 0) {
+    return { errorCode: 'NOTHING_TO_UPDATE', field: '', error: 'No llegó ningún campo para actualizar.' };
+  }
+  return { doc };
+}

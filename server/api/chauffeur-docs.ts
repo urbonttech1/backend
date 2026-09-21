@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { documentosVigentes } from '../services/docCatalogStore';
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
 import { pool } from '../db/pool';
 import { requireSupabaseAuth } from '../middleware';
@@ -8,7 +9,6 @@ import {
   ACCEPTED_DOC_KEYS,
   REQUIRED_DOC_KEYS,
   docMeta,
-  elegirEsquema,
 } from '../services/driverVerification';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -223,50 +223,25 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
    Con esto la lista es una sola y vive donde se puede cambiar sin publicar una
    versión de la app.
 ────────────────────────────────────────────── */
-chauffeurDocsRouter.get('/required-docs', async (req: Request, res: Response) => {
-  // Con token se responde EL esquema de ese conductor; sin token, el del alta.
-  //
-  // Importa porque hay tres listas vivas y el servidor no evalúa a todos contra
-  // la misma: `recalcularVerificacion` elige según lo que cada uno ya subió. Un
-  // conductor con el esquema de limusina completo se mide contra ése, así que
-  // devolverle siempre la lista del alta móvil le pediría documentos que a él no
-  // se le exigen — y le ocultaría los que sí.
-  let esquema: readonly string[] = REQUIRED_DOC_KEYS;
-  let alcance = 'default';
-
-  const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) {
-    try {
-      // verifySupabaseToken, no supabaseAdmin.auth.getUser: la app de conductor
-      // inicia sesión con un token propio (login por teléfono) que getUser no
-      // reconoce. Con getUser, a ningún conductor de la app le llegaba su propio
-      // esquema, sino siempre el general de once, y la pantalla de Documentos
-      // mostraba «17/11». Es la misma validación que usa requireSupabaseAuth.
-      const usuario = await verifySupabaseToken(auth.slice(7));
-      const uid = usuario?.id;
-      if (uid) {
-        const { data: docs } = await supabaseAdmin
-          .from('driver_documents').select('doc_key').eq('driver_id', uid);
-        esquema = elegirEsquema((docs ?? []).map((d: Record<string, unknown>) => String(d.doc_key)));
-        alcance = 'driver';
-      }
-    } catch {
-      // Un token vencido no debe dejar sin catálogo a la pantalla: se sigue con
-      // el esquema por defecto, que es lo que se le pide a alguien que empieza.
-    }
-  }
+chauffeurDocsRouter.get('/required-docs', async (_req: Request, res: Response) => {
+  // Una sola lista para todos, la del catálogo: los documentos ACTIVOS de
+  // `document_catalog`, que el panel administra. Antes había tres esquemas y se
+  // elegía uno según lo que cada conductor tuviera subido, así que dos personas
+  // veían requisitos distintos —el alta móvil pedía once y la web diecisiete—.
+  const activos = await documentosVigentes();
 
   res.json({
-    // Hoy una sola lista por esquema, sin distinguir país. El día que se decida
-    // qué se pide fuera de EE. UU., este endpoint pasa a responder por país y la
-    // app no cambia: ya estará leyendo de aquí.
+    // Hoy una sola lista, sin distinguir país. El día que se decida qué se pide
+    // fuera de EE. UU., este endpoint pasa a responder por país y la app no
+    // cambia: ya estará leyendo de aquí.
     country: 'US',
-    /** 'driver' si la lista es la de quien pregunta; 'default' si es la general. */
-    scope: alcance,
-    docs: esquema.map((k) => docMeta(k)),
-    totalRequired: esquema.length,
+    /** Se mantiene por compatibilidad: la lista ya no depende de quién pregunte. */
+    scope: 'default',
+    docs: activos.map(({ key, label, category, hint, expires }) => ({ key, label, category, hint, expires })),
+    totalRequired: activos.length,
     // Todo lo que el servidor acepta guardar, más allá de lo que exige. Incluye
-    // los permisos de condado y los papeles de empresa del esquema anterior.
+    // los permisos de condado y los papeles de empresa del esquema anterior, y
+    // los documentos que el panel haya desactivado.
     acceptedDocKeys: ACCEPTED_DOC_KEYS,
     // Los límites que la app necesita para comprimir ANTES de subir, en vez de
     // descubrirlos con un error a mitad de una carga de once archivos.

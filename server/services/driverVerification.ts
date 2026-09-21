@@ -21,9 +21,9 @@ import { logger } from '../lib/logger';
  * variables de entorno. Se re-exportan aquí para que quien ya importaba desde
  * este módulo no tenga que cambiar nada.
  */
+import { esquemaVigente } from './docCatalogStore';
 import {
   REQUIRED_DOC_KEYS,
-  elegirEsquema,
   normalizarEstadoDoc,
   type DocKey,
   type VerificationStatus,
@@ -101,12 +101,12 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
       porTipo.set(key, estado);
     }
 
-    // Se evalúa contra el esquema que el conductor haya empezado. La elección
-    // vive en `docCatalog.elegirEsquema` para que `GET /required-docs` pueda
-    // responder EXACTAMENTE la misma lista contra la que se le va a medir: si
-    // cada uno usara su criterio, el endpoint le pediría documentos distintos de
-    // los que el servidor comprueba.
-    const esquema = elegirEsquema([...porTipo.keys()]);
+    // Se evalúa contra los documentos ACTIVOS del catálogo, que es exactamente
+    // la lista que `GET /required-docs` le muestra al conductor. Si cada uno
+    // usara su criterio, el endpoint le pediría documentos distintos de los que
+    // el servidor comprueba. Un documento que el panel desactiva deja de
+    // faltar, aunque el conductor nunca lo haya subido.
+    const esquema = await esquemaVigente();
 
     const missingDocs  = esquema.filter(k => !porTipo.has(k)) as DocKey[];
     const rejectedDocs = esquema.filter(k => porTipo.get(k) === 'rechazado') as DocKey[];

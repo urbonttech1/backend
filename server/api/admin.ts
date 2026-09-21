@@ -7,6 +7,8 @@ import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
+import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore';
+import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
@@ -1178,6 +1180,90 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
 });
 
 // ─── Incidents (connected to real DB) ────────────────────────────────────────
+
+
+/* ──────────────────────────────────────────────
+   Catálogo de documentos del conductor
+   Lo que se le pide a un conductor sale de aquí: `active` decide si un
+   documento se le muestra y si cuenta para pasar a revisión. Desactivar no
+   borra nada — los archivos ya subidos siguen guardados y visibles.
+────────────────────────────────────────────── */
+
+// GET /api/admin/document-catalog — el catálogo completo, activos e inactivos
+// Ojo: /documents ya es la cola de verificación (línea ~658). Express responde
+// con la primera ruta que coincide, así que el catálogo vive en su propia ruta.
+adminRouter.get('/document-catalog', async (_req: Request, res: Response) => {
+  try {
+    const docs = await catalogoCompleto();
+    res.json({
+      documents: docs,
+      activeCount: docs.filter((d) => d.active).length,
+      categories: CATEGORIAS_CONOCIDAS,
+    });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] catálogo de documentos');
+    res.status(500).json({ error: 'No se pudo leer el catálogo de documentos.' });
+  }
+});
+
+// PATCH /api/admin/document-catalog/:key — nombre, categoría, ayuda, caducidad, orden y activo
+adminRouter.patch('/document-catalog/:key', async (req: Request, res: Response) => {
+  const normalizado = normalizarDocumentoAdmin((req.body ?? {}) as Record<string, unknown>);
+  if ('errorCode' in normalizado) return res.status(400).json(normalizado);
+
+  const { doc } = normalizado;
+  const fila: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (doc.label !== undefined)     fila.label = doc.label;
+  if (doc.category !== undefined)  fila.category = doc.category;
+  if (doc.hint !== undefined)      fila.hint = doc.hint;
+  if (doc.expires !== undefined)   fila.expires = doc.expires;
+  if (doc.active !== undefined)    fila.active = doc.active;
+  if (doc.sortOrder !== undefined) fila.sort_order = doc.sortOrder;
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('document_catalog').update(fila).eq('doc_key', req.params.key).select('doc_key').maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Documento no encontrado.', errorCode: 'DOC_NOT_FOUND' });
+
+    invalidarCatalogo();
+    res.json({ success: true, key: req.params.key, ...doc });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] actualizar documento');
+    res.status(500).json({ error: 'No se pudo actualizar el documento.' });
+  }
+});
+
+// POST /api/admin/document-catalog — añadir un documento nuevo al catálogo
+adminRouter.post('/document-catalog', async (req: Request, res: Response) => {
+  const normalizado = normalizarDocumentoAdmin((req.body ?? {}) as Record<string, unknown>, { nuevo: true });
+  if ('errorCode' in normalizado) return res.status(400).json(normalizado);
+
+  const { doc } = normalizado;
+  try {
+    // Al final de la lista, salvo que el panel diga otra cosa.
+    const ultimo = (await catalogoCompleto()).reduce((max, d) => Math.max(max, d.sortOrder), 0);
+    const { error } = await supabaseAdmin.from('document_catalog').insert({
+      doc_key:    doc.key,
+      label:      doc.label,
+      category:   doc.category,
+      hint:       doc.hint ?? '',
+      expires:    doc.expires ?? false,
+      active:     doc.active ?? true,
+      sort_order: doc.sortOrder ?? ultimo + 10,
+    });
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'Ya existe un documento con esa clave.', errorCode: 'DOC_EXISTS', field: 'key' });
+    }
+    if (error) throw error;
+
+    invalidarCatalogo();
+    res.status(201).json({ success: true, ...doc });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] crear documento');
+    res.status(500).json({ error: 'No se pudo crear el documento.' });
+  }
+});
 
 adminRouter.get("/incidents", async (_req: Request, res: Response) => {
   try {

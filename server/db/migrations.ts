@@ -1,5 +1,6 @@
 import { pool } from './pool';
 import { logger } from '../lib/logger';
+import { catalogoSemilla } from '../services/docCatalog';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -545,6 +546,32 @@ export async function runMigrations() {
         created_at    TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+    // ─── Catálogo de documentos, administrable desde el panel ───────────────
+    // Antes vivía sólo en el código (server/services/docCatalog.ts). Se siembra
+    // con esas mismas listas; a partir de ahí manda la tabla.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS document_catalog (
+        doc_key    VARCHAR(40) PRIMARY KEY,
+        label      TEXT NOT NULL,
+        category   TEXT NOT NULL,
+        hint       TEXT DEFAULT '',
+        expires    BOOLEAN NOT NULL DEFAULT false,
+        active     BOOLEAN NOT NULL DEFAULT true,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    for (const d of catalogoSemilla()) {
+      // ON CONFLICT DO NOTHING: lo que el panel haya cambiado no se pisa en el
+      // siguiente arranque.
+      await client.query(
+        `INSERT INTO document_catalog (doc_key, label, category, hint, expires, active, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (doc_key) DO NOTHING`,
+        [d.key, d.label, d.category, d.hint, d.expires, d.active, d.sortOrder],
+      );
+    }
+
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_ride_chats_ride_id ON ride_chats(ride_id)`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_ride_chats_created_at ON ride_chats(created_at ASC)`);
     // Notas de voz subidas como archivo (bucket privado ride-chat-audio).
