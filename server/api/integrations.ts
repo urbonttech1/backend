@@ -3,7 +3,7 @@ import { createContextLogger } from '../lib/logger';
 import Stripe from 'stripe';
 import { validateBody, requireSupabaseAuth, optionalSupabaseAuth } from "../middleware";
 import { supabaseAdmin } from '../db/client';
-import { calculateRideMetrics } from '../services/rideMetrics';
+import { calculateRideMetrics, calcularReparto } from '../services/rideMetrics';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
 
 const log = createContextLogger('INTEGRATIONS');
@@ -714,12 +714,22 @@ integrationsRouter.post(
         },
       };
 
-      // Attach Stripe Connect transfer_data only if driver has a Connected Account
+      // Reparto con Stripe Connect, sólo si el chofer tiene cuenta conectada.
+      //
+      // Se manda SÓLO `application_fee_amount`: Stripe rechaza que vayan a la vez
+      // con `transfer_data.amount`, así que con las dos el cobro fallaba entero.
+      // El impuesto va dentro de la comisión porque lo declara la plataforma; al
+      // chofer le llega el 90 % del precio, sin impuesto.
       if (connectedAccountId) {
-        paymentIntentParams.application_fee_amount = metrics.applicationFeeCents;
-        paymentIntentParams.transfer_data = {
-          destination: connectedAccountId,
-          amount: metrics.driverPayoutCents,
+        const reparto = calcularReparto({
+          fareCents: metrics.totalCents,
+          taxCents:  taxResult.taxAmountCents,
+        });
+        paymentIntentParams.application_fee_amount = reparto.applicationFeeCents;
+        paymentIntentParams.transfer_data = { destination: connectedAccountId };
+        paymentIntentParams.metadata = {
+          ...paymentIntentParams.metadata,
+          driver_payout_cents: String(reparto.driverPayoutCents),
         };
       }
 

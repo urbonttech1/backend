@@ -407,6 +407,10 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       operatingCity: d.operating_city || '',
       commissionRate: comision,
       stripeConnectStatus: d.stripe_connect_status || 'not_connected',
+      // Sin cuenta conectada, el cobro del viaje no le transfiere nada: el dinero
+      // se queda entero en la cuenta de Urbont. Hoy no hay ninguna creada.
+      stripeAccountId: d.stripe_account_id || null,
+      canReceivePayouts: d.stripe_connect_status === 'active',
       priorityScore: d.priority_score || 1.0,
       accountStatus: d.account_status || 'active',
     };
@@ -415,6 +419,52 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
   } catch (err: any) {
     logger.error(`[admin/drivers] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to load drivers' });
+  }
+});
+
+// POST /api/admin/drivers/:id/stripe-status — consulta el estado real en Stripe
+// `stripe_connect_status` se escribe al iniciar el alta y se queda en 'pending'
+// aunque el chofer la termine, así que el panel necesita poder preguntarlo.
+adminRouter.post("/drivers/:id/stripe-status", async (req: Request, res: Response) => {
+  const driverId = req.params.id;
+  try {
+    const { data: perfil } = await supabaseAdmin
+      .from('profiles').select('stripe_account_id').eq('id', driverId).maybeSingle();
+    const accountId = (perfil as { stripe_account_id?: string } | null)?.stripe_account_id;
+    if (!accountId) {
+      return res.json({
+        success: true, status: 'not_connected', accountId: null, canReceivePayouts: false,
+        reason: 'El conductor no ha iniciado el alta de Stripe.',
+      });
+    }
+
+    const stripe = getStripeAdmin();
+    if (!stripe) return res.status(500).json({ error: 'Stripe no está configurado.' });
+
+    const cuenta = await stripe.accounts.retrieve(accountId);
+    const listo = !!cuenta.payouts_enabled && !!cuenta.details_submitted;
+    const status = listo ? 'active' : 'pending';
+    const pendiente = cuenta.requirements?.currently_due ?? [];
+
+    await supabaseAdmin.from('profiles')
+      .update({ stripe_connect_status: status, updated_at: new Date().toISOString() })
+      .eq('id', driverId);
+
+    return res.json({
+      success: true,
+      status,
+      accountId,
+      canReceivePayouts: listo,
+      detailsSubmitted: !!cuenta.details_submitted,
+      payoutsEnabled: !!cuenta.payouts_enabled,
+      requirementsDue: pendiente,
+      reason: listo ? null : pendiente.length
+        ? `Le faltan datos en Stripe: ${pendiente.slice(0, 4).join(', ')}`
+        : 'El alta está a medias.',
+    });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err), driverId }, '[ADMIN] estado de Stripe');
+    return res.status(500).json({ error: 'No se pudo consultar el estado en Stripe.' });
   }
 });
 

@@ -36,6 +36,46 @@ const COMMISSION_RATE = 0.10;
  *     transfer_data: { destination: driverStripeAccountId },
  *   });
  */
+export interface RepartoInput {
+  /** Precio del viaje en centavos, SIN impuesto: es lo que se reparte. */
+  fareCents: number;
+  /** Impuesto en centavos. Lo retiene la plataforma para declararlo. */
+  taxCents?: number;
+}
+
+export interface RepartoResult {
+  /** Lo que se le cobra a la tarjeta: precio + impuesto. */
+  chargeCents: number;
+  /** Lo que retiene la plataforma: su 10 % MÁS el impuesto. */
+  applicationFeeCents: number;
+  /** Lo que le queda al chofer: el 90 % del precio, sin tocar el impuesto. */
+  driverPayoutCents: number;
+  commissionRate: number;
+}
+
+/**
+ * El reparto de un cobro con Stripe Connect.
+ *
+ * En un destination charge se manda `application_fee_amount` y el resto va al
+ * chofer. Antes se mandaban a la vez `application_fee_amount` y
+ * `transfer_data.amount`, que Stripe rechaza, así que el primer chofer con
+ * cuenta conectada no habría podido cobrar.
+ *
+ * El impuesto va DENTRO de la comisión: lo retiene la plataforma porque es
+ * quien lo declara, y así al chofer le llega el 90 % del precio limpio.
+ */
+export function calcularReparto({ fareCents, taxCents = 0 }: RepartoInput): RepartoResult {
+  if (fareCents < 0 || taxCents < 0) throw new RangeError('los importes no pueden ser negativos');
+
+  const comision = Math.round(fareCents * COMMISSION_RATE);
+  return {
+    chargeCents:         fareCents + taxCents,
+    applicationFeeCents: comision + taxCents,
+    driverPayoutCents:   fareCents - comision,
+    commissionRate:      COMMISSION_RATE,
+  };
+}
+
 export function calculateRideMetrics(input: RideMetricsInput): RideMetricsResult {
   const { totalFareUSD } = input;
 
