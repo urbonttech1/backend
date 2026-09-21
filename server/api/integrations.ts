@@ -827,9 +827,11 @@ integrationsRouter.post(
         }).eq('id', userId);
       }
 
-      const appDomain = process.env.REPLIT_DOMAINS?.split(',')[0]
-        ? `https://${process.env.REPLIT_DOMAINS.split(',')[0]}`
-        : 'https://urbont.app';
+      // A donde Stripe devuelve al chofer al terminar (o al vencer el enlace).
+      // Antes salía de REPLIT_DOMAINS y, sin esa variable, caía en urbont.app:
+      // un dominio que no existe, así que el chofer terminaba su registro en una
+      // página de error. Las dos páginas viven en websitev2.
+      const appDomain = (process.env.PUBLIC_WEB_URL || 'https://urbont.com').replace(/\/+$/, '');
 
       const accountLink = await stripe.accountLinks.create({
         account: accountId,
