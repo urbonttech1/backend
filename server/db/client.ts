@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 import { pool } from './pool';
 import { logger } from '../lib/logger';
+import { elegirPerfilPorTelefono, variantesTelefono, type PerfilPorTelefono } from '../services/phoneProfiles';
 
 // The anon key below is the project's public key — already baked into the Dockerfile
 // and the frontend bundle, so embedding it here is not a secret exposure.
@@ -66,23 +67,27 @@ export interface UrbontSession {
 // ─── Get or create user by phone ──────────────────────────────────────────────
 // FIX: checks insert errors, retries lookup on conflict, never throws
 export async function getOrCreateSupabaseUser(phone: string): Promise<{ id: string; phone: string; role: string }> {
-  // 1. Try to find existing profile by phone — check both "+E.164" and bare-digits variants
-  const phoneVariants = Array.from(new Set([phone, phone.replace(/^\+/, ''), `+${phone.replace(/^\+/, '')}`]));
-  let existing: { id: string; phone: string; role: string } | null = null;
-  for (const variant of phoneVariants) {
-    const { data, error: selectErr } = await supabaseAdmin
-      .from('profiles')
-      .select('id, phone, role')
-      .eq('phone', variant)
-      .maybeSingle();
-    if (selectErr) {
-      logger.error(`[DB] getOrCreateSupabaseUser select error for ${variant}: ${selectErr.message}`);
-    }
-    if (data) { existing = data as { id: string; phone: string; role: string }; break; }
+  // 1. Buscar el perfil por teléfono, con y sin el "+", que es como está guardado.
+  //    Desde que un número puede estar en la cuenta de pasajero y en la de
+  //    conductor, esto puede devolver DOS filas: `maybeSingle` fallaba con
+  //    «more than one row» y dejaba sin iniciar sesión a quien tuviera las dos.
+  //    `elegirPerfilPorTelefono` se queda con la de pasajero, que es quien entra
+  //    por esta vía; el conductor entra con correo y contraseña.
+  const phoneVariants = variantesTelefono(phone);
+  const { data: coincidencias, error: selectErr } = await supabaseAdmin
+    .from('profiles')
+    .select('id, phone, role, created_at')
+    .in('phone', phoneVariants);
+  if (selectErr) {
+    logger.error(`[DB] getOrCreateSupabaseUser select error for ${phone}: ${selectErr.message}`);
+  }
+  const existing = elegirPerfilPorTelefono((coincidencias ?? []) as PerfilPorTelefono[]);
+  if (coincidencias && coincidencias.length > 1) {
+    logger.info(`[DB] ${coincidencias.length} perfiles con ${phone} — sesión para ${existing?.id} (${existing?.role})`);
   }
 
   if (existing) {
-    return { id: existing.id as string, phone: existing.phone as string, role: (existing.role as string) || 'passenger' };
+    return { id: existing.id, phone: existing.phone || phone, role: existing.role || 'passenger' };
   }
 
   // 2. Ensure auth user exists — try createUser first; if phone is already registered in

@@ -284,14 +284,14 @@ userRouter.patch('/profile', requireSupabaseAuth, async (req: Request, res: Resp
             log.warn(`[profile patch] 23505 on ${conflictField} — saved other fields without it`);
             return res.json({
               success: true,
-              warning: `Changes saved. Your ${conflictField} could not be updated — it's already linked to another account.`,
+              warning: `Changes saved. Your ${conflictField} could not be updated — another account of the same type already uses it.`,
             });
           }
         }
       }
 
       return res.status(409).json({
-        error: `That ${conflictField ?? 'field'} is already in use by another account.`,
+        error: `That ${conflictField ?? 'field'} is already in use by another account of the same type.`,
       });
     }
 

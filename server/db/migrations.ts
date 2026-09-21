@@ -196,6 +196,12 @@ export async function runMigrations() {
       try { await client.query(sql); } catch { /* column already exists */ }
     };
 
+    // Un teléfono en dos cuentas: la de pasajero y la de conductor de la misma
+    // persona. Antes `phone` era único a secas, así que el perfil de conductor
+    // se quedaba sin número —casi nadie tiene dos—. Sigue sin poder repetirse
+    // entre dos cuentas del mismo tipo. Ver services/phoneProfiles.ts.
+    await safeAlter(`ALTER TABLE profiles DROP CONSTRAINT IF EXISTS profiles_phone_key`);
+
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS verification_status VARCHAR(50) DEFAULT 'pending_documents'`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS operating_city VARCHAR(100)`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS rejection_reason TEXT`);
@@ -377,6 +383,9 @@ export async function runMigrations() {
     };
 
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_profiles_phone ON profiles(phone)`);
+    // Unicidad del teléfono por rol: el mismo número puede estar en la cuenta
+    // de pasajero y en la de conductor, pero no en dos del mismo tipo.
+    await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_phone_role ON profiles(phone, role) WHERE phone IS NOT NULL AND phone <> ''`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_profiles_role ON profiles(role)`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_rides_passenger ON rides(passenger_id)`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_rides_driver ON rides(driver_id)`);
@@ -1192,6 +1201,11 @@ export async function runMigrations() {
     await client.query(`
       ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_earnings NUMERIC(10,2);
       ALTER TABLE rides ADD COLUMN IF NOT EXISTS long_pickup_fee NUMERIC(10,2) DEFAULT 0;
+      -- Impuesto de venta del viaje. La columna fare sigue siendo el precio SIN
+      -- impuesto, que es lo que se reparte con el chofer; esto es lo que se le
+      -- suma al pasajero al cobrar. Ver services/rideTax.ts.
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS tax_amount NUMERIC(10,2);
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS total_with_tax NUMERIC(10,2);
     `);
 
     // ── Zonas de servicio ─────────────────────────────────────────────────────

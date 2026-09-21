@@ -3,6 +3,7 @@ import { createContextLogger } from '../../lib/logger';
 import { randomInt, createHmac } from 'crypto';
 import jwt from 'jsonwebtoken';
 import { otpRateLimiter, recordOtpFailure, validateBody, sanitizeBody } from '../../middleware';
+import { variantesTelefono } from '../../services/phoneProfiles';
 import { getOrCreateSupabaseUser, getOrCreateSupabaseUserByEmail, createSupabaseSession, supabaseAdmin } from '../../db/client';
 import { sendSmsTwilio, isTwilioConfigured } from '../../services/twilio';
 import { sendEmail, isEmailConfigured } from '../../services/mailer';
@@ -79,12 +80,14 @@ export function otpEmailHtml(code: string): string {
       return res.status(400).json({ error: 'Invalid phone number format.' });
     }
     try {
-      const { data: existingUser } = await supabaseAdmin
+      // `.in(...)` y no `.eq(...).maybeSingle()`: un número puede estar en la
+      // cuenta de pasajero y en la de conductor de la misma persona, y con dos
+      // filas `maybeSingle` devuelve error en vez de responder que sí existe.
+      const { data: existingUsers } = await supabaseAdmin
         .from('profiles')
         .select('id, phone, role')
-        .eq('phone', phone)
-        .maybeSingle();
-      return res.json({ exists: !!existingUser });
+        .in('phone', variantesTelefono(phone));
+      return res.json({ exists: (existingUsers ?? []).length > 0 });
     } catch (err) {
       log.error(`[OTP] Check failed for ${phone}: ${errMsg(err)}`);
       return res.status(500).json({ error: 'Failed to check registration status.' });

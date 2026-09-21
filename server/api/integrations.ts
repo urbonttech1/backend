@@ -729,6 +729,20 @@ integrationsRouter.post(
         idempotencyKey: `create-ride-payment_${rideId}`,
       });
 
+      // El impuesto que calculó Stripe se guarda en el viaje: es lo que el
+      // historial del pasajero muestra como total. Sin esto, la lista tendría
+      // que estimarlo. No bloquea el cobro si falla.
+      void supabaseAdmin
+        .from('rides')
+        .update({
+          tax_amount:     Math.round(taxResult.taxAmountCents) / 100,
+          total_with_tax: Math.round(taxResult.taxedAmountCents) / 100,
+        })
+        .eq('id', rideId)
+        .then(({ error }) => {
+          if (error) log.warn(`[STRIPE] No se pudo guardar el impuesto del viaje ${rideId}: ${error.message}`);
+        });
+
       // Store payment intent + fee on the ride record
       await supabaseAdmin.from('rides').update({
         payment_intent_id: paymentIntent.id,

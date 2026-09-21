@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import { requireSupabaseAuth, validateBody } from "../../middleware";
 import { supabaseAdmin } from "../../db/client";
+import { totalDeViaje } from "../../services/rideTax";
 import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
@@ -93,8 +94,28 @@ router.get("/my", requireSupabaseAuth, async (req: Request, res: Response) => {
       .range(from, to);
 
     if (error) throw error;
+
+    // `fare` sale de aquí con el IMPUESTO INCLUIDO: es lo que el pasajero pagó
+    // de verdad, y lo que su lista de viajes debe mostrar. Antes salía sin
+    // impuesto, así que veía $22,00 en el historial y $23,43 en la tarjeta.
+    // El precio sin impuesto sigue disponible en `fare_subtotal`, y es el que
+    // se reparte con el chofer. La base de datos no cambia.
+    const rides = ((data ?? []) as Record<string, unknown>[]).map((r) => {
+      const t = totalDeViaje(r);
+      return {
+        ...r,
+        fare:           t.total,
+        total_price:    r.total_price != null ? t.total : r.total_price,
+        fare_subtotal:  t.subtotal,
+        tax_amount:     t.impuesto,
+        total_with_tax: t.total,
+        /** true = no se llegó a cobrar (cancelado, o anterior a este cambio): el impuesto es estimado. */
+        tax_estimated:  t.estimado,
+      };
+    });
+
     res.json({
-      rides: data ?? [],
+      rides,
       total: count ?? 0,
       page,
       limit,
