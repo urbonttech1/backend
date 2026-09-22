@@ -78,6 +78,7 @@ function conColumnasNecesarias(columns: string): string {
 export async function loadDriverHistoryExtras(
   driverIds: string[] | null,
   columns: string,
+  opciones: { incluirOfertas?: boolean } = {},
 ): Promise<Map<string, Record<string, unknown>[]>> {
   const resultado = new Map<string, Record<string, unknown>[]>();
   try {
@@ -110,7 +111,7 @@ export async function loadDriverHistoryExtras(
     }
 
     for (const driverId of new Set(filas.map(e => e.driver_id))) {
-      const vista = vistaDelConductor(driverId, filas, ridesById);
+      const vista = vistaDelConductor(driverId, filas, ridesById, opciones);
       if (vista.length) resultado.set(driverId, vista);
     }
   } catch (err: unknown) {

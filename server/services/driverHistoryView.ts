@@ -25,8 +25,23 @@ type Row = Record<string, unknown>;
 // dice de lo que pasó: haberlo cancelado pesa más que habérsele ofrecido.
 const PRIORIDAD: Record<DriverRideEventType, number> = { driver_cancelled: 3, reassigned: 2, offered: 1 };
 
-/** Entradas que un conductor debe ver además de sus viajes asignados. */
-export function vistaDelConductor(driverId: string, events: DriverRideEventRow[], ridesById: Map<string, Row>): Row[] {
+/**
+ * Entradas que un conductor debe ver además de sus viajes asignados.
+ *
+ * `incluirOfertas` decide qué pasa con los viajes que sólo se le OFRECIERON y
+ * nunca aceptó:
+ *  - En su app va en false: un conductor se quejaba de ver cancelados «que no
+ *    había recibido», y eran justo eso, ofertas que ignoró y el pasajero acabó
+ *    cancelando. En su historial no son suyas.
+ *  - En el panel va en true: ahí sí interesa ver a quién se le ofreció un viaje
+ *    que nadie tomó.
+ */
+export function vistaDelConductor(
+  driverId: string,
+  events: DriverRideEventRow[],
+  ridesById: Map<string, Row>,
+  { incluirOfertas = true }: { incluirOfertas?: boolean } = {},
+): Row[] {
   const porViaje = new Map<string, DriverRideEventRow>();
   for (const e of events) {
     if (e.driver_id !== driverId) continue;
@@ -44,6 +59,7 @@ export function vistaDelConductor(driverId: string, events: DriverRideEventRow[]
     if (e.event === 'offered') {
       // Una oferta sólo es historia del conductor si el viaje terminó cancelado
       // sin que nadie lo aceptara. Si lo tomó otro, o sigue buscando, no es suyo.
+      if (!incluirOfertas) continue;
       if (ride.ride_status !== 'cancelled' || ride.driver_id) continue;
       filas.push({ ...ride, cancelled_by: 'passenger', history_source: 'offered' });
       continue;

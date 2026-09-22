@@ -207,7 +207,10 @@ router.get("/driver-history", requireSupabaseAuth, async (req: Request, res: Res
     // ofrecieron y el pasajero canceló antes de asignarse (ver driverHistoryView).
     // Se unen antes de paginar para que cada página salga en orden.
     const asignados = (data ?? []) as Record<string, unknown>[];
-    const extras = (await loadDriverHistoryExtras([String(driver_id)], columnas)).get(String(driver_id)) ?? [];
+    // Sin las ofertas que nunca aceptó: en su historial sólo van los viajes que
+    // llegó a tener. El panel sí las sigue viendo.
+    const extras = (await loadDriverHistoryExtras([String(driver_id)], columnas, { incluirOfertas: false }))
+      .get(String(driver_id)) ?? [];
     const unidos = mergeDriverHistory(asignados, extras);
     const total = (count ?? 0) + (unidos.length - asignados.length);
 

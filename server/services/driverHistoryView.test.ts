@@ -34,6 +34,22 @@ describe('historial del conductor', () => {
     expect(filas).toEqual([]);
   });
 
+  it('en la app del conductor, una oferta que nunca aceptó no sale', () => {
+    // Es lo que le hacía ver «cancelados que no había recibido».
+    const filas = vistaDelConductor(FELIPE, [evento('r1', 'offered')], viajes(
+      { id: 'r1', ride_status: 'cancelled', driver_id: null, cancel_reason: 'wrong_pickup' },
+    ), { incluirOfertas: false });
+    expect(filas).toEqual([]);
+  });
+
+  it('sin ofertas, lo que sí soltó sigue estando', () => {
+    const filas = vistaDelConductor(FELIPE, [evento('r1', 'driver_cancelled', { reason: 'too_far' })], viajes(
+      { id: 'r1', ride_status: 'completed', driver_id: OTRO },
+    ), { incluirOfertas: false });
+    expect(filas).toHaveLength(1);
+    expect(filas[0]).toMatchObject({ id: 'r1', ride_status: 'cancelled', cancelled_by: 'driver' });
+  });
+
   it('una oferta que sigue buscando conductor no sale', () => {
     const filas = vistaDelConductor(FELIPE, [evento('r1', 'offered')], viajes(
       { id: 'r1', ride_status: 'searching', driver_id: null },
