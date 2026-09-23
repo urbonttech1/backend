@@ -14,6 +14,7 @@
  */
 
 import { createContextLogger } from '../lib/logger';
+import { viajesVarados } from './staleRides';
 import { supabaseAdmin } from '../db/client';
 import { broadcastRideStatus } from './socketService';
 import { sendToToken } from './fcm';
@@ -49,6 +50,9 @@ export async function reassignRide(
       .update({
         ride_status: 'searching',
         driver_id: null,
+        // Mismo reloj que una cancelación del chofer: si nadie lo toma en unos
+        // minutos, el cron lo cancela y avisa (services/reassignTimeout.ts).
+        reassigning_since: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq('id', rideId)
@@ -147,8 +151,8 @@ export async function findStaleRides(): Promise<Array<{
 
     // Fallback: direct query using Supabase filter
     // We query rides table and join against driver_locations for the updated_at check
-    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-    const twelveMinAgo = new Date(Date.now() - 12 * 60 * 1000).toISOString();
+    // Sólo se miran viajes que llevan un rato sin cambiar; el plazo por estado
+    // lo aplica `viajesVarados`.
     const fourMinAgo = new Date(Date.now() - 4 * 60 * 1000).toISOString();
 
     const { data: confirmedRides } = await supabaseAdmin
@@ -183,12 +187,14 @@ export async function findStaleRides(): Promise<Array<{
       (locations ?? []).map((l: { driver_id: string; updated_at: string }) => [l.driver_id, l.updated_at])
     );
 
-    return candidates.filter(ride => {
-      const lastUpdate = locationMap.get(ride.driver_id);
-      if (!lastUpdate) return true; // driver never sent a location — stale
-      const threshold = ride.ride_status === 'confirmed' ? fiveMinAgo : twelveMinAgo;
-      return lastUpdate < threshold;
-    });
+    // La decisión vive en services/staleRides.ts. Antes, un chofer SIN posición
+    // guardada se daba por varado siempre, así que mientras las escrituras de
+    // GPS fallaban se le quitaba el viaje a todo el mundo pasados cuatro
+    // minutos: el pasajero iba a bordo y su viaje volvía a «buscando».
+    return viajesVarados(
+      candidates.map(r => ({ ...r, ultimaPosicion: locationMap.get(r.driver_id) ?? null })),
+      new Date(),
+    ).map(({ id, driver_id, ride_status }) => ({ id, driver_id, ride_status }));
   } catch (err: any) {
     log.error({ err: err?.message }, '[findStaleRides] Query failed');
     return [];

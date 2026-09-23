@@ -93,6 +93,9 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
         ride_status: 'searching',
         driver_id: null,
         accepted_at: null,
+        // Desde aquí cuenta el plazo para encontrar reemplazo: si nadie lo toma,
+        // el cron lo cancela y avisa al pasajero (services/reassignTimeout.ts).
+        reassigning_since: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }).eq('id', req.params.id);
 

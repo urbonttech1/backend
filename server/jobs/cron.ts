@@ -5,7 +5,9 @@ const log = createContextLogger('CRON');
 import { pool } from '../db/pool';
 import { supabaseAdmin } from '../db/client';
 import { findStaleRides, reassignRide } from '../services/rideReassignment';
-import { notifyAvailableDrivers, getIo } from '../services/socketService';
+import { notifyAvailableDrivers, getIo, broadcastRideStatus } from '../services/socketService';
+import { reasignacionesVencidas, MINUTOS_PARA_REEMPLAZO, type ViajeEnReasignacion } from '../services/reassignTimeout';
+import { getStripe } from '../api/rides/helpers';
 import { notifyUser, sendMulticast } from '../services/fcm';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
 
@@ -108,6 +110,88 @@ async function cancelExpiredSearchingRides() {
     if (n > 0) log.info(`[CRON] Cancelled ${n} expired searching ride(s) — passengers notified.`);
   } catch (err: any) {
     log.error({ err: err }, '[CRON] cancelExpiredSearchingRides error');
+  }
+}
+
+
+/**
+ * Se acabó el plazo para encontrar reemplazo.
+ *
+ * Cuando un chofer cancela un viaje que ya había aceptado, el viaje vuelve a
+ * «buscando» y se le ofrece a otro (api/rides/cancel.ts). Si nadie lo toma, el
+ * pasajero se quedaba esperando sin final: la única red era la limpieza de los
+ * viajes con más de dos horas buscando. Aquí se cancela a los pocos minutos, se
+ * libera la retención de la tarjeta y se le avisa.
+ */
+async function cancelarReasignacionesVencidas() {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .select('id, passenger_id, ride_status, driver_id, reassigning_since, payment_intent_id')
+      .eq('ride_status', 'searching')
+      .is('driver_id', null)
+      .not('reassigning_since', 'is', null)
+      .limit(100);
+    if (error) {
+      // La columna aún no existe: el servidor está sin migrar, no es un fallo.
+      if (!/column|schema cache/i.test(error.message)) {
+        log.error({ err: error.message }, '[CRON] reasignaciones vencidas: consulta');
+      }
+      return;
+    }
+
+    const vencidos = reasignacionesVencidas((data ?? []) as ViajeEnReasignacion[], new Date());
+    if (!vencidos.length) return;
+
+    const stripe = getStripe();
+    const ahora = new Date().toISOString();
+
+    for (const viaje of vencidos) {
+      const fila = (data ?? []).find((d: Record<string, unknown>) => String(d.id) === viaje.id) as Record<string, unknown>;
+
+      // Se cancela sólo si sigue sin chofer: entre la consulta y ahora puede
+      // haberlo aceptado alguien.
+      const { data: cancelado, error: cancelErr } = await supabaseAdmin
+        .from('rides')
+        .update({
+          ride_status: 'cancelled',
+          cancel_reason: 'no_driver_found',
+          cancelled_at: ahora,
+          reassigning_since: null,
+          updated_at: ahora,
+        })
+        .eq('id', viaje.id)
+        .eq('ride_status', 'searching')
+        .is('driver_id', null)
+        .select('id, passenger_id')
+        .maybeSingle();
+
+      if (cancelErr || !cancelado) continue;
+
+      // La retención de la tarjeta se libera: el pasajero no pagó nada.
+      const piId = fila?.payment_intent_id as string | undefined;
+      if (stripe && piId) {
+        try {
+          const pi = await stripe.paymentIntents.retrieve(piId);
+          if (pi.status === 'requires_capture') await stripe.paymentIntents.cancel(pi.id);
+        } catch (err: any) {
+          log.warn({ err: err?.message, rideId: viaje.id }, '[CRON] no se pudo liberar la retención');
+        }
+      }
+
+      const passengerId = String(cancelado.passenger_id || '');
+      if (passengerId) {
+        notifyUser(passengerId, passengerNotif.rideCancelledNoDriver(viaje.id)).catch(() => {});
+      }
+      broadcastRideStatus(viaje.id, 'cancelled', {
+        reason: 'no_driver_found',
+        afterDriverCancelled: true,
+        passengerId,
+      });
+      log.info(`[CRON] Viaje ${viaje.id} cancelado: nadie tomó el reemplazo en ${MINUTOS_PARA_REEMPLAZO} min.`);
+    }
+  } catch (err: any) {
+    log.error({ err: err?.message }, '[CRON] cancelarReasignacionesVencidas');
   }
 }
 
@@ -720,6 +804,12 @@ export async function startCronJobs() {
     autoSurge();
   });
   log.info('[CRON] Auto-surge pricing scheduled every 5 minutes.');
+
+  // Cada minuto: el plazo para encontrar reemplazo es de minutos, no de horas.
+  cron.schedule('* * * * *', () => {
+    cancelarReasignacionesVencidas();
+  });
+  log.info(`[CRON] Reassignment timeout check scheduled every minute (${MINUTOS_PARA_REEMPLAZO} min).`);
 
   // T002: Re-dispatch unaccepted rides every 5 minutes
   cron.schedule('*/5 * * * *', () => {

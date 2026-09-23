@@ -1217,6 +1217,10 @@ export async function runMigrations() {
       -- Impuesto de venta del viaje. La columna fare sigue siendo el precio SIN
       -- impuesto, que es lo que se reparte con el chofer; esto es lo que se le
       -- suma al pasajero al cobrar. Ver services/rideTax.ts.
+      -- Desde cuándo un viaje busca reemplazo porque su chofer canceló. Sirve
+      -- para rendirse a los pocos minutos en vez de dejar al pasajero esperando
+      -- hasta la limpieza de las 2 horas. Ver services/reassignTimeout.ts.
+      ALTER TABLE rides ADD COLUMN IF NOT EXISTS reassigning_since TIMESTAMPTZ;
       ALTER TABLE rides ADD COLUMN IF NOT EXISTS tax_amount NUMERIC(10,2);
       ALTER TABLE rides ADD COLUMN IF NOT EXISTS total_with_tax NUMERIC(10,2);
     `);
