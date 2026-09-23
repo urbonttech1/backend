@@ -9,6 +9,8 @@ import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore';
 import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
+import { ensureComisionFresh, guardarComision, comoPorcentaje as comoPorcentajeComision, COMISION_MAXIMA } from '../services/commissionConfig';
+import { getPlatformCommission } from '../config/pricing';
 import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
@@ -859,10 +861,37 @@ adminRouter.get("/fares", async (_req: Request, res: Response) => {
   // o no cubre el país. La tasa real la calcula Stripe por jurisdicción y NO se
   // configura aquí: es dinero del estado.
   const taxFallbackRatePercent = comoPorcentaje(await tasaImpuestoRespaldo());
+  // La comisión de Urbont, contenida en el precio: el pasajero paga la tarifa de
+  // la tabla y de ahí sale. Editable desde esta misma pantalla.
+  await ensureComisionFresh();
+  const platformCommissionPercent = comoPorcentajeComision(getPlatformCommission());
   // Las políticas (espera, no-show, cancelación) viajan con las tarifas para que
   // la pantalla las muestre sin una segunda petición. Son de sólo lectura: se
   // cambian en código.
-  res.json({ fares, pricingPolicy: getPricingPolicy(), taxFallbackRatePercent });
+  res.json({ fares, pricingPolicy: getPricingPolicy(), taxFallbackRatePercent, platformCommissionPercent });
+});
+
+// PUT /api/admin/fares/commission — la comisión de Urbont
+// Sale de dentro del precio: subirla no encarece el viaje, le quita al chofer.
+adminRouter.put("/fares/commission", async (req: Request, res: Response) => {
+  const { platformCommissionPercent } = (req.body ?? {}) as { platformCommissionPercent?: unknown };
+  const quien = (req as Request & { adminEmail?: string }).adminEmail || 'admin';
+
+  const tasa = await guardarComision(platformCommissionPercent, quien).catch((err: unknown) => {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] guardar comisión');
+    return undefined;
+  });
+
+  if (tasa === null) {
+    return res.status(400).json({
+      error: `La comisión debe ser un número entre 0 y ${comoPorcentajeComision(COMISION_MAXIMA)}.`,
+      errorCode: 'INVALID_COMMISSION',
+      field: 'platformCommissionPercent',
+    });
+  }
+  if (tasa === undefined) return res.status(500).json({ error: 'No se pudo guardar la comisión.' });
+
+  return res.json({ success: true, platformCommissionPercent: comoPorcentajeComision(tasa) });
 });
 
 // PUT /api/admin/fares/tax — tasa de respaldo del impuesto

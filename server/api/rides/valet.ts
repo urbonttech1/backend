@@ -7,6 +7,7 @@ import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
 import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
+  PLATFORM_COMMISSION,
   calculateFareFromRules,
   WAIT_TIME_FREE_MINUTES,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
@@ -381,8 +382,9 @@ router.post('/:id/valet-card-checkout', requireSupabaseAuth, async (req: Request
     const valetSurcharge = isValetRide ? Number(r.valet_surcharge ?? VALET_COMMISSION_USD) : 0;
     const totalFareDb    = Number(r.locked_fare ?? r.fare ?? 0);
     const fareNoValet    = Math.max(0, totalFareDb - valetSurcharge);           // driver-owned portion
-    const platformPct    = 0.10;
-    const platformCut    = +(fareNoValet * platformPct).toFixed(2);             // URBONT 10%
+    // La comisión sale de config/pricing.ts: estaba escrita aquí y se habría
+    // quedado en el 10 % al subirla al 15 %.
+    const platformCut    = +(fareNoValet * PLATFORM_COMMISSION).toFixed(2);
     const totalToCharge  = +(fareNoValet + valetSurcharge).toFixed(2);          // total billed
 
     if (totalToCharge < 1) {

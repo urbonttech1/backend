@@ -9,6 +9,7 @@ import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
 import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
+  PLATFORM_COMMISSION,
   calculateFareFromRules,
   WAIT_TIME_FREE_MINUTES,
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
@@ -399,8 +400,9 @@ router.get('/:id/earnings-breakdown', requireSupabaseAuth, async (req: Request, 
       try { breakdown = JSON.parse(r.base_fare_breakdown as string); } catch {}
     }
 
-    // URBONT takes 10% platform fee; driver earns 90% of total (excl. tip)
-    const driverBase  = Math.round((lockedFare + waitFee) * 0.9 * 100) / 100;
+    // URBONT se queda su comisión, contenida en el precio; el chofer cobra el
+    // resto, sin contar la propina. El porcentaje vive en config/pricing.ts.
+    const driverBase  = Math.round((lockedFare + waitFee) * (1 - PLATFORM_COMMISSION) * 100) / 100;
     const driverTotal = Math.round((driverBase + tipAmount) * 100) / 100;
 
     return res.json({

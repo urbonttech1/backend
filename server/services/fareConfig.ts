@@ -149,7 +149,10 @@ export async function invalidateFares(): Promise<void> {
  */
 export async function ensureFaresFresh(): Promise<void> {
   try {
-    await loadFares(false);
+    // La comisión va con las tarifas: las dos se editan desde el panel y las dos
+    // tienen que estar frescas antes de calcular un precio.
+    const { ensureComisionFresh } = await import('./commissionConfig');
+    await Promise.all([loadFares(false), ensureComisionFresh()]);
   } catch {
     /* loadFares ya registra el error; acá no hay nada que decidir */
   }

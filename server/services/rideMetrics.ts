@@ -1,11 +1,11 @@
 /**
  * URBONT Ride Metrics — Stripe Connect commission engine
  *
- * Platform commission: flat 10% on every ride.
+ * Platform commission: flat 15% on every ride, contained in the price.
  *
  * All monetary output is in cents (integer) for direct use with Stripe:
- *   - application_fee_amount → platform cut (10%)
- *   - transfer_data.amount   → driver payout (90%)
+ *   - application_fee_amount → platform cut (15%)
+ *   - transfer_data.amount   → driver payout (85%)
  */
 
 export interface RideMetricsInput {
@@ -19,12 +19,18 @@ export interface RideMetricsResult {
   commissionRate: number;
 }
 
-const COMMISSION_RATE = 0.10;
+/**
+ * Lo que se queda Urbont de cada viaje, contenido en el precio: el chofer cobra
+ * el 85 %. Era el 10 % —y además el precio llevaba otro 10 % por encima—, así que
+ * el chofer se llevaba prácticamente la tarifa entera. Mismo valor que
+ * `PLATFORM_COMMISSION` en config/pricing.ts.
+ */
+const COMMISSION_RATE = 0.15;
 
 /**
  * calculateRideMetrics
  *
- * Commission: flat 10% to URBONT, 90% to driver.
+ * Commission: flat 15% to URBONT, 85% to driver.
  *
  * @param input.totalFareUSD - Total trip fare in USD (e.g. 45.50)
  *
@@ -53,9 +59,9 @@ export interface RepartoInput {
 export interface RepartoResult {
   /** Lo que se le cobra a la tarjeta: precio + impuesto. */
   chargeCents: number;
-  /** Lo que retiene la plataforma: su 10 %, el impuesto y la comisión del valet. */
+  /** Lo que retiene la plataforma: su 15 %, el impuesto y la comisión del valet. */
   applicationFeeCents: number;
-  /** Lo que le queda al chofer: el 90 % del servicio, sin impuesto ni comisión ajena. */
+  /** Lo que le queda al chofer: el 85 % del servicio, sin impuesto ni comisión ajena. */
   driverPayoutCents: number;
   commissionRate: number;
 }

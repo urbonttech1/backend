@@ -43,15 +43,17 @@ describe('tarifas acordadas — valores por clase', () => {
 });
 
 describe('calculateFareFromRules — casos del plan', () => {
-  it('sedan 2 mi, 8 min, a demanda → $20.90 (aplica la mínima)', () => {
+  it('sedan 2 mi, 8 min, a demanda → $21.50 (aplica la mínima)', () => {
     const f = fare('sedan', 2, 8);
     expect(f.base_fare).toBe(17);
     expect(f.distance_charge).toBe(0);     // 2 × 2.90 = 5.80 < mínima
     expect(f.time_charge).toBe(2);         // 8 × 1.00 × 0.25
-    expect(f.booking_fee).toBe(0);         // a demanda: sin reserva
-    expect(f.ride_fare).toBe(19);
-    expect(f.platform_fee).toBe(1.90);
-    expect(f.total).toBe(20.90);
+    expect(f.booking_fee).toBe(0);         // a demanda: sin reserva de clase
+    expect(f.booking_fee_flat).toBe(2.50); // el booking fijo va en todos
+    expect(f.ride_fare).toBe(21.50);
+    // La comisión va DENTRO del precio: el pasajero paga el ride_fare.
+    expect(f.platform_fee).toBe(3.23);     // 15 % de 21.50
+    expect(f.total).toBe(21.50);
     expect(f.tier).toBe(1);
     expect(f.per_mile).toBe(2.90);
   });
@@ -62,7 +64,7 @@ describe('calculateFareFromRules — casos del plan', () => {
     expect(f.per_mile).toBe(3.00);
     expect(f.base_fare + f.distance_charge).toBe(24); // 8 × 3.00
     expect(f.time_charge).toBe(5);
-    expect(f.total).toBe(31.90);
+    expect(f.total).toBe(31.50);   // 24 + 5 + 2.50 de booking
   });
 
   it('van 20 mi, 40 min, a demanda → $96.25', () => {
@@ -70,7 +72,7 @@ describe('calculateFareFromRules — casos del plan', () => {
     expect(f.tier).toBe(3);
     expect(f.base_fare + f.distance_charge).toBe(70); // 20 × 3.50
     expect(f.time_charge).toBe(17.5);                // 40 × 1.75 × 0.25
-    expect(f.total).toBe(96.25);
+    expect(f.total).toBe(90);                        // 70 + 17.50 + 2.50
   });
 
   it('un viaje de 10,5 mi cuenta como tramo de más de 10 mi', () => {
@@ -124,9 +126,9 @@ describe('calculateFareFromRules — reserva', () => {
     expect(fare('van',   8, 20, 'scheduled').booking_fee).toBe(20);
   });
 
-  it('un programado suma la reserva al total, con su 10 %', () => {
-    // 31.90 a demanda; programado: (29 + 10) × 1.10 = 42.90
-    expect(fare('sedan', 8, 20, 'scheduled').total).toBe(42.90);
+  it('un programado suma la reserva de su clase', () => {
+    // 31.50 a demanda; programado: 24 + 5 + 2.50 de booking + 10 de reserva.
+    expect(fare('sedan', 8, 20, 'scheduled').total).toBe(41.50);
   });
 
   it('el recargo nunca multiplica la reserva', () => {
@@ -199,13 +201,19 @@ describe('no-show', () => {
     expect(minutosParaNoShowDemanda()).toBe(15);
   });
 
-  it('sedan con viaje de $31.90 → $10.69', () => {
-    // 10 × 0.75 + 10 % × 31.90 = 7.50 + 3.19
-    expect(calcularNoShowDemanda('sedan', 31.90)).toBe(10.69);
+  it('sedan → $12.55, sin depender de lo que costara el viaje', () => {
+    // 10 × 0.75 de espera + 2.50 de booking + 15 % de la mínima (17) = 7.50 + 2.50 + 2.55
+    expect(calcularNoShowDemanda('sedan')).toBe(12.55);
+    // Un trayecto largo que nunca se hizo cobra lo mismo por el plantón.
+    expect(calcularNoShowDemanda('sedan', 31.90)).toBe(12.55);
+    expect(calcularNoShowDemanda('sedan', 300)).toBe(12.55);
   });
 
-  it('usa la tarifa de espera de cada clase', () => {
-    expect(calcularNoShowDemanda('van', 100)).toBe(22.5);  // 12.50 + 10
+  it('usa la tarifa de espera y la mínima de cada clase', () => {
+    // van: 10 × 1.25 + 2.50 + 15 % de 27 = 12.50 + 2.50 + 4.05
+    expect(calcularNoShowDemanda('van')).toBe(19.05);
+    // suv: 10 × 1.00 + 2.50 + 15 % de 22 = 10 + 2.50 + 3.30
+    expect(calcularNoShowDemanda('suv')).toBe(15.80);
   });
 
   it('un viaje de valet no paga no-show', () => {
@@ -243,18 +251,19 @@ describe('calcularCancelacionReserva', () => {
 
 describe('calculateHourlyFare', () => {
   it('cobra el bloque de horas pedido, sin reserva si no es programado', () => {
-    // 4 h × $110 = $440; comisión $44
+    // 4 h × $110 = $440, más el booking fijo
     const f = calculateHourlyFare({ vehicleType: 'sedan', hours: 4 })!;
     expect(f.billed_hours).toBe(4);
     expect(f.hourly_charge).toBe(440);
     expect(f.booking_fee).toBe(0);
-    expect(f.total).toBe(484);
+    expect(f.booking_fee_flat).toBe(2.50);
+    expect(f.total).toBe(442.50);
   });
 
   it('suma la reserva cuando es programado', () => {
     const f = calculateHourlyFare({ vehicleType: 'sedan', hours: 4, bookingType: 'scheduled' })!;
     expect(f.booking_fee).toBe(10);
-    expect(f.total).toBe(495);   // (440 + 10) × 1.10
+    expect(f.total).toBe(452.50);   // 440 + 10 de reserva + 2.50 de booking
   });
 
   it('nunca cobra menos que el mínimo de la clase', () => {

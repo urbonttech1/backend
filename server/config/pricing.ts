@@ -10,7 +10,40 @@
  */
 
 // ── Plataforma ───────────────────────────────────────────────────────────────
-export const PLATFORM_COMMISSION = 0.10;   // 10% URBONT sobre el subtotal
+/**
+ * Lo que se queda Urbont de cada viaje. Sale de DENTRO del precio: el pasajero
+ * paga lo que dice la tabla de tarifas y de ahí se reparte.
+ *
+ * Antes era un 10 % que se SUMABA por encima —un viaje de $20 se cobraba a $22—
+ * y el chofer recibía el 90 % de ese total, o sea casi la tarifa entera. El
+ * cliente lo fijó en el 15 % contenido en el precio: el pasajero paga $20, el
+ * chofer cobra $17 y Urbont $3.
+ */
+export const PLATFORM_COMMISSION = 0.15;
+
+/**
+ * La comisión vigente. Arranca en la de arriba y el panel la puede cambiar sin
+ * desplegar (services/commissionConfig.ts la carga desde `app_config`), igual
+ * que las tarifas por clase. Se lee con `getPlatformCommission()`: leer la
+ * constante directamente se queda con el valor del código.
+ */
+let comisionVigente = PLATFORM_COMMISSION;
+
+export function getPlatformCommission(): number {
+  return comisionVigente;
+}
+
+/** La fija el cargador de configuración; fuera de rango se ignora. */
+export function setPlatformCommission(tasa: number): void {
+  if (!Number.isFinite(tasa) || tasa < 0 || tasa > 0.5) return;
+  comisionVigente = tasa;
+}
+
+/**
+ * Cargo fijo de reserva del sistema, en todos los viajes. Distinto del
+ * `serviceFee` por clase, que sólo pagan los viajes programados.
+ */
+export const BOOKING_FEE_USD = 2.50;
 
 // ── Espera ───────────────────────────────────────────────────────────────────
 /** Minutos que el pasajero tiene para llegar al coche sin cargo. */
@@ -236,8 +269,10 @@ export interface FareRulesBreakdown {
   /** Lo que la distancia supera a la mínima, con recargo. base_fare + distance_charge = lo que cuesta el recorrido. */
   distance_charge:  number;
   time_charge:      number;
-  /** Reserva. 0 salvo en viajes programados. */
+  /** Reserva de la clase. 0 salvo en viajes programados. */
   booking_fee:      number;
+  /** Cargo fijo de reserva del sistema, en todos los viajes. */
+  booking_fee_flat: number;
   ride_fare:        number;
   platform_fee:     number;
   total:            number;
@@ -290,12 +325,15 @@ export function calculateFareFromRules(opts: {
   // Tiempo de trayecto: duración × perMin × 0.25 (el mismo factor del 25 % de siempre)
   const time_charge     = opts.durationMinutes > 0 ? r2(opts.durationMinutes * rule.perMin * 0.25 * surge) : 0;
   const booking_fee     = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;
-  const ride_fare       = r2(base_fare + distance_charge + time_charge + booking_fee);
-  const platform_fee    = r2(ride_fare * PLATFORM_COMMISSION);
-  const total           = r2(ride_fare + platform_fee);
+  // El recargo por demanda no toca ni la reserva ni el booking fijo.
+  const booking_fee_flat = BOOKING_FEE_USD;
+  const ride_fare       = r2(base_fare + distance_charge + time_charge + booking_fee + booking_fee_flat);
+  // Contenida en el precio, no añadida: `total` es lo que paga el pasajero.
+  const platform_fee    = r2(ride_fare * getPlatformCommission());
+  const total           = ride_fare;
 
   return {
-    base_fare, distance_charge, time_charge, booking_fee,
+    base_fare, distance_charge, time_charge, booking_fee, booking_fee_flat,
     ride_fare, platform_fee, total,
     surge_multiplier: surge,
     distance_miles:   r2(miles),
@@ -311,6 +349,7 @@ export function calculateFareFromRules(opts: {
 export interface HourlyFareBreakdown {
   hourly_charge:    number;
   booking_fee:      number;
+  booking_fee_flat: number;
   ride_fare:        number;
   platform_fee:     number;
   total:            number;
@@ -347,12 +386,13 @@ export function calculateHourlyFare(opts: {
   const billedHours   = Math.max(rule.minHours, opts.hours);
   const hourly_charge = r2(billedHours * rule.perHour * surge);
   const booking_fee   = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;
-  const ride_fare     = r2(hourly_charge + booking_fee);
-  const platform_fee  = r2(ride_fare * PLATFORM_COMMISSION);
-  const total         = r2(ride_fare + platform_fee);
+  const booking_fee_flat = BOOKING_FEE_USD;
+  const ride_fare     = r2(hourly_charge + booking_fee + booking_fee_flat);
+  const platform_fee  = r2(ride_fare * getPlatformCommission());
+  const total         = ride_fare;
 
   return {
-    hourly_charge, booking_fee, ride_fare, platform_fee, total,
+    hourly_charge, booking_fee, booking_fee_flat, ride_fare, platform_fee, total,
     surge_multiplier: surge,
     billed_hours:     billedHours,
     requested_hours:  opts.hours,
@@ -391,14 +431,21 @@ export function minutosParaNoShowDemanda(): number {
 }
 
 /**
- * Cargo por no-show en un viaje a demanda: los minutos de espera adicionales a
- * la tarifa de espera de la clase, más el 10 % del total del viaje.
+ * Cargo por no-show en un viaje a demanda, según la regla del cliente:
+ * los minutos de espera cobrables a la tarifa de la clase, el booking fijo y la
+ * comisión sobre la tarifa inicial.
+ *
+ * Antes era la espera más el 10 % del total del viaje, así que un trayecto
+ * largo que nunca se hizo cobraba más que uno corto por el mismo plantón.
  */
-export function calcularNoShowDemanda(vehicleType: string, totalViaje: number, esValet = false): number {
+export function calcularNoShowDemanda(vehicleType: string, _totalViaje?: number, esValet = false): number {
   const rule = getFareClass(vehicleType);
   if (!rule || esValet) return 0;
-  const total = Number.isFinite(totalViaje) && totalViaje > 0 ? totalViaje : 0;
-  return r2(NO_SHOW_EXTRA_WAIT_MINUTES * rule.waitPerMin + total * PLATFORM_COMMISSION);
+  return r2(
+    NO_SHOW_EXTRA_WAIT_MINUTES * rule.waitPerMin
+    + BOOKING_FEE_USD
+    + rule.minFare * getPlatformCommission(),
+  );
 }
 
 /**
@@ -426,7 +473,9 @@ export function calcularCancelacionReserva(
 export function getPricingPolicy() {
   return {
     currency: 'USD',
-    platformCommission: PLATFORM_COMMISSION,
+    /** Contenida en el precio, no añadida por encima. */
+    platformCommission: getPlatformCommission(),
+    bookingFee: BOOKING_FEE_USD,
     mileTiers: { tier1MaxMiles: TIER1_MAX_MILES, tier2MaxMiles: TIER2_MAX_MILES },
     wait: {
       freeMinutes: WAIT_TIME_FREE_MINUTES,
@@ -471,7 +520,7 @@ export interface ComisionResult {
 export function calcularComisionDinamica(precioViaje: number): ComisionResult {
   if (precioViaje < 0) throw new RangeError('precioViaje no puede ser negativo');
 
-  const porcentaje = PLATFORM_COMMISSION;
+  const porcentaje = getPlatformCommission();
   const montoUSD = r2(precioViaje * porcentaje);
   const centavos = Math.round(montoUSD * 100);
 
