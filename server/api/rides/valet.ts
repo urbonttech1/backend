@@ -13,6 +13,9 @@ import {
   CONSECUTIVE_TRIP_BONUS,
   normalizePaymentMethod,
 } from "../../config/pricing";
+import { ensureFaresFresh } from "../../services/fareConfig";
+import { getEffectiveSurge } from "../config";
+import { comisionValet } from "../../services/valetCommission";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -170,23 +173,40 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
     // manda el método como string libre y aquí no había validación.
     const pmMethod = normalizePaymentMethod(paymentMethod || 'cash');
 
-    // ── Valet $10 surcharge ──────────────────────────────────────────────────
-    // Parse the base fare sent by the dashboard (e.g. "$22.50" → 22.50)
-    const rawPrice = typeof vehiclePrice === 'number'
+    // ── Precio del servicio y comisión del valet ─────────────────────────────
+    // El precio lo calcula el SERVIDOR con la tabla oficial, igual que en el
+    // viaje de un pasajero (ver create.ts, «Server-side fare guard»). Antes se
+    // cobraba lo que mandara el tablero, así que el mismo trayecto A → B salía
+    // más caro despachado por un valet que pedido por el pasajero: cualquier
+    // estimación de respaldo del tablero se convertía en el precio real.
+    const precioTablero = typeof vehiclePrice === 'number'
       ? vehiclePrice
       : parseFloat(String(vehiclePrice ?? '').replace(/[^0-9.]/g, '')) || 0;
-    const baseFare        = rawPrice > 0 ? rawPrice : 0;
-    const valetSurcharge  = VALET_COMMISSION_USD;                  // $10
+
+    await ensureFaresFresh();
+    const surgeMultiplier = await getEffectiveSurge();
+    const valetFareBreakdown = (typeof valetMiles === 'number' && typeof valetDuration === 'number')
+      ? calculateFareFromRules({
+          vehicleType,
+          distanceMiles: valetMiles,
+          durationMinutes: valetDuration,
+          bookingType: scheduledAt ? 'scheduled' : 'on_demand',
+          surgeMultiplier,
+        })
+      : null;
+
+    // Sin distancia ni duración no hay con qué calcular: se conserva lo que
+    // mandó el tablero para no dejar al valet sin poder despachar.
+    const tarifaServidor = valetFareBreakdown && valetFareBreakdown.total > 0 ? valetFareBreakdown.total : 0;
+    const baseFare       = tarifaServidor > 0 ? tarifaServidor : (precioTablero > 0 ? precioTablero : 0);
+
+    // $10 hasta $100 de servicio, 10 % por encima (services/valetCommission.ts).
+    const valetSurcharge  = comisionValet(baseFare);
     const totalFare       = baseFare > 0 ? +(baseFare + valetSurcharge).toFixed(2) : null;
 
-    // For cash rides: the driver collects the full fare in cash (including the $10).
-    // We record platform_fee_amount = $10 so we know how much the driver owes the platform.
+    // For cash rides: the driver collects the full fare in cash (including the commission).
+    // We record platform_fee_amount so we know how much the driver owes the platform.
     const platformFee = pmMethod === 'cash' && totalFare ? valetSurcharge : 0;
-
-    // Fare breakdown for receipts — uses FARE_RULES model to match what valet dashboard shows
-    const valetFareBreakdown = (typeof valetMiles === 'number' && typeof valetDuration === 'number')
-      ? calculateFareFromRules({ vehicleType, distanceMiles: valetMiles, durationMinutes: valetDuration })
-      : null;
 
     const pin = skipPin ? null : String(randomInt(1000, 10000));
     const valetId = req.supabaseUid;
@@ -271,7 +291,9 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
     const pickupAddr = typeof pickup === 'string' ? pickup : (pickup?.address || 'Location');
     notifyAvailableDrivers(ride.id, vehicleType, pickupAddr, gpsLat, gpsLng);
 
-    logger.info(`[VALET_DISPATCH] Ride ${ride.id} | base $${baseFare} + surcharge $${valetSurcharge} = total $${totalFare} | method: ${pmMethod} | cash owed by driver: $${platformFee}`);
+    // El precio del tablero queda en el log para poder comparar: si se separa
+    // del servidor, es que la estimación del tablero está desviada.
+    logger.info(`[VALET_DISPATCH] Ride ${ride.id} | tarifa $${baseFare} (tablero $${precioTablero}) + comisión $${valetSurcharge} = total $${totalFare} | method: ${pmMethod} | cash owed by driver: $${platformFee}`);
 
     res.json({ ride, pin, bookingRef, baseFare, valetSurcharge, totalFare });
   } catch (err: any) {

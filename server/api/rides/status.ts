@@ -196,7 +196,10 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
 
     // Fetch ride to validate ownership and current state
     const { data: ride, error: fetchErr } = await supabaseAdmin.from('rides')
-      .select('passenger_id, driver_id, ride_status, payment_intent_id, fare, locked_fare, wait_started_at, started_at, accepted_at, pickup_pin, vehicle_type, scheduled_at, dispatched_by_valet')
+      // valet_user_id, valet_commission_paid y valet_surcharge: el bloque que
+      // paga al valet al completar el viaje los lee, y no venían en el select,
+      // así que llegaban undefined y esa transferencia no se hacía nunca.
+      .select('passenger_id, driver_id, ride_status, payment_intent_id, fare, locked_fare, wait_started_at, started_at, accepted_at, pickup_pin, vehicle_type, scheduled_at, dispatched_by_valet, valet_user_id, valet_commission_paid, valet_surcharge')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -458,6 +461,13 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
             const valetUserId = (r as Record<string, unknown>).valet_user_id as string | undefined;
             const valetCommissionPaid = (r as Record<string, unknown>).valet_commission_paid as boolean | undefined;
             if (valetUserId && !valetCommissionPaid) {
+              // Lo que se le cobró al huésped por el servicio del valet, que
+              // desde la tabla por tramos ya no son siempre $10: $10 hasta $100
+              // de servicio y el 10 % por encima. Transferir la constante fija
+              // le habría pagado $10 por un viaje cuya comisión fue de $30.
+              const comisionCobrada = Number(
+                (r as Record<string, unknown>).valet_surcharge ?? VALET_COMMISSION_USD,
+              ) || VALET_COMMISSION_USD;
               try {
                 const { data: valetProfile } = await supabaseAdmin
                   .from('profiles')
@@ -467,10 +477,10 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
 
                 if (valetProfile?.stripe_account_id && valetProfile?.stripe_connect_status === 'active') {
                   const valetTransfer = await stripe.transfers.create({
-                    amount: Math.round(VALET_COMMISSION_USD * 100),
+                    amount: Math.round(comisionCobrada * 100),
                     currency: 'usd',
                     destination: valetProfile.stripe_account_id,
-                    description: `Valet commission ($${VALET_COMMISSION_USD}) for ride ${req.params.id}`,
+                    description: `Valet commission ($${comisionCobrada}) for ride ${req.params.id}`,
                     metadata: {
                       ride_id: req.params.id,
                       valet_user_id: valetUserId,
@@ -485,7 +495,7 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
                     valet_commission_transfer_id: valetTransfer.id,
                   }).eq('id', req.params.id);
 
-                  logger.info(`[RIDES] Valet commission $${VALET_COMMISSION_USD} transferred to valet ${valetUserId} (transfer: ${valetTransfer.id}) for ride ${req.params.id}`);
+                  logger.info(`[RIDES] Valet commission $${comisionCobrada} transferred to valet ${valetUserId} (transfer: ${valetTransfer.id}) for ride ${req.params.id}`);
                 } else {
                   logger.warn(`[RIDES] Valet ${valetUserId} has no active Stripe Connect account; commission pending.`);
                 }

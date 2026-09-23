@@ -41,14 +41,21 @@ export interface RepartoInput {
   fareCents: number;
   /** Impuesto en centavos. Lo retiene la plataforma para declararlo. */
   taxCents?: number;
+  /**
+   * Comisión del valet en centavos, si el viaje lo despachó uno. Va dentro de
+   * `fareCents` porque se le cobra al huésped, pero no es parte del servicio del
+   * chofer: sin descontarla, el chofer se llevaba el 90 % de una comisión que es
+   * de otro.
+   */
+  valetCents?: number;
 }
 
 export interface RepartoResult {
   /** Lo que se le cobra a la tarjeta: precio + impuesto. */
   chargeCents: number;
-  /** Lo que retiene la plataforma: su 10 % MÁS el impuesto. */
+  /** Lo que retiene la plataforma: su 10 %, el impuesto y la comisión del valet. */
   applicationFeeCents: number;
-  /** Lo que le queda al chofer: el 90 % del precio, sin tocar el impuesto. */
+  /** Lo que le queda al chofer: el 90 % del servicio, sin impuesto ni comisión ajena. */
   driverPayoutCents: number;
   commissionRate: number;
 }
@@ -64,14 +71,17 @@ export interface RepartoResult {
  * El impuesto va DENTRO de la comisión: lo retiene la plataforma porque es
  * quien lo declara, y así al chofer le llega el 90 % del precio limpio.
  */
-export function calcularReparto({ fareCents, taxCents = 0 }: RepartoInput): RepartoResult {
-  if (fareCents < 0 || taxCents < 0) throw new RangeError('los importes no pueden ser negativos');
+export function calcularReparto({ fareCents, taxCents = 0, valetCents = 0 }: RepartoInput): RepartoResult {
+  if (fareCents < 0 || taxCents < 0 || valetCents < 0) throw new RangeError('los importes no pueden ser negativos');
+  if (valetCents > fareCents) throw new RangeError('la comisión del valet no puede superar el precio');
 
-  const comision = Math.round(fareCents * COMMISSION_RATE);
+  // El servicio del chofer es el precio sin la comisión del valet.
+  const servicio = fareCents - valetCents;
+  const comision = Math.round(servicio * COMMISSION_RATE);
   return {
     chargeCents:         fareCents + taxCents,
-    applicationFeeCents: comision + taxCents,
-    driverPayoutCents:   fareCents - comision,
+    applicationFeeCents: comision + taxCents + valetCents,
+    driverPayoutCents:   servicio - comision,
     commissionRate:      COMMISSION_RATE,
   };
 }

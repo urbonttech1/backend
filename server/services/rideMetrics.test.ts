@@ -46,3 +46,31 @@ describe('calcularReparto — el cobro con Stripe Connect', () => {
     expect(() => calcularReparto({ fareCents: 100, taxCents: -5 })).toThrow(RangeError);
   });
 });
+
+describe('calcularReparto — viajes despachados por un valet', () => {
+  it('la comisión del valet no sale del chofer', () => {
+    // Servicio de $300 + $30 de comisión: al huésped se le cobran $330.
+    const r = calcularReparto({ fareCents: 33000, valetCents: 3000 });
+    expect(r).toEqual({
+      chargeCents: 33000,
+      applicationFeeCents: 6000,  // $30 de la plataforma + $30 del valet
+      driverPayoutCents: 27000,   // el 90 % de los $300 del servicio
+      commissionRate: 0.10,
+    });
+  });
+
+  it('con impuesto, todo sigue cuadrando', () => {
+    const r = calcularReparto({ fareCents: 3200, taxCents: 208, valetCents: 1000 });
+    expect(r.driverPayoutCents).toBe(1980);            // 90 % de $22
+    expect(r.applicationFeeCents + r.driverPayoutCents).toBe(r.chargeCents);
+  });
+
+  it('un viaje sin valet reparte como siempre', () => {
+    expect(calcularReparto({ fareCents: 2200, valetCents: 0 }))
+      .toMatchObject({ applicationFeeCents: 220, driverPayoutCents: 1980 });
+  });
+
+  it('la comisión no puede superar el precio', () => {
+    expect(() => calcularReparto({ fareCents: 1000, valetCents: 1500 })).toThrow(RangeError);
+  });
+});

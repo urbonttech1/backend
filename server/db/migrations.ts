@@ -217,6 +217,19 @@ export async function runMigrations() {
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS doc_key        VARCHAR(100)`);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS document_type  VARCHAR(100)`);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS driver_name    VARCHAR(255)`);
+
+    // La copia del nombre en cada documento se escribe al subirlo, así que quedó
+    // vacía en quien completó su perfil después (alta con Google, sobre todo) y
+    // el panel mostraba «Unknown Driver». Se rellena desde el perfil, una vez y
+    // sin pisar lo que ya tenga valor.
+    await safeAlter(`
+      UPDATE driver_documents d
+         SET driver_name = TRIM(COALESCE(p.first_name,'') || ' ' || COALESCE(p.last_name,''))
+        FROM profiles p
+       WHERE p.id = d.driver_id
+         AND COALESCE(TRIM(d.driver_name), '') = ''
+         AND TRIM(COALESCE(p.first_name,'') || ' ' || COALESCE(p.last_name,'')) <> ''
+    `);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS file_name      VARCHAR(255)`);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date    DATE`);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS rejection_reason TEXT`);

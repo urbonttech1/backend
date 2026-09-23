@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { documentosVigentes } from '../services/docCatalogStore';
+import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
 import { pool } from '../db/pool';
 import { requireSupabaseAuth } from '../middleware';
@@ -345,10 +346,11 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
     const storageUrl = urlData?.publicUrl || storagePath;
 
     const { data: profileData } = await supabaseAdmin
-      .from('profiles').select('first_name, last_name').eq('id', uid).maybeSingle();
-    const driverName = profileData
-      ? `${profileData.first_name || ''} ${profileData.last_name || ''}`.trim()
-      : '';
+      .from('profiles').select('first_name, last_name, email, phone').eq('id', uid).maybeSingle();
+    // Con el perfil aún sin nombre —alta con Google— esto guardaba una cadena
+    // vacía y el panel acababa mostrando «Unknown Driver». El panel ya resuelve
+    // el nombre desde el perfil; esto es el respaldo.
+    const driverName = nombreDeConductor({ perfil: profileData as PerfilConductor | null, id: uid });
 
     const { error: dbErr } = await upsertDocRecord({
       driver_id:     uid,
@@ -693,10 +695,8 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
 
   // Fetch driver name once
   const { data: profileData } = await supabaseAdmin
-    .from('profiles').select('first_name, last_name').eq('id', uid).maybeSingle();
-  const driverName = profileData
-    ? `${profileData.first_name || ''} ${profileData.last_name || ''}`.trim()
-    : '';
+    .from('profiles').select('first_name, last_name, email, phone').eq('id', uid).maybeSingle();
+  const driverName = nombreDeConductor({ perfil: profileData as PerfilConductor | null, id: uid });
 
   const results: Record<string, { success: boolean; storageUrl?: string; error?: string }> = {};
 

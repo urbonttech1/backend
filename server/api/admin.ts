@@ -10,6 +10,7 @@ import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '
 import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore';
 import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
 import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
+import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
@@ -750,10 +751,32 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
       .select('id, driver_id, doc_key, document_type, status, storage_url, file_name, driver_name, created_at, updated_at')
       .order('created_at', { ascending: false });
     if (error) return res.json({ documents: [] });
-    const docs = (data || []).map((d: Record<string, unknown>) => ({
+
+    // El nombre sale del PERFIL, no de la copia que guarda cada documento. Esa
+    // copia se escribe al subir, así que quedaba vacía para siempre cuando el
+    // conductor completaba su nombre después —el alta con Google es justo así— y
+    // el panel mostraba «Unknown Driver» sin forma de saber de quién era.
+    const filas = (data || []) as Record<string, unknown>[];
+    const driverIds = [...new Set(filas.map((d) => String(d.driver_id || '')).filter(Boolean))];
+    const perfiles = new Map<string, PerfilConductor>();
+    if (driverIds.length > 0) {
+      const { data: rows } = await supabaseAdmin
+        .from('profiles')
+        .select('id, first_name, last_name, email, phone')
+        .in('id', driverIds);
+      for (const prof of (rows ?? []) as Record<string, unknown>[]) {
+        perfiles.set(String(prof.id), prof as PerfilConductor);
+      }
+    }
+
+    const docs = filas.map((d: Record<string, unknown>) => {
+      const perfil = perfiles.get(String(d.driver_id || ''));
+      return {
       id: d.id,
       driverId: d.driver_id,
-      driverName: d.driver_name || 'Unknown Driver',
+      driverName: nombreDeConductor({ perfil, copia: d.driver_name as string, id: d.driver_id as string }),
+      driverEmail: perfil?.email ?? null,
+      driverPhone: perfil?.phone ?? null,
       type: d.doc_key || d.document_type || 'document',
       fileName: d.file_name || 'document',
       status: d.status || 'pending',
@@ -761,7 +784,8 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
       uploadDate: d.created_at,
       updatedAt: d.updated_at,
       expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-    }));
+      };
+    });
     return res.json({ documents: docs });
   } catch {
     return res.json({ documents: [] });
@@ -784,7 +808,7 @@ adminRouter.post("/documents/:id/approve", async (req: Request, res: Response) =
     const driverId = String((doc as Record<string, unknown>).driver_id);
     await recalcularVerificacion(driverId);
     void notes;
-    return res.json({ success: true, document: { id, status: 'approved', driverName: (doc as Record<string, unknown>).driver_name || 'Driver', type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
+    return res.json({ success: true, document: { id, status: 'approved', driverName: nombreDeConductor({ copia: (doc as Record<string, unknown>).driver_name as string, id: (doc as Record<string, unknown>).driver_id as string }), type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
   } catch {
     return res.status(500).json({ error: 'Failed to approve document.' });
   }
@@ -803,7 +827,7 @@ adminRouter.post("/documents/:id/reject", async (req: Request, res: Response) =>
     if (notes) {
       await supabaseAdmin.from('profiles').update({ rejection_reason: notes, updated_at: new Date().toISOString() }).eq('id', driverId);
     }
-    return res.json({ success: true, document: { id, status: 'rejected', driverName: (doc as Record<string, unknown>).driver_name || 'Driver', type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
+    return res.json({ success: true, document: { id, status: 'rejected', driverName: nombreDeConductor({ copia: (doc as Record<string, unknown>).driver_name as string, id: (doc as Record<string, unknown>).driver_id as string }), type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
   } catch {
     return res.status(500).json({ error: 'Failed to reject document.' });
   }

@@ -666,17 +666,22 @@ integrationsRouter.post(
         return res.status(400).json({ error: 'Invalid totalFareUSD. Must be between $1 and $10,000.' });
       }
 
-      // Fetch driver's Stripe Connected Account if not provided directly
+      // Fetch driver's Stripe Connected Account if not provided directly.
+      // De paso, la comisión del valet: va incluida en el precio que se cobra,
+      // pero no es del chofer, así que se descuenta antes de su 90 %.
       let connectedAccountId = driverConnectedAccountId || null;
+      let valetCommissionCents = 0;
 
-      if (!connectedAccountId) {
+      {
         const { data: ride } = await supabaseAdmin
           .from('rides')
-          .select('driver_id')
+          .select('driver_id, valet_surcharge')
           .eq('id', rideId)
           .maybeSingle();
 
-        if (ride?.driver_id) {
+        valetCommissionCents = Math.round(Number((ride as { valet_surcharge?: unknown } | null)?.valet_surcharge ?? 0) * 100) || 0;
+
+        if (!connectedAccountId && ride?.driver_id) {
           const { data: driver } = await supabaseAdmin
             .from('profiles')
             .select('stripe_account_id')
@@ -722,8 +727,9 @@ integrationsRouter.post(
       // chofer le llega el 90 % del precio, sin impuesto.
       if (connectedAccountId) {
         const reparto = calcularReparto({
-          fareCents: metrics.totalCents,
-          taxCents:  taxResult.taxAmountCents,
+          fareCents:  metrics.totalCents,
+          taxCents:   taxResult.taxAmountCents,
+          valetCents: Math.min(valetCommissionCents, metrics.totalCents),
         });
         paymentIntentParams.application_fee_amount = reparto.applicationFeeCents;
         paymentIntentParams.transfer_data = { destination: connectedAccountId };
