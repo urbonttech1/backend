@@ -812,10 +812,32 @@ integrationsRouter.post(
       let accountId = profile.stripe_account_id as string | null;
 
       if (!accountId) {
+        // Sin `type: 'express'`, que es el campo antiguo: fija todas las
+        // responsabilidades de golpe y Stripe lo rechazaba contra el perfil de
+        // esta plataforma («You tried to create an Accounts v1 connected account
+        // using the legacy `type` field…»). Se declaran una a una, que es lo que
+        // su soporte indicó:
+        //
+        //   stripe_dashboard.type   express  → el panel simplificado del chofer,
+        //                                      el que abre `createLoginLink`.
+        //   losses.payments         application → los saldos negativos los asume
+        //                                      Urbont, que es quien cobra al pasajero.
+        //   requirement_collection  stripe   → obligatorio con Express; con
+        //                                      'application' vuelve a fallar.
+        //   fees.payer              application → las comisiones de Stripe salen
+        //                                      de la parte de Urbont, como hasta ahora.
+        //
+        // Los cobros no cambian: `application_fee_amount` y `transfer_data` son
+        // del momento del pago, no de la creación de la cuenta.
         const account = await stripe.accounts.create({
-          type: 'express',
           country: 'US',
           email: profile.email || undefined,
+          controller: {
+            stripe_dashboard: { type: 'express' },
+            losses: { payments: 'application' },
+            fees: { payer: 'application' },
+            requirement_collection: 'stripe',
+          },
           capabilities: { transfers: { requested: true } },
           business_type: 'individual',
           individual: {
