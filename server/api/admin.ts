@@ -13,6 +13,8 @@ import { ensureComisionFresh, guardarComision, comoPorcentaje as comoPorcentajeC
 import { getPlatformCommission } from '../config/pricing';
 import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
+import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
+import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
@@ -428,6 +430,77 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
 // POST /api/admin/drivers/:id/stripe-status — consulta el estado real en Stripe
 // `stripe_connect_status` se escribe al iniciar el alta y se queda en 'pending'
 // aunque el chofer la termine, así que el panel necesita poder preguntarlo.
+// ── Pagos atrasados al chofer ───────────────────────────────────────────────
+// Existen para no depender de los logs. El cron corre cada 15 minutos y lo
+// único que contaba lo que había hecho era CloudWatch; cuando no se puede mirar
+// ahí, no había forma de saber si «0 transferencias» significaba «no se debe
+// nada» o «el pago está fallando». Estas dos rutas lo responden.
+
+// GET /api/admin/payouts/pending — qué se debe y por qué no se ha pagado.
+adminRouter.get("/payouts/pending", async (_req: Request, res: Response) => {
+  try {
+    const { data: completados } = await supabaseAdmin
+      .from('rides')
+      .select('id, driver_id, driver_earnings, stripe_transfer_id, payment_status, completed_at')
+      .eq('ride_status', 'completed')
+      .order('completed_at', { ascending: false })
+      .limit(500);
+
+    const viajes = (completados ?? []) as Array<{
+      id: string; driver_id: string | null; driver_earnings: number | null;
+      stripe_transfer_id: string | null; payment_status: string | null; completed_at: string | null;
+    }>;
+
+    const conDeuda = viajes.filter(v => !v.stripe_transfer_id && Number(v.driver_earnings ?? 0) > 0);
+    const sinImporte = viajes.filter(v => !v.stripe_transfer_id && !(Number(v.driver_earnings ?? 0) > 0));
+    const yaPagados = viajes.filter(v => !!v.stripe_transfer_id);
+
+    return res.json({
+      success: true,
+      completadosRevisados: viajes.length,
+      // Lo que el cron va a pagar en su próxima pasada.
+      conDeuda: {
+        total: conDeuda.length,
+        montoUSD: Number(conDeuda.reduce((s, v) => s + Number(v.driver_earnings ?? 0), 0).toFixed(2)),
+        viajes: conDeuda.slice(0, 20).map(v => ({ id: v.id, driverId: v.driver_id, usd: v.driver_earnings })),
+      },
+      // Estos el cron NO los toca: se completaron sin que se escribiera
+      // `driver_earnings`, así que necesitan rellenarse desde el PaymentIntent.
+      sinImporte: {
+        total: sinImporte.length,
+        viajes: sinImporte.slice(0, 20).map(v => ({
+          id: v.id, driverId: v.driver_id, paymentStatus: v.payment_status, completadoEl: v.completed_at,
+        })),
+      },
+      yaPagados: yaPagados.length,
+    });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] payouts pendientes');
+    return res.status(500).json({ error: 'No se pudo revisar los pagos pendientes.' });
+  }
+});
+
+// POST /api/admin/payouts/run — dispara ya la pasada del cron.
+adminRouter.post("/payouts/run", async (req: Request, res: Response) => {
+  const stripe = getStripeAdmin();
+  if (!stripe) return res.status(500).json({ error: 'Stripe no está configurado.' });
+  try {
+    const driverId = typeof req.body?.driverId === 'string' ? req.body.driverId : undefined;
+    const r = await pagarViajesPendientes({ stripe, driverId });
+    logger.info(`[ADMIN] Pasada manual de pagos: ${r.viajesPagados}/${r.viajesRevisados} viajes, $${(r.centavosPagados / 100).toFixed(2)}`);
+    return res.json({
+      success: true,
+      viajesRevisados: r.viajesRevisados,
+      viajesPagados: r.viajesPagados,
+      montoUSD: Number((r.centavosPagados / 100).toFixed(2)),
+      choferesSinConnect: r.choferesSinConnect,
+    });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] pasada manual de pagos');
+    return res.status(500).json({ error: 'No se pudieron pagar los atrasados.' });
+  }
+});
+
 adminRouter.post("/drivers/:id/stripe-status", async (req: Request, res: Response) => {
   const driverId = req.params.id;
   try {
@@ -445,8 +518,12 @@ adminRouter.post("/drivers/:id/stripe-status", async (req: Request, res: Respons
     if (!stripe) return res.status(500).json({ error: 'Stripe no está configurado.' });
 
     const cuenta = await stripe.accounts.retrieve(accountId);
-    const listo = !!cuenta.payouts_enabled && !!cuenta.details_submitted;
-    const status = listo ? 'active' : 'pending';
+    // El mismo criterio que usa el pago real: manda la capacidad `transfers`,
+    // que es lo que Stripe exige para transferir. Con `payouts_enabled &&
+    // details_submitted` esta pantalla podía dar por activo a un conductor al
+    // que después no se le podía transferir, y al revés.
+    const status = estadoDeCuenta(cuenta as CuentaConnect);
+    const listo = status === 'active';
     const pendiente = cuenta.requirements?.currently_due ?? [];
 
     await supabaseAdmin.from('profiles')
