@@ -3,6 +3,8 @@ import { createContextLogger } from '../lib/logger';
 import Stripe from 'stripe';
 import { validateBody, requireSupabaseAuth, optionalSupabaseAuth } from "../middleware";
 import { supabaseAdmin } from '../db/client';
+import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
+import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { calculateRideMetrics, calcularReparto } from '../services/rideMetrics';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
 
@@ -39,18 +41,33 @@ integrationsRouter.post(
     if (!stripe) return res.status(500).json({ error: 'Stripe not configured' });
 
     const sig = req.headers['stripe-signature'] as string;
-    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    // Dos secretos porque hacen falta dos endpoints en Stripe: los eventos de
+    // las cuentas conectadas —`account.updated`, el que decide si un chofer
+    // puede cobrar— sólo se envían a un endpoint marcado como Connect, y ése
+    // firma con un secreto distinto. Se prueban los dos contra la misma URL.
+    const secretos = [
+      process.env.STRIPE_WEBHOOK_SECRET,
+      process.env.STRIPE_WEBHOOK_SECRET_CONNECT,
+    ].filter((s): s is string => !!s);
 
     let event: Stripe.Event;
 
-    if (secret && sig) {
-      try {
-        event = stripe.webhooks.constructEvent(req.body, sig, secret);
-      } catch (err: unknown) {
-        const errMessage = err instanceof Error ? err.message : String(err);
-        log.error(`[STRIPE_WEBHOOK] Signature verification failed: ${errMessage}`);
-        return res.status(400).send(`Webhook Error: ${errMessage}`);
+    if (secretos.length > 0 && sig) {
+      let verificado: Stripe.Event | null = null;
+      let ultimoError = 'sin secretos configurados';
+      for (const secreto of secretos) {
+        try {
+          verificado = stripe.webhooks.constructEvent(req.body, sig, secreto);
+          break;
+        } catch (err: unknown) {
+          ultimoError = err instanceof Error ? err.message : String(err);
+        }
       }
+      if (!verificado) {
+        log.error(`[STRIPE_WEBHOOK] Signature verification failed: ${ultimoError}`);
+        return res.status(400).send(`Webhook Error: ${ultimoError}`);
+      }
+      event = verificado;
     } else {
       // Production: refuse unsigned webhooks. Only allow unsigned in dev/test.
       if (process.env.NODE_ENV === 'production') {
@@ -171,7 +188,9 @@ integrationsRouter.post(
         // ── Driver Connected Account updated — sync status in DB and process pending payouts ──
         case 'account.updated': {
           const account = event.data.object as Stripe.Account;
-          const newStatus = account.details_submitted ? 'active' : 'pending';
+          // Manda la capacidad `transfers`, que es lo que Stripe exige para
+          // transferir; `details_submitted` sólo dice que llenó el formulario.
+          const newStatus = estadoDeCuenta(account as CuentaConnect);
           const { data: updatedProfiles } = await supabaseAdmin
             .from('profiles')
             .update({ stripe_connect_status: newStatus })
@@ -179,47 +198,13 @@ integrationsRouter.post(
             .select('id');
           log.info(`[STRIPE_WEBHOOK] Account ${account.id} → ${newStatus}`);
 
-          // If the account just became active, release any pending ride earnings to the driver
+          // Si acaba de quedar habilitada, se le paga lo atrasado. Es el mismo
+          // trabajo que hace el cron cada 15 minutos: esto sólo lo adelanta.
           if (newStatus === 'active' && updatedProfiles && updatedProfiles.length > 0) {
             const driverUserId = updatedProfiles[0].id;
-            const { data: pendingRides } = await supabaseAdmin
-              .from('rides')
-              .select('id, driver_earnings, payment_intent_id')
-              .eq('driver_id', driverUserId)
-              .eq('ride_status', 'completed')
-              .is('stripe_transfer_id', null)
-              .not('driver_earnings', 'is', null)
-              .gt('driver_earnings', 0);
-
-            if (pendingRides && pendingRides.length > 0) {
-              log.info(`[STRIPE_WEBHOOK] Releasing ${pendingRides.length} pending payouts for driver ${driverUserId}`);
-              for (const pr of pendingRides) {
-                try {
-                  const payoutCents = Math.round(Number(pr.driver_earnings) * 100);
-                  if (payoutCents > 0) {
-                    const transfer = await stripe.transfers.create({
-                      amount: payoutCents,
-                      currency: 'usd',
-                      destination: account.id,
-                      description: `Driver payout for completed ride ${pr.id}`,
-                      metadata: {
-                        ride_id: pr.id,
-                        driver_id: driverUserId,
-                        type: 'driver_ride_payout_catchup',
-                      },
-                    }, {
-                      idempotencyKey: `driver_catchup_${pr.id}_${account.id}`,
-                    });
-                    await supabaseAdmin.from('rides').update({
-                      stripe_transfer_id: transfer.id,
-                      updated_at: new Date().toISOString(),
-                    }).eq('id', pr.id);
-                    log.info(`[STRIPE_WEBHOOK] Catch-up transfer $${pr.driver_earnings} sent for ride ${pr.id} (transfer: ${transfer.id})`);
-                  }
-                } catch (catchupErr: unknown) {
-                  log.error(`[STRIPE_WEBHOOK] Catch-up transfer failed for ride ${pr.id}: ${errMsg(catchupErr)}`);
-                }
-              }
+            const r = await pagarViajesPendientes({ stripe, driverId: driverUserId });
+            if (r.viajesPagados > 0) {
+              log.info(`[STRIPE_WEBHOOK] ${r.viajesPagados} pagos atrasados liberados a ${driverUserId} ($${(r.centavosPagados / 100).toFixed(2)})`);
             }
           }
           break;

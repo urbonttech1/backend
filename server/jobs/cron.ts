@@ -8,6 +8,7 @@ import { findStaleRides, reassignRide } from '../services/rideReassignment';
 import { notifyAvailableDrivers, getIo, broadcastRideStatus } from '../services/socketService';
 import { reasignacionesVencidas, MINUTOS_PARA_REEMPLAZO, type ViajeEnReasignacion } from '../services/reassignTimeout';
 import { getStripe } from '../api/rides/helpers';
+import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { notifyUser, sendMulticast } from '../services/fcm';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
 
@@ -192,6 +193,30 @@ async function cancelarReasignacionesVencidas() {
     }
   } catch (err: any) {
     log.error({ err: err?.message }, '[CRON] cancelarReasignacionesVencidas');
+  }
+}
+
+/**
+ * Paga los viajes que el chofer se ganó y no cobró.
+ *
+ * Existe porque el pago del momento depende de que `stripe_connect_status` diga
+ * 'active', y esa columna la escribía sólo el webhook `account.updated`, que
+ * durante meses no llegó. Con esto, el dinero sale igual aunque el webhook
+ * falle: es la red de seguridad del pago al chofer, no el camino normal.
+ */
+async function pagarChoferesPendientes() {
+  const stripe = getStripe();
+  if (!stripe) return;
+  try {
+    const r = await pagarViajesPendientes({ stripe });
+    if (r.viajesPagados > 0 || r.choferesSinConnect > 0) {
+      log.info(
+        `[CRON] Pagos atrasados: ${r.viajesPagados}/${r.viajesRevisados} viajes, ` +
+        `$${(r.centavosPagados / 100).toFixed(2)}, ${r.choferesSinConnect} choferes aún sin Connect.`
+      );
+    }
+  } catch (err: any) {
+    log.error({ err: err?.message }, '[CRON] pagarChoferesPendientes');
   }
 }
 
@@ -810,6 +835,12 @@ export async function startCronJobs() {
     cancelarReasignacionesVencidas();
   });
   log.info(`[CRON] Reassignment timeout check scheduled every minute (${MINUTOS_PARA_REEMPLAZO} min).`);
+
+  // Pagos atrasados al chofer: cada 15 minutos.
+  cron.schedule('*/15 * * * *', () => {
+    pagarChoferesPendientes();
+  });
+  log.info('[CRON] Pending driver payouts scheduled every 15 minutes.');
 
   // T002: Re-dispatch unaccepted rides every 5 minutes
   cron.schedule('*/5 * * * *', () => {

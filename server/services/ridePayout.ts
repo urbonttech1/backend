@@ -12,6 +12,8 @@ import type Stripe from 'stripe';
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
 import { calculateRideMetrics } from './rideMetrics';
+import { estadoConnectAlDia } from './payoutRecovery';
+import { puedeCobrar } from './connectStatus';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -56,9 +58,17 @@ export async function pagarChoferPorViaje(opts: {
       .maybeSingle();
 
     const driverAccountId = driverProfile?.stripe_account_id;
-    const isConnectActive = driverProfile?.stripe_connect_status === 'active';
+    // La columna es una caché del webhook `account.updated`, que puede no haber
+    // llegado nunca. Si dice que no, se le pregunta a Stripe antes de dejar al
+    // chofer sin cobrar. Ver `connectStatus.ts`.
+    const estadoConnect = await estadoConnectAlDia({
+      stripe,
+      driverId,
+      accountId: driverAccountId,
+      estadoGuardado: driverProfile?.stripe_connect_status,
+    });
 
-    if (driverAccountId && isConnectActive) {
+    if (driverAccountId && puedeCobrar(estadoConnect)) {
       try {
         const latestCharge = typeof pi.latest_charge === 'string' ? pi.latest_charge : undefined;
         const transfer = await stripe.transfers.create({
@@ -85,7 +95,7 @@ export async function pagarChoferPorViaje(opts: {
         logger.error(`[PAYOUT] Falló la transferencia al chofer por ${concepto} ${rideId}: ${errMsg(transferErr)}`);
       }
     } else {
-      logger.warn(`[PAYOUT] Chofer ${driverId} sin Stripe Connect activo (${driverProfile?.stripe_connect_status || 'not_connected'}). Pago de $${driverPayoutUSD} queda pendiente.`);
+      logger.warn(`[PAYOUT] Chofer ${driverId} sin Stripe Connect activo (${estadoConnect}). Pago de $${driverPayoutUSD} queda pendiente.`);
     }
   }
 
