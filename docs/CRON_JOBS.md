@@ -1,12 +1,12 @@
 # URBONT API — Jobs Programados (cron)
 
-Referencia de los 14 jobs de [`server/jobs/cron.ts`](../server/jobs/cron.ts): qué
+Referencia de los 15 jobs de [`server/jobs/cron.ts`](../server/jobs/cron.ts): qué
 hace cada uno, cómo se comporta al correr varias instancias del server, y cómo
 arreglarlo.
 
 Todos se registran en `startCronJobs()` ([`cron.ts:609`](../server/jobs/cron.ts#L609)),
 que se invoca sin ninguna guarda desde [`server.ts:985`](../server.ts#L985). Es
-decir: **cada instancia del server ejecuta los 14 jobs**.
+decir: **cada instancia del server ejecuta los 15 jobs**.
 
 ---
 
@@ -24,6 +24,7 @@ decir: **cada instancia del server ejecuta los 14 jobs**.
 | `sendWeeklyEarningsSummary` | Lunes 09:00 | 🟠 Push duplicado | — |
 | `anonymizeOldRides` | 00:00 diario | 🟢 Idempotente | 🟡 Reprocesa histórico |
 | `cancelExpiredSearchingRides` | cada 15 min | 🟢 Seguro | — |
+| `pagarChoferesPendientes` | cada 15 min | 🟢 Idempotente en Stripe | — |
 | `resetStaleStreaks` | cada hora | 🟢 Seguro | — |
 | `flagInactiveDrivers` | 03:00 diario | 🟢 Seguro | — |
 | `checkCancellationPatterns` | cada 6 h | 🟢 Seguro | — |
@@ -330,6 +331,24 @@ También se ejecuta una vez al arrancar ([`cron.ts:611`](../server/jobs/cron.ts#
 así que en un despliegue rolling cada task nuevo lo dispara. Sigue siendo seguro
 por el mismo motivo.
 
+### `pagarChoferesPendientes` — cada 15 min
+
+**La red de seguridad del pago al chofer.**
+
+Busca viajes completados con `driver_earnings > 0` y `stripe_transfer_id` nulo y
+transfiere lo que se deba, comprobando antes contra Stripe si el chofer ya puede
+recibir transferencias. Existe porque el pago del momento dependía de que
+`profiles.stripe_connect_status` dijera `'active'`, columna que solo escribía el
+webhook `account.updated` — un webhook al que el endpoint de Stripe nunca estuvo
+suscrito. Resultado: viajes cobrados al pasajero cuyo chofer no vio un centavo.
+
+Seguro con varias instancias porque cada transferencia va con
+`idempotencyKey: driver_catchup_<rideId>_<accountId>`: si dos tasks procesan el
+mismo viaje a la vez, Stripe crea una sola transferencia y devuelve la misma a
+la segunda. La lógica vive en
+[`payoutRecovery.ts`](../server/services/payoutRecovery.ts); las reglas puras,
+en `connectStatus.ts` y `pendingPayouts.ts`, con tests.
+
 ### `resetStaleStreaks` — cada hora
 
 [`cron.ts:529-541`](../server/jobs/cron.ts#L529-L541)
@@ -375,7 +394,7 @@ Filtrar por `.is('anonymized_at', null)` y sellarla en el update.
 
 ## Arreglo global: un único ejecutor
 
-Hacer los 14 jobs seguros para concurrencia, uno por uno, es bastante trabajo.
+Hacer los 15 jobs seguros para concurrencia, uno por uno, es bastante trabajo.
 Designar un único proceso que los ejecute resuelve los tres críticos de golpe sin
 refactorizar nada.
 
