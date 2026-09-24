@@ -21,12 +21,27 @@ export interface ViajePendiente {
   id: string;
   driver_id: string | null;
   driver_earnings: number | string | null;
+  /** El cobro del que sale el dinero. Ver `viajes[].paymentIntentId`. */
+  payment_intent_id?: string | null;
 }
 
 /** Lo que hay que pagarle a un chofer, ya agrupado. */
 export interface DeudaChofer {
   driverId: string;
-  viajes: Array<{ id: string; centavos: number }>;
+  viajes: Array<{
+    id: string;
+    centavos: number;
+    /**
+     * De qué cobro sale el dinero.
+     *
+     * Importa más de lo que parece: una transferencia sin `source_transaction`
+     * se paga del saldo disponible de la plataforma, y la cuenta de Urbont hace
+     * payouts automáticos diarios que lo dejan en cero cada madrugada. Atada al
+     * cobro concreto, la transferencia sale aunque el saldo general esté vacío,
+     * siempre que ese cobro no se haya barrido ya al banco.
+     */
+    paymentIntentId: string | null;
+  }>;
   totalCentavos: number;
 }
 
@@ -56,7 +71,10 @@ export function agruparDeuda(viajes: ViajePendiente[]): DeudaChofer[] {
     if (centavos <= 0) continue;
 
     const actual = porChofer.get(driverId) ?? { driverId, viajes: [], totalCentavos: 0 };
-    actual.viajes.push({ id: v.id, centavos });
+    const pi = typeof v.payment_intent_id === 'string' && v.payment_intent_id.trim() !== ''
+      ? v.payment_intent_id.trim()
+      : null;
+    actual.viajes.push({ id: v.id, centavos, paymentIntentId: pi });
     actual.totalCentavos += centavos;
     porChofer.set(driverId, actual);
   }

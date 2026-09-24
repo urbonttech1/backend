@@ -56,6 +56,24 @@ export async function estadoConnectAlDia(opts: {
   }
 }
 
+/**
+ * El cargo del que sale el dinero de un viaje, si se puede averiguar.
+ *
+ * Devuelve null —y la transferencia irá contra el saldo general— cuando el
+ * viaje no guardó su PaymentIntent o Stripe no lo reconoce. No lanza: quedarse
+ * sin `source_transaction` es peor que nada, pero mejor que no intentarlo.
+ */
+async function cargoDelViaje(stripe: Stripe, paymentIntentId: string | null): Promise<string | null> {
+  if (!paymentIntentId) return null;
+  try {
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    return typeof pi.latest_charge === 'string' ? pi.latest_charge : null;
+  } catch (err: unknown) {
+    logger.warn(`[PENDING_PAYOUTS] No se pudo leer ${paymentIntentId}: ${errMsg(err)}`);
+    return null;
+  }
+}
+
 export interface ResultadoPagoPendiente {
   viajesRevisados: number;
   viajesPagados: number;
@@ -86,7 +104,7 @@ export async function pagarViajesPendientes(opts: {
 
   let consulta = supabaseAdmin
     .from('rides')
-    .select('id, driver_id, driver_earnings')
+    .select('id, driver_id, driver_earnings, payment_intent_id')
     .eq('ride_status', 'completed')
     .is('stripe_transfer_id', null)
     .gt('driver_earnings', 0)
@@ -126,10 +144,17 @@ export async function pagarViajesPendientes(opts: {
 
     for (const viaje of chofer.viajes) {
       try {
+        // Se ata la transferencia al cobro del viaje siempre que se pueda. Sin
+        // esto tira del saldo disponible de la plataforma, que los payouts
+        // automáticos de Urbont dejan en cero cada madrugada: la transferencia
+        // falla con `balance_insufficient` aunque el dinero se haya cobrado.
+        const sourceTransaction = await cargoDelViaje(stripe, viaje.paymentIntentId);
+
         const transfer = await stripe.transfers.create({
           amount: viaje.centavos,
           currency: 'usd',
           destination: accountId,
+          ...(sourceTransaction ? { source_transaction: sourceTransaction } : {}),
           description: `Driver payout (atrasado) for completed ride ${viaje.id}`,
           metadata: {
             ride_id: viaje.id,
@@ -149,7 +174,14 @@ export async function pagarViajesPendientes(opts: {
         resultado.centavosPagados += viaje.centavos;
         logger.info(`[PENDING_PAYOUTS] $${(viaje.centavos / 100).toFixed(2)} a ${accountId} por el viaje ${viaje.id} (transfer ${transfer.id})`);
       } catch (err: unknown) {
-        logger.error(`[PENDING_PAYOUTS] Falló el atrasado del viaje ${viaje.id}: ${errMsg(err)}`);
+        const codigo = (err as { code?: string })?.code;
+        // `balance_insufficient` no es un error de programación: significa que
+        // el dinero de ese cobro ya salió al banco de Urbont y hay que
+        // devolverlo al saldo de Stripe o pagar al chofer por fuera.
+        const pista = codigo === 'balance_insufficient'
+          ? ' — el saldo de la plataforma no alcanza; ese cobro ya se barrió al banco'
+          : '';
+        logger.error(`[PENDING_PAYOUTS] Falló el atrasado del viaje ${viaje.id} (${codigo || 'sin código'}): ${errMsg(err)}${pista}`);
       }
     }
   }

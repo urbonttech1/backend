@@ -45,3 +45,21 @@ describe('agruparDeuda', () => {
     expect(agruparDeuda([])).toEqual([]);
   });
 });
+
+describe('agruparDeuda — el cobro de origen', () => {
+  it('lleva el PaymentIntent de cada viaje, que decide de dónde sale el dinero', () => {
+    const [d] = agruparDeuda([
+      { id: 'r1', driver_id: 'd1', driver_earnings: 25.16, payment_intent_id: 'pi_abc' },
+    ]);
+    expect(d.viajes[0].paymentIntentId).toBe('pi_abc');
+  });
+
+  it('sin PaymentIntent queda null, y la transferencia irá contra el saldo general', () => {
+    const [d] = agruparDeuda([
+      { id: 'r1', driver_id: 'd1', driver_earnings: 25.16 },
+      { id: 'r2', driver_id: 'd1', driver_earnings: 25.16, payment_intent_id: null },
+      { id: 'r3', driver_id: 'd1', driver_earnings: 25.16, payment_intent_id: '   ' },
+    ]);
+    expect(d.viajes.map(v => v.paymentIntentId)).toEqual([null, null, null]);
+  });
+});
