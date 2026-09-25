@@ -11,7 +11,7 @@
 import type Stripe from 'stripe';
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
-import { calculateRideMetrics } from './rideMetrics';
+import { calcularReparto } from './rideMetrics';
 import { estadoConnectAlDia } from './payoutRecovery';
 import { puedeCobrar } from './connectStatus';
 
@@ -45,7 +45,39 @@ export async function pagarChoferPorViaje(opts: {
 
   const capturedAmountCents = pi.amount_received ?? pi.amount;
   const fareUSD = capturedAmountCents / 100;
-  const metrics = calculateRideMetrics({ totalFareUSD: Math.max(1, fareUSD) });
+
+  // El reparto se hace sobre el precio del servicio, no sobre lo capturado.
+  //
+  // Antes se aplicaba el 85 % al total cobrado a la tarjeta, que incluye el
+  // impuesto de ventas y la comisión del valet. El chofer se llevaba el 85 % de
+  // un impuesto que la plataforma tiene que declarar, y el 85 % de una comisión
+  // que es de otro. En el viaje del 25/09: $28.07 cobrados, $26.36 de tarifa y
+  // $1.71 de impuesto; se transfirieron $23.86 cuando correspondían $22.41.
+  //
+  // `calcularReparto` es el mismo cálculo que se usa al crear el cobro, así que
+  // ahora los dos extremos dicen lo mismo.
+  const { data: viaje } = await supabaseAdmin
+    .from('rides')
+    .select('tax_amount, valet_surcharge')
+    .eq('id', rideId)
+    .maybeSingle();
+
+  const centavos = (v: unknown): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
+  };
+
+  const taxCents = centavos((viaje as { tax_amount?: unknown } | null)?.tax_amount);
+  const valetCents = centavos((viaje as { valet_surcharge?: unknown } | null)?.valet_surcharge);
+  // El precio del servicio es lo capturado menos el impuesto. Si el impuesto no
+  // está registrado sale cero y se reparte todo, que es como se comportaba antes.
+  const fareCents = Math.max(1, capturedAmountCents - taxCents);
+
+  const metrics = calcularReparto({
+    fareCents,
+    taxCents,
+    valetCents: Math.min(valetCents, fareCents),
+  });
   const driverPayoutUSD = metrics.driverPayoutCents / 100;
   const platformFeeUSD = metrics.applicationFeeCents / 100;
 
@@ -82,7 +114,9 @@ export async function pagarChoferPorViaje(opts: {
             driver_id: driverId,
             type: 'driver_ride_payout',
             concept: concepto,
-            total_fare_cents: String(metrics.totalCents),
+            total_fare_cents: String(metrics.chargeCents),
+            fare_cents: String(fareCents),
+            tax_cents: String(taxCents),
             driver_payout_cents: String(metrics.driverPayoutCents),
             platform_fee_cents: String(metrics.applicationFeeCents),
           },

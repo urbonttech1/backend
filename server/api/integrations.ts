@@ -7,6 +7,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { calculateRideMetrics, calcularReparto } from '../services/rideMetrics';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
+import { codigoPostalDe, codigoPostalDelViaje } from '../services/taxLocation';
 
 const log = createContextLogger('INTEGRATIONS');
 
@@ -275,7 +276,10 @@ integrationsRouter.get("/stripe/estimate-tax", async (req: Request, res: Respons
       return res.status(400).json({ error: 'Invalid amountCents' });
     }
 
-    const result = await calculateStripeTax(stripe, amountCents, `estimate-${Date.now()}`);
+    // Opcional y compatible con las apps viejas: sin el, se estima con la tasa
+    // de respaldo, que es lo que venia pasando siempre.
+    const postalCode = codigoPostalDe(req.query.postalCode);
+    const result = await calculateStripeTax(stripe, amountCents, `estimate-${Date.now()}`, postalCode);
     res.json({
       taxAmountCents:   result.taxAmountCents,
       taxedAmountCents: result.taxedAmountCents,
@@ -350,7 +354,9 @@ integrationsRouter.post("/stripe/create-payment-intent", optionalSupabaseAuth, v
       try { customerId = await getOrCreateStripeCustomer(stripe, req.supabaseUid); } catch { /* non-blocking */ }
     }
 
-    const taxResult = await calculateStripeTax(stripe, amount, `payment-${req.supabaseUid || 'anon'}`);
+    const taxResult = await calculateStripeTax(
+      stripe, amount, `payment-${req.supabaseUid || 'anon'}`, codigoPostalDe(req.body?.postalCode),
+    );
 
     // The client generates a random `checkoutToken` once per checkout attempt
     // (kept stable across retries of that same attempt, e.g. via useRef) and
@@ -400,15 +406,29 @@ async function calculateStripeTax(
   stripe: Stripe,
   amountCents: number,
   reference: string,
+  /**
+   * El codigo postal de la recogida. Sin el, Stripe responde 400 -el impuesto
+   * de ventas en EE. UU. cambia por condado, asi que el pais solo no le dice
+   * nada- y el calculo caia siempre a la tasa de respaldo sin que se notara.
+   * Ver `taxLocation.ts`.
+   */
+  postalCode?: string | null,
   taxCode = 'txcd_20030000' // Ground transportation
 ): Promise<{ taxedAmountCents: number; taxCalculationId?: string; taxAmountCents: number }> {
+  // Sin codigo postal la llamada esta condenada a fallar: se va al respaldo sin
+  // gastar la peticion ni llenar el panel de Stripe de errores 400.
+  if (!postalCode) {
+    log.warn(`[STRIPE_TAX] Sin codigo postal para ${reference}: se usa la tasa de respaldo.`);
+    return tasaDeRespaldo(amountCents);
+  }
+
   try {
-    // stripe.tax exists in Stripe SDK ≥12 but may not be in older TS declarations
+    // stripe.tax exists in Stripe SDK >= 12 but may not be in older TS declarations
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const calc = await (stripe as any).tax.calculations.create({
       currency: 'usd',
       customer_details: {
-        address: { country: 'US' },
+        address: { country: 'US', postal_code: postalCode },
         address_source: 'shipping',
       },
       line_items: [{
@@ -423,15 +443,24 @@ async function calculateStripeTax(
       taxCalculationId: calc.id as string,
       taxAmountCents: calc.tax_amount_exclusive as number,
     };
-  } catch {
-    // Stripe Tax not enabled or unavailable â fall back to a flat 6.5% rate
-    // (midpoint of the 6â7% applicable range)
-    // La tasa de respaldo la configura el panel (Tarifas). Antes estaba escrita
-    // aquí, así que un viaje fuera de EE. UU. se estimaba con impuestos de Florida.
-    const taxRate = await tasaImpuestoRespaldo();
-    const taxAmountCents = Math.round(amountCents * taxRate);
-    return { taxedAmountCents: amountCents + taxAmountCents, taxAmountCents };
+  } catch (err: unknown) {
+    log.warn(`[STRIPE_TAX] Calculo fallido para ${reference} (${postalCode}): ${errMsg(err)}. Se usa la tasa de respaldo.`);
+    return tasaDeRespaldo(amountCents);
   }
+}
+
+/**
+ * La estimacion de cuando Stripe Tax no puede calcular.
+ *
+ * La tasa la configura el panel (Tarifas). Antes estaba escrita aqui, asi que un
+ * viaje fuera de EE. UU. se estimaba con impuestos de Florida.
+ */
+async function tasaDeRespaldo(
+  amountCents: number,
+): Promise<{ taxedAmountCents: number; taxAmountCents: number }> {
+  const taxRate = await tasaImpuestoRespaldo();
+  const taxAmountCents = Math.round(amountCents * taxRate);
+  return { taxedAmountCents: amountCents + taxAmountCents, taxAmountCents };
 }
 
 // ââ Get or create Stripe customer for a user ââââââââââââââââââââââââââââââââââ
@@ -656,13 +685,20 @@ integrationsRouter.post(
       // pero no es del chofer, así que se descuenta antes de su 90 %.
       let connectedAccountId = driverConnectedAccountId || null;
       let valetCommissionCents = 0;
+      let postalCode: string | null = null;
 
       {
         const { data: ride } = await supabaseAdmin
           .from('rides')
-          .select('driver_id, valet_surcharge')
+          .select('driver_id, valet_surcharge, pickup, dropoff')
           .eq('id', rideId)
           .maybeSingle();
+
+        // Donde ocurre el servicio, para que Stripe Tax sepa que impuesto aplica.
+        postalCode = codigoPostalDelViaje(ride as {
+          pickup?: { address?: unknown } | null;
+          dropoff?: { address?: unknown } | null;
+        } | null ?? {});
 
         valetCommissionCents = Math.round(Number((ride as { valet_surcharge?: unknown } | null)?.valet_surcharge ?? 0) * 100) || 0;
 
@@ -685,7 +721,7 @@ integrationsRouter.post(
       // On cancellation during searching â cancel PI (zero charge, hold released instantly).
       // On ride completion â capture PI (charge the held amount).
       // Calculate Stripe Tax before creating the PaymentIntent
-      const taxResult = await calculateStripeTax(stripe, metrics.totalCents, rideId);
+      const taxResult = await calculateStripeTax(stripe, metrics.totalCents, rideId, postalCode);
 
       const paymentIntentParams: Stripe.PaymentIntentCreateParams = {
         amount: taxResult.taxedAmountCents,
