@@ -14,6 +14,10 @@ import { notifyUser } from "../services/fcm";
 import { puedeOperar } from "../services/driverVerification";
 import { driverNotif } from "../services/notificationTemplates";
 import { loadDriverDecisions, recordRideRejection } from "../services/driverRideHistory";
+import Stripe from "stripe";
+import { resumenDeSaldo, puedeRetirar, enDolares, type MetodoRetiro } from "../services/driverBalance";
+import { estadoConnectAlDia, pagarViajesPendientes } from "../services/payoutRecovery";
+import { puedeCobrar } from "../services/connectStatus";
 import { tasaDeAceptacion, tasaDeCancelacion, valoracionMedia } from "../services/driverPerformance";
 
 // Streak milestones that deserve a push notification
@@ -653,6 +657,166 @@ driverRouter.get('/stats', requireSupabaseAuth, async (req: Request, res: Respon
 });
 
 // ââ GET /api/drivers/earnings â real per-period earnings from DB ââââââââââââââ
+// ── El dinero del chofer ────────────────────────────────────────────────────
+//
+// El botón «Cash Out» de la app abría el dashboard de Stripe y no retiraba
+// nada, y la cifra que enseñaba encima salía de sumar `rides.fare` —la tarifa
+// completa del pasajero, no lo que le toca al chofer— así que prometía un
+// dinero que no existía. Estas dos rutas son el reemplazo: una dice la verdad
+// y la otra mueve el dinero de verdad.
+
+function stripeDeRetiros(): Stripe | null {
+  const key = process.env.STRIPE_SECRET_KEY;
+  return key ? new Stripe(key) : null;
+}
+
+/** Lo que el chofer tiene en Stripe. Cero si aún no tiene cuenta. */
+async function saldoEnStripe(stripe: Stripe, accountId: string | null) {
+  if (!accountId) return { disponibleCents: 0, enCaminoCents: 0, instantaneoCents: 0 };
+  try {
+    const b = await stripe.balance.retrieve({ stripeAccount: accountId });
+    const usd = (arr?: Array<{ amount: number; currency: string }>) =>
+      (arr ?? []).filter(x => x.currency === 'usd').reduce((s, x) => s + x.amount, 0);
+    return {
+      disponibleCents: usd(b.available),
+      enCaminoCents: usd(b.pending),
+      instantaneoCents: usd((b as unknown as { instant_available?: Array<{ amount: number; currency: string }> }).instant_available),
+    };
+  } catch (err: unknown) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), accountId }, 'saldo de Stripe');
+    return { disponibleCents: 0, enCaminoCents: 0, instantaneoCents: 0 };
+  }
+}
+
+/** Los `driver_earnings` que aún no se le han transferido. */
+async function pendienteDeCobro(driverId: string): Promise<Array<number | null>> {
+  const { data } = await supabaseAdmin
+    .from('rides')
+    .select('driver_earnings')
+    .eq('driver_id', driverId)
+    .eq('ride_status', 'completed')
+    .is('stripe_transfer_id', null)
+    .gt('driver_earnings', 0);
+  return ((data ?? []) as Array<{ driver_earnings: number | null }>).map(r => r.driver_earnings);
+}
+
+// GET /api/drivers/balance — dónde está su dinero y cuánto puede sacar.
+driverRouter.get('/balance', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const driverId = req.supabaseUid!;
+  const stripe = stripeDeRetiros();
+  try {
+    const { data: perfil } = await supabaseAdmin
+      .from('profiles')
+      .select('stripe_account_id, stripe_connect_status')
+      .eq('id', driverId)
+      .maybeSingle();
+
+    const accountId = (perfil?.stripe_account_id ?? null) as string | null;
+    const [pendientes, saldo] = await Promise.all([
+      pendienteDeCobro(driverId),
+      stripe ? saldoEnStripe(stripe, accountId) : Promise.resolve({ disponibleCents: 0, enCaminoCents: 0, instantaneoCents: 0 }),
+    ]);
+
+    const resumen = resumenDeSaldo({ pendientesUSD: pendientes, saldoStripe: saldo });
+    const estandar = puedeRetirar(resumen, 'standard');
+    const instantaneo = puedeRetirar(resumen, 'instant');
+
+    return res.json({
+      // Lo que el chofer llama «mi plata», separado por dónde está.
+      porCobrarDeUrbont: enDolares(resumen.enUrbontCents),
+      enCamino: enDolares(resumen.enCaminoCents),
+      disponible: enDolares(resumen.disponibleCents),
+      total: enDolares(resumen.totalCents),
+      // Qué puede hacer ahora mismo.
+      retiro: {
+        estandar: { puede: estandar.puede, monto: enDolares(estandar.montoCents), motivo: estandar.motivo },
+        instantaneo: { puede: instantaneo.puede, monto: enDolares(instantaneo.montoCents), motivo: instantaneo.motivo },
+      },
+      cuentaConectada: !!accountId,
+      // Los payouts ya son automáticos: esto explica por qué puede no hacer falta retirar.
+      payoutAutomatico: true,
+    });
+  } catch (err: unknown) {
+    log.error({ err: err instanceof Error ? err.message : String(err), driverId }, 'balance del chofer');
+    return res.status(500).json({ error: 'No se pudo consultar tu saldo.' });
+  }
+});
+
+// POST /api/drivers/cashout — retira a su banco.
+//
+// Primero empuja lo que Urbont le debe a su cuenta de Stripe y sólo después
+// crea el payout, porque si no el chofer vería «no tienes saldo» teniendo
+// viajes cobrados: es exactamente lo que pasaba antes.
+driverRouter.post('/cashout', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const driverId = req.supabaseUid!;
+  const metodo: MetodoRetiro = req.body?.method === 'instant' ? 'instant' : 'standard';
+  const stripe = stripeDeRetiros();
+  if (!stripe) return res.status(500).json({ error: 'Los pagos no están configurados.' });
+
+  try {
+    const { data: perfil } = await supabaseAdmin
+      .from('profiles')
+      .select('stripe_account_id, stripe_connect_status')
+      .eq('id', driverId)
+      .maybeSingle();
+
+    const accountId = (perfil?.stripe_account_id ?? null) as string | null;
+    const estado = await estadoConnectAlDia({
+      stripe, driverId, accountId, estadoGuardado: perfil?.stripe_connect_status as string | null,
+    });
+    if (!accountId || !puedeCobrar(estado)) {
+      return res.status(400).json({
+        error: 'Termina el registro de pagos en Stripe para poder retirar.',
+        necesitaAlta: true,
+      });
+    }
+
+    // 1) Lo que Urbont le debe, a su cuenta.
+    const empuje = await pagarViajesPendientes({ stripe, driverId });
+
+    // 2) Lo que haya quedado disponible, a su banco.
+    const saldo = await saldoEnStripe(stripe, accountId);
+    const resumen = resumenDeSaldo({ pendientesUSD: await pendienteDeCobro(driverId), saldoStripe: saldo });
+    const permiso = puedeRetirar(resumen, metodo);
+
+    if (!permiso.puede) {
+      return res.status(409).json({
+        error: permiso.motivo,
+        transferido: enDolares(empuje.centavosPagados),
+        porCobrarDeUrbont: enDolares(resumen.enUrbontCents),
+        enCamino: enDolares(resumen.enCaminoCents),
+      });
+    }
+
+    const payout = await stripe.payouts.create({
+      amount: permiso.montoCents,
+      currency: 'usd',
+      ...(metodo === 'instant' ? { method: 'instant' as const } : {}),
+      description: 'Retiro solicitado desde la app de Urbont',
+      metadata: { driver_id: driverId, origen: 'app_cashout' },
+    }, { stripeAccount: accountId });
+
+    log.info({ driverId, payout: payout.id, monto: permiso.montoCents, metodo }, 'retiro del chofer');
+
+    return res.json({
+      success: true,
+      payoutId: payout.id,
+      monto: enDolares(permiso.montoCents),
+      metodo,
+      // Cuándo lo verá en el banco, que es lo único que le importa.
+      llegaEn: metodo === 'instant' ? 'unos minutos' : '1 a 3 días hábiles',
+      transferidoDesdeUrbont: enDolares(empuje.centavosPagados),
+    });
+  } catch (err: unknown) {
+    const codigo = (err as { code?: string })?.code;
+    log.error({ err: err instanceof Error ? err.message : String(err), codigo, driverId }, 'retiro del chofer');
+    if (codigo === 'balance_insufficient') {
+      return res.status(409).json({ error: 'Tu saldo aún no está disponible. Intenta más tarde.' });
+    }
+    return res.status(500).json({ error: 'No se pudo completar el retiro.' });
+  }
+});
+
 driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Response) => {
   const driverId = req.supabaseUid;
   try {
