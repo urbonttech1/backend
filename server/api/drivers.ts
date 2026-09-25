@@ -15,7 +15,7 @@ import { puedeOperar } from "../services/driverVerification";
 import { driverNotif } from "../services/notificationTemplates";
 import { loadDriverDecisions, recordRideRejection } from "../services/driverRideHistory";
 import Stripe from "stripe";
-import { resumenDeSaldo, puedeRetirar, enDolares, type MetodoRetiro } from "../services/driverBalance";
+import { resumenDeSaldo, puedeRetirar, enDolares, gananciaDelChofer, type MetodoRetiro } from "../services/driverBalance";
 import { estadoConnectAlDia, pagarViajesPendientes } from "../services/payoutRecovery";
 import { puedeCobrar } from "../services/connectStatus";
 import { tasaDeAceptacion, tasaDeCancelacion, valoracionMedia } from "../services/driverPerformance";
@@ -608,7 +608,7 @@ driverRouter.get('/stats', requireSupabaseAuth, async (req: Request, res: Respon
   try {
     const [ridesRes, eventos] = await Promise.all([
       supabaseAdmin.from('rides')
-        .select('id, ride_status, created_at, fare, rating')
+        .select('id, ride_status, created_at, fare, driver_earnings, rating')
         .eq('driver_id', driverId)
         .order('created_at', { ascending: false })
         .limit(500),
@@ -618,7 +618,8 @@ driverRouter.get('/stats', requireSupabaseAuth, async (req: Request, res: Respon
       loadDriverDecisions(driverId!),
     ]);
     const rides = (ridesRes.data ?? []) as Array<{
-      id: string; ride_status: string; created_at: string; fare: number | null; rating: number | null;
+      id: string; ride_status: string; created_at: string;
+      fare: number | null; driver_earnings: number | null; rating: number | null;
     }>;
 
     const completed = rides.filter(r => r.ride_status === 'completed');
@@ -626,12 +627,13 @@ driverRouter.get('/stats', requireSupabaseAuth, async (req: Request, res: Respon
     const nowMs = Date.now();
     const weekAgo = nowMs - 7 * 24 * 3600 * 1000;
     const weekCompleted = completed.filter(r => new Date(r.created_at).getTime() >= weekAgo);
-    const weeklyEarnings = weekCompleted.reduce((s, r) => s + Number(r.fare ?? 0), 0);
+    // Lo que gana el chofer, no la tarifa del pasajero. Ver `gananciaDelChofer`.
+    const weeklyEarnings = weekCompleted.reduce((s, r) => s + gananciaDelChofer(r), 0);
 
     const chart = Array(7).fill(0) as number[];
     for (const r of completed) {
       const daysAgo = Math.floor((nowMs - new Date(r.created_at).getTime()) / 86400000);
-      if (daysAgo < 7) chart[6 - daysAgo] += Number(r.fare ?? 0);
+      if (daysAgo < 7) chart[6 - daysAgo] += gananciaDelChofer(r);
     }
 
     res.json({
@@ -817,6 +819,7 @@ driverRouter.post('/cashout', requireSupabaseAuth, async (req: Request, res: Res
   }
 });
 
+// ── GET /api/drivers/earnings — lo que ha ganado, por periodo ──────────────
 driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Response) => {
   const driverId = req.supabaseUid;
   try {
@@ -827,13 +830,15 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
 
     const { data: rides } = await supabaseAdmin
       .from('rides')
-      .select('fare, created_at')
+      .select('fare, driver_earnings, created_at')
       .eq('driver_id', driverId)
       .eq('ride_status', 'completed')
       .gte('created_at', monthStart.toISOString())
       .order('created_at', { ascending: false });
 
-    const list = (rides ?? []) as Array<{ fare: number | null; created_at: string }>;
+    const list = (rides ?? []) as Array<{
+      fare: number | null; driver_earnings: number | null; created_at: string;
+    }>;
 
     let today = 0, todayTrips = 0;
     let week = 0, weekTrips = 0;
@@ -843,14 +848,17 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
     const chart = Array(7).fill(0);
 
     for (const r of list) {
-      const fare = Number(r.fare ?? 0);
+      // Lo que gana el chofer, no lo que factura Urbont. Ver `gananciaDelChofer`:
+      // esta pantalla sumaba `fare`, el precio del pasajero, y el chofer creía
+      // que ese dinero era suyo.
+      const ganado = gananciaDelChofer(r);
       const d = new Date(r.created_at);
-      month += fare; monthTrips++;
-      if (d >= weekStart) { week += fare; weekTrips++; }
-      if (d >= todayStart) { today += fare; todayTrips++; }
+      month += ganado; monthTrips++;
+      if (d >= weekStart) { week += ganado; weekTrips++; }
+      if (d >= todayStart) { today += ganado; todayTrips++; }
 
       const daysAgo = Math.floor((now.getTime() - d.getTime()) / 86400000);
-      if (daysAgo < 7) chart[6 - daysAgo] += fare;
+      if (daysAgo < 7) chart[6 - daysAgo] += ganado;
     }
 
     res.json({
@@ -881,14 +889,15 @@ driverRouter.get('/quests', requireSupabaseAuth, async (req: Request, res: Respo
     // 1) Live progress from completed rides this week
     const { data: rides } = await supabaseAdmin
       .from('rides')
-      .select('fare, created_at')
+      .select('fare, driver_earnings, created_at')
       .eq('driver_id', driverId)
       .eq('ride_status', 'completed')
       .gte('created_at', weekStart.toISOString());
 
-    const list = (rides ?? []) as Array<{ fare: number | null }>;
+    const list = (rides ?? []) as Array<{ fare: number | null; driver_earnings: number | null }>;
     const tripsThisWeek = list.length;
-    const earningsThisWeek = list.reduce((s, r) => s + Number(r.fare ?? 0), 0);
+    // La meta se mide sobre lo que gana, que es lo que la pantalla enseña ahora.
+    const earningsThisWeek = list.reduce((s, r) => s + gananciaDelChofer(r), 0);
 
     // 2) Streak from driver_streaks
     const { rows } = await pool.query(

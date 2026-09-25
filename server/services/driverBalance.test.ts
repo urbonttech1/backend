@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aCentavos, resumenDeSaldo, puedeRetirar, enDolares } from './driverBalance';
+import { aCentavos, resumenDeSaldo, puedeRetirar, enDolares, gananciaDelChofer } from './driverBalance';
 
 const sinStripe = { disponibleCents: 0, enCaminoCents: 0 };
 
@@ -88,5 +88,25 @@ describe('enDolares', () => {
   it('centavos a dólares', () => {
     expect(enDolares(12337)).toBe(123.37);
     expect(enDolares(0)).toBe(0);
+  });
+});
+
+describe('gananciaDelChofer — lo que gana, no lo que factura Urbont', () => {
+  it('manda lo apuntado al repartir', () => {
+    expect(gananciaDelChofer({ driver_earnings: 25.16, fare: 29.60 })).toBe(25.16);
+    expect(gananciaDelChofer({ driver_earnings: '25.16', fare: 29.60 })).toBe(25.16);
+  });
+
+  it('sin importe apuntado, el 85 % de la tarifa', () => {
+    // Los viajes viejos, de antes de que se escribiera la columna.
+    expect(gananciaDelChofer({ fare: 100 })).toBe(85);
+    expect(gananciaDelChofer({ driver_earnings: null, fare: 29.60 })).toBe(25.16);
+    expect(gananciaDelChofer({ driver_earnings: 0, fare: 29.60 })).toBe(25.16);
+  });
+
+  it('sin nada, cero', () => {
+    expect(gananciaDelChofer({})).toBe(0);
+    expect(gananciaDelChofer({ fare: null, driver_earnings: null })).toBe(0);
+    expect(gananciaDelChofer({ fare: 'abc' })).toBe(0);
   });
 });

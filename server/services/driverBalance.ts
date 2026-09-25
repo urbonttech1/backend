@@ -122,3 +122,31 @@ export function puedeRetirar(resumen: ResumenSaldo, metodo: MetodoRetiro): Puede
   }
   return { puede: false, montoCents: 0, motivo: 'No tienes saldo para retirar.' };
 }
+
+/**
+ * La parte del chofer en un viaje.
+ *
+ * La pantalla de ganancias sumaba `rides.fare`, el precio que pagó el pasajero,
+ * y se lo enseñaba al chofer como si fuera suyo. De ahí salían dos números que
+ * no cuadraban: arriba lo facturado y abajo, en el botón de retirar, lo que de
+ * verdad le corresponde.
+ *
+ * Manda `driver_earnings`, que es lo que se le apuntó al repartir. Cuando falta
+ * —viajes viejos, anteriores a que se escribiera esa columna— se calcula con la
+ * misma proporción, para que la cifra no se desplome y parezca que la app perdió
+ * datos.
+ */
+export const PARTE_DEL_CHOFER = 0.85;
+
+export function gananciaDelChofer(viaje: {
+  driver_earnings?: number | string | null;
+  fare?: number | string | null;
+}): number {
+  const apuntado = Number(viaje.driver_earnings);
+  if (Number.isFinite(apuntado) && apuntado > 0) return apuntado;
+
+  const tarifa = Number(viaje.fare);
+  if (Number.isFinite(tarifa) && tarifa > 0) return Math.round(tarifa * PARTE_DEL_CHOFER * 100) / 100;
+
+  return 0;
+}
