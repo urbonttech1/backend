@@ -9,6 +9,7 @@
 
 import { supabaseAdmin } from '../db/client';
 import { getIO } from './socketService';
+import { claveDeServidor } from './mapsKeys';
 
 const SPATIAL_THRESHOLD_KM = 2;
 const TIME_THRESHOLD_SECONDS = 15 * 60;
@@ -120,7 +121,7 @@ export async function checkRideDeviation(input: RideCheckInput): Promise<RideChe
   let timeDeviationSeconds: number | null = null;
   let remainingEstimateSeconds: number | null = null;
 
-  const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+  const GOOGLE_KEY = claveDeServidor(process.env);
   if (GOOGLE_KEY && r.duration_minutes) {
     try {
       const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${driverLat},${driverLng}&destination=${dropoffLat},${dropoffLng}&mode=driving&departure_time=now&key=${GOOGLE_KEY}`;

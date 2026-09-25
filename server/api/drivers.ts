@@ -19,6 +19,7 @@ import { resumenDeSaldo, puedeRetirar, enDolares, gananciaDelChofer, type Metodo
 import { estadoConnectAlDia, pagarViajesPendientes } from "../services/payoutRecovery";
 import { puedeCobrar } from "../services/connectStatus";
 import { tasaDeAceptacion, tasaDeCancelacion, valoracionMedia } from "../services/driverPerformance";
+import { claveDeServidor } from '../services/mapsKeys';
 
 // Streak milestones that deserve a push notification
 const STREAK_MILESTONES = new Set([3, 5, 7, 10, 14, 21, 30]);
@@ -1046,7 +1047,7 @@ driverRouter.get('/eta/:driverId', requireSupabaseAuth, async (req: Request, res
   const etaMinutes = Math.max(1, Math.round((distKm / avgSpeedKmh) * 60));
 
   // Try Google Directions for more accurate ETA
-  const googleKey = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+  const googleKey = claveDeServidor(process.env);
   if (googleKey && distKm < 50) {
     try {
       const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${driver.lat},${driver.lng}&destination=${toLat},${toLng}&mode=driving&departure_time=now&key=${googleKey}`;

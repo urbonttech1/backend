@@ -18,6 +18,7 @@
 
 import crypto from 'crypto';
 import { createContextLogger } from '../lib/logger';
+import { claveDeServidor } from './mapsKeys';
 
 const log = createContextLogger('CHECKS');
 
@@ -138,7 +139,7 @@ async function checkStripe(): Promise<CheckResult> {
  */
 async function checkGoogleMaps(): Promise<CheckResult> {
   const probe = 'GET https://maps.googleapis.com/maps/api/geocode/json';
-  const key = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY;
+  const key = claveDeServidor(process.env);
   if (!key) return notConfigured(probe);
 
   const t0 = Date.now();

@@ -1,11 +1,12 @@
 import { Router, Request, Response } from "express";
 import { createContextLogger } from "../lib/logger";
 import { getSearchBias, ensureZonesFresh } from "../services/serviceZones";
+import { claveDeServidor } from '../services/mapsKeys';
 
 export const geocodeRouter = Router();
 
 const log = createContextLogger('GEOCODE');
-const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+const GOOGLE_KEY = claveDeServidor(process.env);
 
 // ── In-memory geocode cache ───────────────────────────────────────────────────
 // Each bucket is a Map<key, {value, expiresAt}>. When a bucket reaches its cap

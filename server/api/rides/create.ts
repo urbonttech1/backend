@@ -23,6 +23,7 @@ import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
+import { claveDeServidor } from '../../services/mapsKeys';
 
 export function registerCreateRoutes(router: Router): void {
 router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -112,7 +113,7 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
   }
 
   // Build Google Directions URL with optional intermediate stops
-  const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+  const GOOGLE_KEY = claveDeServidor(process.env);
 
   let origin = `${pickupLat},${pickupLng}`;
   let destination = `${dropoffLat},${dropoffLng}`;

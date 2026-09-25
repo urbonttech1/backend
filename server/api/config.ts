@@ -5,6 +5,7 @@ import { pool } from "../db/pool";
 import { getTimeSurge, getFareClasses, getPricingPolicy, VEHICLE_ALIAS } from "../config/pricing";
 import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
 import { telefonoEmergencias } from "../services/driverIncident";
+import { claveDeNavegador, mapIdPublicado } from '../services/mapsKeys';
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -125,8 +126,10 @@ async function soporte(req: Request) {
 configRouter.get("/", async (req: Request, res: Response) => {
   const support = await soporte(req).catch(() => null);
   const stripePublishableKey = process.env.VITE_STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY || '';
-  const googleMapsApiKey = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
-  const googleMapsMapId   = process.env.VITE_GOOGLE_MAPS_MAP_ID  || process.env.GOOGLE_MAPS_MAP_ID  || '';
+  // La clave de navegador, no la del servidor: viaja dentro de la app y va
+  // restringida por referente. Ver `mapsKeys.ts`.
+  const googleMapsApiKey = claveDeNavegador(process.env);
+  const googleMapsMapId  = mapIdPublicado(process.env);
   // El recargo que se va a cobrar de verdad: el mayor entre el manual del panel y
   // el de la franja horaria. `surge_multiplier` sigue siendo sólo el manual, para
   // no cambiarle el significado a lo que ya lee la app.

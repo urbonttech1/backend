@@ -2,12 +2,13 @@ import { Router, Request, Response } from 'express';
 import { requireSupabaseAuth } from '../middleware';
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
+import { claveDeServidor } from '../services/mapsKeys';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
 export const placesRouter = Router();
 
-const GOOGLE_KEY = process.env.VITE_GOOGLE_MAPS_API_KEY || process.env.GOOGLE_MAPS_API_KEY || '';
+const GOOGLE_KEY = claveDeServidor(process.env);
 
 // GET /api/places/nearby?lat=&lng=&type=&radius=
 // Proxy to Google Places Nearby Search — used by driver "Quick Stops" panel.
