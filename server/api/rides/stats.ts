@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { requireSupabaseAuth, validateBody } from "../../middleware";
 import { supabaseAdmin } from "../../db/client";
 import { totalDeViaje } from "../../services/rideTax";
+import { ESTADOS_CON_VIAJE_ACTIVO } from "../../services/stateMachine";
 import { tasaImpuestoRespaldo } from "../../services/taxConfig";
 import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
@@ -255,7 +256,9 @@ router.get("/driver-active", requireSupabaseAuth, async (req: Request, res: Resp
       .from('rides')
       .select('*')
       .eq('driver_id', driver_id)
-      .in('ride_status', ['confirmed', 'in_progress'])
+      // Incluye `driver_arrived`: sin él, un chofer que marcaba «llegué» y
+      // salía de la app volvía y esta ruta le contestaba que no tenía viaje.
+      .in('ride_status', ESTADOS_CON_VIAJE_ACTIVO)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();

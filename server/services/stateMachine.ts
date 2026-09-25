@@ -124,3 +124,30 @@ export function isActiveStatus(status: RideStatus): boolean {
 }
 
 export const ACTIVE_STATUSES: RideStatus[] = ['scheduled', 'searching', 'confirmed', 'driver_arrived', 'in_progress'];
+
+/**
+ * Los estados en los que el chofer tiene un viaje entre manos.
+ *
+ * Existe porque `/api/rides/driver-active` —la ruta con la que la app recupera
+ * el viaje al volver del segundo plano— preguntaba solo por `confirmed` e
+ * `in_progress` y se dejaba fuera `driver_arrived`. Un chofer que marcaba
+ * «llegué» y se iba a WhatsApp volvía y la app le decía que no tenía ningún
+ * viaje: el servidor contestaba «ninguno» y el cliente le creía.
+ *
+ * Que la lista viva aquí, al lado de las transiciones, es para que añadir un
+ * estado nuevo no vuelva a dejar la recuperación coja.
+ *
+ * No confundir con `ACTIVE_STATUSES`, que es más amplia: aquélla incluye
+ * `scheduled` y `searching`, viajes vivos pero que ningún chofer tiene todavía.
+ */
+export const ESTADOS_CON_VIAJE_ACTIVO: RideStatus[] = ['confirmed', 'driver_arrived', 'in_progress'];
+
+/** Si en ese estado el viaje sigue vivo para el chofer. */
+export function tieneViajeActivo(estado: unknown): boolean {
+  return typeof estado === 'string' && (ESTADOS_CON_VIAJE_ACTIVO as string[]).includes(estado);
+}
+
+/** Estados en los que el viaje ya terminó y no hay nada que recuperar. */
+export function viajeTerminado(estado: unknown): boolean {
+  return estado === 'completed' || estado === 'cancelled';
+}
