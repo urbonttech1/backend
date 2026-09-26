@@ -4,6 +4,7 @@ import { logger } from '../lib/logger';
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 import Stripe from 'stripe';
 import { requireSupabaseAuth } from '../middleware';
+import { cobrarPropina, fueRechazada } from '../services/rideTip';
 import { supabaseAdmin } from '../db/client';
 
 const _TIPS_SK = process.env.STRIPE_SECRET_KEY || '';
@@ -19,77 +20,33 @@ export const tipsRouter = Router();
 
 // POST /api/tips/:rideId — add a tip to a completed ride
 tipsRouter.post('/:rideId', requireSupabaseAuth, async (req: Request, res: Response) => {
-  const uid = req.supabaseUid!;
-  const { rideId } = req.params;
-  const { amount, paymentMethodId } = req.body as { amount?: number; paymentMethodId?: string };
-
-  if (!amount || amount < 1 || amount > 200) {
-    return res.status(400).json({ error: 'Tip amount must be between $1 and $200' });
-  }
-
-  // FIX: Guard against unconfigured Stripe — getStripe() returns null when key is absent.
-  // Previously this would throw TypeError: Cannot read properties of null (reading 'paymentIntents')
+  // La pantalla de historial llama aquí. Antes cobraba la propina y no
+  // transfería nada al chofer: el dinero se quedaba en la cuenta de Urbont.
+  // Ahora usa el mismo servicio que las rutas de viaje.
   const stripe = getStripe();
-  if (!stripe) {
-    return res.status(503).json({ error: 'Payment processing is temporarily unavailable. Please try again later.' });
-  }
-
-  // Verify ride belongs to this passenger and is completed
-  const { data: ride, error: rideErr } = await supabaseAdmin
-    .from('rides')
-    .select('id, passenger_id, driver_id, ride_status, tip_amount, fare')
-    .eq('id', rideId)
-    .eq('passenger_id', uid)
-    .maybeSingle();
-
-  if (rideErr || !ride) return res.status(404).json({ error: 'Ride not found' });
-  if (ride.ride_status !== 'completed') return res.status(400).json({ error: 'Can only tip on completed rides' });
-  if (ride.tip_amount) return res.status(400).json({ error: 'This ride already has a tip' });
+  if (!stripe) return res.status(503).json({ error: 'Payment service unavailable' });
 
   try {
-    const amountCents = Math.round(amount * 100);
-
-    // Re-check tip_amount immediately before charging to shrink the race window
-    // where two concurrent requests both pass the initial guard above.
-    const { data: freshRide } = await supabaseAdmin
-      .from('rides')
-      .select('tip_amount')
-      .eq('id', rideId)
-      .maybeSingle();
-    if (freshRide?.tip_amount) return res.status(409).json({ error: 'This ride already has a tip' });
-
-    // Create and confirm PaymentIntent for tip. Idempotency key is anchored to
-    // rideId + passenger — a client retry (timeout, double-tap) resolves to the
-    // same PaymentIntent instead of creating a second charge for the same tip.
-    const pi = await stripe.paymentIntents.create({
-      amount: amountCents,
-      currency: 'usd',
-      payment_method: paymentMethodId,
-      confirm: !!paymentMethodId,
-      metadata: { ride_id: rideId, type: 'tip', passenger_id: uid, driver_id: ride.driver_id || '' },
-      description: `URBONT tip for ride ${rideId}`,
-    }, {
-      idempotencyKey: `tip_${rideId}_${uid}`,
+    const resultado = await cobrarPropina({
+      stripe,
+      rideId: req.params.rideId,
+      passengerId: req.supabaseUid!,
+      amount: Number((req.body as { amount?: number }).amount),
     });
 
-    // Record tip on ride — only if no tip was recorded meanwhile (compare-and-swap
-    // via .is('tip_amount', null)) so a concurrent duplicate charge, if it ever
-    // slipped through, can't silently overwrite an already-recorded tip.
-    await supabaseAdmin.from('rides').update({
-      tip_amount: amount,
-      tip_pi_id: pi.id,
-      updated_at: new Date().toISOString(),
-    }).eq('id', rideId).is('tip_amount', null);
+    if (fueRechazada(resultado)) {
+      return res.status(resultado.estado).json({ error: resultado.motivo, code: resultado.codigo });
+    }
 
-    res.json({
+    return res.json({
       success: true,
-      tipAmount: amount,
-      clientSecret: pi.client_secret,
-      paymentIntentId: pi.id,
+      tipAmount: resultado.monto,
+      paymentIntentId: resultado.paymentIntentId,
+      transferId: resultado.transferId,
     });
-  } catch (err: any) {
-    logger.error(`[TIPS] Error creating tip payment: ${err.message}`);
-    res.status(500).json({ error: 'Failed to process tip' });
+  } catch (err: unknown) {
+    logger.error(`[TIPS] Error creating tip payment: ${errMsg(err)}`);
+    return res.status(500).json({ error: 'Failed to process tip' });
   }
 });
 

@@ -25,6 +25,7 @@ import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 import { loadDriverHistoryExtras } from '../../services/driverRideHistory';
 import { mergeDriverHistory } from '../../services/driverHistoryView';
+import { cobrarPropina, fueRechazada } from '../../services/rideTip';
 
 export function registerStatsRoutes(router: Router): void {
 router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -444,85 +445,34 @@ router.get('/:id/earnings-breakdown', requireSupabaseAuth, async (req: Request, 
 // T017: POST /:id/adjust-tip — passenger adjusts tip up to 30 days after trip
 // ═══════════════════════════════════════════════════════════════════════════════
 router.post('/:id/adjust-tip', requireSupabaseAuth, async (req: Request, res: Response) => {
-  const uid = req.supabaseUid!;
-  const { tipAmount } = req.body as { tipAmount?: number };
-
-  if (typeof tipAmount !== 'number' || tipAmount < 0 || tipAmount > 200) {
-    return res.status(400).json({ error: 'tipAmount must be a number between 0 and 200' });
-  }
+  // Se conserva porque las apps ya instaladas llaman aquí, y porque la pantalla
+  // de viaje terminado promete 30 días para ajustar la propina.
+  //
+  // Antes esta ruta creaba el cobro sin `payment_method` ni `off_session`, así
+  // que Stripe lo rechazaba antes de crear nada -no hay ni un PaymentIntent de
+  // propina en toda la cuenta- y, aunque hubiera cobrado, no transfería nada al
+  // chofer: el dinero se quedaba en Urbont y al chofer le llegaba igualmente el
+  // aviso de que tenía propina.
+  //
+  // Ahora usa el mismo servicio que el resto. Ajustar una propina ya dejada
+  // queda pendiente: `cobrarPropina` rechaza el segundo intento en vez de
+  // cobrar la diferencia.
+  const stripe = getStripe();
+  if (!stripe) return res.status(503).json({ error: 'Payment service unavailable' });
 
   try {
-    const { data: ride, error: fetchErr } = await supabaseAdmin
-      .from('rides')
-      .select('passenger_id, driver_id, ride_status, completed_at, payment_intent_id, tip_amount')
-      .eq('id', req.params.id)
-      .maybeSingle();
+    const resultado = await cobrarPropina({
+      stripe,
+      rideId: req.params.id,
+      passengerId: req.supabaseUid!,
+      amount: Number((req.body as { tipAmount?: number }).tipAmount),
+    });
 
-    if (fetchErr || !ride) return res.status(404).json({ error: 'Ride not found' });
-    const r = ride as Record<string, unknown>;
-
-    if (r.passenger_id !== uid) return res.status(403).json({ error: 'Only the passenger can adjust the tip' });
-    if (r.ride_status !== 'completed') return res.status(409).json({ error: 'Ride must be completed to adjust tip' });
-
-    // 30-day window
-    const completedAt = r.completed_at ? new Date(r.completed_at as string).getTime() : 0;
-    const daysSince   = (Date.now() - completedAt) / (1000 * 60 * 60 * 24);
-    if (daysSince > 30) return res.status(409).json({ error: 'Tip can only be adjusted within 30 days of trip completion' });
-
-    // Charge the tip delta via Stripe
-    const oldTip  = Number(r.tip_amount || 0);
-    const delta   = Math.round((tipAmount - oldTip) * 100); // cents
-    if (delta > 0 && r.payment_intent_id) {
-      const stripe = getStripe();
-      if (stripe) {
-        try {
-          // Create a new PaymentIntent for the tip delta. Idempotency key is
-          // anchored to rideId + the exact target tipAmount (in cents) — a
-          // client retry (timeout, double-tap) that resolves to the same
-          // target amount reuses the same PaymentIntent instead of charging
-          // the delta twice. A genuinely different tipAmount gets a new key.
-          const pi = await stripe.paymentIntents.retrieve(r.payment_intent_id as string);
-          if (pi.customer) {
-            await stripe.paymentIntents.create({
-              amount:   delta,
-              currency: 'usd',
-              customer: pi.customer as string,
-              confirm:  true,
-              metadata: { ride_id: req.params.id, type: 'tip_adjustment' },
-            }, {
-              idempotencyKey: `adjust-tip_${req.params.id}_${Math.round(tipAmount * 100)}`,
-            });
-          }
-        } catch (stripeErr: unknown) {
-          logger.error(`[RIDES] Tip Stripe charge failed:: ${errMsg(stripeErr)}`);
-          return res.status(502).json({ error: 'Failed to charge tip adjustment. Please try again.' });
-        }
-      }
+    if (fueRechazada(resultado)) {
+      return res.status(resultado.estado).json({ error: resultado.motivo, code: resultado.codigo });
     }
 
-    // Compare-and-swap on tip_amount: only apply the update if it still matches
-    // the value we read at the top of this request. Prevents a second concurrent
-    // request (which computed its own delta off the same oldTip) from silently
-    // overwriting the first request's result after both have charged.
-    const { data: updated } = await supabaseAdmin.from('rides')
-      .update({ tip_amount: tipAmount, updated_at: new Date().toISOString() })
-      .eq('id', req.params.id)
-      .eq('tip_amount', r.tip_amount as number | null ?? 0)
-      .select('id')
-      .maybeSingle();
-
-    if (!updated) {
-      logger.warn(`[RIDES] adjust-tip CAS miss for ride ${req.params.id} — tip_amount changed concurrently after charge`);
-    }
-
-    // Notify driver of tip update
-    notifyUser(String(r.driver_id), {
-      title: 'Tip Updated',
-      body:  `Your passenger updated their tip to $${tipAmount.toFixed(2)}`,
-      data: { type: 'tip_updated', ride_id: req.params.id, screen: 'driver_earnings' },
-    }).catch(() => {});
-
-    return res.json({ success: true, tipAmount, previousTip: oldTip });
+    return res.json({ success: true, tipAmount: resultado.monto, transferId: resultado.transferId });
   } catch (err: any) {
     logger.error(`[RIDES] adjust-tip error:: ${err.message}`);
     return res.status(500).json({ error: 'Failed to adjust tip' });
@@ -603,99 +553,30 @@ router.post('/:id/favorite', requireSupabaseAuth, async (req: Request, res: Resp
 // ═══════════════════════════════════════════════════════════════════════════════
 
 router.post('/:id/tip', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const stripe = getStripe();
+  if (!stripe) return res.status(503).json({ error: 'Payment service unavailable' });
+
   try {
-    const stripe = getStripe();
-    if (!stripe) return res.status(503).json({ error: 'Payment service unavailable' });
-
-    const rideId      = req.params.id;
-    const passengerId = req.supabaseUid!;
-    const { amount }  = req.body as { amount?: number };
-
-    if (!amount || typeof amount !== 'number' || amount <= 0 || amount > 200) {
-      return res.status(400).json({ error: 'Tip amount must be between $0.01 and $200' });
-    }
-
-    const { data: ride, error: rideErr } = await supabaseAdmin
-      .from('rides')
-      .select('id, ride_status, passenger_id, driver_id, tip_amount, payment_method')
-      .eq('id', rideId)
-      .maybeSingle();
-
-    if (rideErr || !ride) return res.status(404).json({ error: 'Ride not found' });
-    if (String(ride.passenger_id) !== passengerId) return res.status(403).json({ error: 'Not your ride' });
-    if (ride.ride_status !== 'completed') return res.status(400).json({ error: 'Can only tip completed rides' });
-    if (ride.payment_method === 'cash') return res.status(400).json({ error: 'Cash rides cannot be tipped via card' });
-    if (Number(ride.tip_amount) > 0) return res.status(409).json({ error: 'Tip already recorded for this ride' });
-
-    const { data: passenger } = await supabaseAdmin
-      .from('profiles')
-      .select('stripe_customer_id')
-      .eq('id', passengerId)
-      .maybeSingle();
-
-    const customerId = (passenger as Record<string,unknown>)?.stripe_customer_id as string | undefined;
-    if (!customerId) return res.status(400).json({ error: 'No saved payment method on file. Please add a card first.' });
-
-    const { data: driverProfile } = await supabaseAdmin
-      .from('profiles')
-      .select('stripe_account_id, stripe_connect_status')
-      .eq('id', String(ride.driver_id))
-      .maybeSingle();
-
-    const driverAccountId = (driverProfile as { stripe_account_id?: string; stripe_connect_status?: string } | null)?.stripe_account_id as string | undefined;
-    const tipCents        = Math.round(amount * 100);
-
-    const customerObj = await stripe.customers.retrieve(customerId);
-    if ((customerObj as unknown as Record<string,unknown>).deleted) return res.status(400).json({ error: 'Payment customer not found' });
-
-    const paymentMethods = await stripe.paymentMethods.list({ customer: customerId, type: 'card', limit: 1 });
-    if (!paymentMethods.data.length) return res.status(400).json({ error: 'No saved card found. Please add a card first.' });
-    const pmId = paymentMethods.data[0].id;
-
-    const pi = await stripe.paymentIntents.create({
-      amount:              tipCents,
-      currency:            'usd',
-      customer:            customerId,
-      payment_method:      pmId,
-      payment_method_types: ['card'],
-      confirm:             true,
-      off_session:         true,
-      metadata:            { ride_id: rideId, type: 'tip' },
-    }, {
-      // Idempotency key prevents double-charging if client retries on network error
-      idempotencyKey: `tip_${rideId}_${passengerId}`,
+    const resultado = await cobrarPropina({
+      stripe,
+      rideId: req.params.id,
+      passengerId: req.supabaseUid!,
+      amount: Number((req.body as { amount?: number }).amount),
     });
 
-    let transferId: string | undefined;
-    if (driverAccountId && (driverProfile as Record<string,unknown>)?.stripe_connect_status === 'active') {
-      const latestCharge = typeof pi.latest_charge === 'string' ? pi.latest_charge : undefined;
-      const transfer = await stripe.transfers.create({
-        amount:             tipCents,
-        currency:           'usd',
-        destination:        driverAccountId,
-        source_transaction: latestCharge,
-        metadata:           { ride_id: rideId, type: 'tip' },
-      });
-      transferId = transfer.id;
+    if (fueRechazada(resultado)) {
+      return res.status(resultado.estado).json({ error: resultado.motivo, code: resultado.codigo });
     }
 
-    await supabaseAdmin.from('rides').update({
-      tip_amount:  amount,
-      updated_at:  new Date().toISOString(),
-    }).eq('id', rideId);
-
-    if (ride.driver_id) {
-      notifyUser(String(ride.driver_id), {
-        title: '💰 You received a tip!',
-        body:  `Your passenger left you a $${amount.toFixed(2)} tip. Great service!`,
-        data:  { type: 'tip_received', ride_id: rideId, screen: 'driver_earnings' },
-      }).catch(() => {});
-    }
-
-    return res.json({ success: true, tipAmount: amount, paymentIntentId: pi.id, transferId });
+    return res.json({
+      success: true,
+      tipAmount: resultado.monto,
+      paymentIntentId: resultado.paymentIntentId,
+      transferId: resultado.transferId,
+    });
   } catch (err: any) {
     logger.error(`[RIDES] tip error:: ${err.message}`);
-    return res.status(500).json({ error: 'Failed to process tip', details: err.message });
+    return res.status(500).json({ error: 'Failed to process tip' });
   }
 });
 
