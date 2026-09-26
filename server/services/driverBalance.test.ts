@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { aCentavos, resumenDeSaldo, puedeRetirar, enDolares, gananciaDelChofer } from './driverBalance';
+import { aCentavos, resumenDeSaldo, puedeRetirar, enDolares, gananciaDelChofer, gananciaConPropina } from './driverBalance';
 
 const sinStripe = { disponibleCents: 0, enCaminoCents: 0 };
 
@@ -108,5 +108,24 @@ describe('gananciaDelChofer — lo que gana, no lo que factura Urbont', () => {
     expect(gananciaDelChofer({})).toBe(0);
     expect(gananciaDelChofer({ fare: null, driver_earnings: null })).toBe(0);
     expect(gananciaDelChofer({ fare: 'abc' })).toBe(0);
+  });
+});
+
+describe('gananciaConPropina — la propina cuenta como ganancia', () => {
+  it('suma la propina entera, sin comisión', () => {
+    // Urbont no cobra comisión sobre la propina: los $10 van completos.
+    expect(gananciaConPropina({ driver_earnings: 21.05, tip_amount: 10 })).toBe(31.05);
+    expect(gananciaConPropina({ fare: 100, tip_amount: 10 })).toBe(95);
+  });
+
+  it('sin propina, es la ganancia de siempre', () => {
+    expect(gananciaConPropina({ driver_earnings: 21.05 })).toBe(21.05);
+    expect(gananciaConPropina({ driver_earnings: 21.05, tip_amount: null })).toBe(21.05);
+    expect(gananciaConPropina({ driver_earnings: 21.05, tip_amount: 0 })).toBe(21.05);
+  });
+
+  it('ignora propinas con valores absurdos', () => {
+    expect(gananciaConPropina({ driver_earnings: 21.05, tip_amount: -5 })).toBe(21.05);
+    expect(gananciaConPropina({ driver_earnings: 21.05, tip_amount: 'abc' })).toBe(21.05);
   });
 });

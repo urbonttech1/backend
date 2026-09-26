@@ -144,6 +144,16 @@ export async function cobrarPropina(opts: {
     return { motivo: 'Could not charge the tip. Please try again.', codigo: 'COBRO_FALLIDO', estado: 502 };
   }
 
+  // Crear el PaymentIntent no es cobrarlo. Stripe puede devolverlo en
+  // `requires_payment_method` o `requires_action` sin lanzar ningún error, y eso
+  // es exactamente lo que pasó el 26/09 a las 18:21: el código viejo dio por
+  // buena la propina, escribió `tip_amount` y la app le enseñó al chofer $10 que
+  // ningún pasajero había pagado.
+  if (pi.status !== 'succeeded') {
+    logger.error(`[PROPINA] Viaje ${rideId}: el cobro quedó en '${pi.status}' (${pi.id}); no se registra.`);
+    return { motivo: 'Could not charge the tip. Please try again.', codigo: 'COBRO_FALLIDO', estado: 502 };
+  }
+
   // La propina entera al chofer. `source_transaction` la ata a este cobro, así
   // que sale aunque el saldo de la plataforma esté en cero por el barrido.
   let transferId: string | undefined;

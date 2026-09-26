@@ -35,7 +35,7 @@ const viajeCompleto = {
 
 const stripeFalso = () => ({
   paymentMethods: { list: vi.fn(async () => ({ data: [{ id: 'pm_1' }] })) },
-  paymentIntents: { create: vi.fn(async () => ({ id: 'pi_1', latest_charge: 'ch_1' })) },
+  paymentIntents: { create: vi.fn(async () => ({ id: 'pi_1', latest_charge: 'ch_1', status: 'succeeded' })) },
   transfers: { create: vi.fn(async () => ({ id: 'tr_1' })) },
 });
 
@@ -121,6 +121,19 @@ describe('cobrarPropina', () => {
     perfiles[PASAJERO] = { stripe_customer_id: null };
     const r = await cobrar(stripeFalso());
     expect(fueRechazada(r) && r.codigo).toBe('SIN_TARJETA');
+  });
+
+  it('un cobro que no llega a succeeded no se registra ni se transfiere', async () => {
+    // El fallo del 26/09: Stripe devolvió el PaymentIntent en
+    // requires_payment_method sin lanzar error, y el codigo viejo lo dio por
+    // bueno. El chofer vio $10 que nadie habia pagado.
+    const stripe = stripeFalso();
+    stripe.paymentIntents.create = vi.fn(async () => ({ id: 'pi_1', latest_charge: 'ch_1', status: 'requires_payment_method' }));
+
+    const r = await cobrar(stripe);
+    expect(fueRechazada(r) && r.codigo).toBe('COBRO_FALLIDO');
+    expect(stripe.transfers.create).not.toHaveBeenCalled();
+    expect(viajes.update).not.toHaveBeenCalled();
   });
 
   it('si la transferencia falla, la propina queda registrada y el cobro hecho', async () => {

@@ -150,3 +150,25 @@ export function gananciaDelChofer(viaje: {
 
   return 0;
 }
+
+/**
+ * Lo que gana el chofer por un viaje, propina incluida.
+ *
+ * Las propinas no entraban en ninguna cifra de la pantalla de ganancias: ni en
+ * los totales, ni en la gráfica, ni en el importe de cada viaje. La fila
+ * enseñaba «· $10.00 tip» como texto suelto mientras el importe de al lado lo
+ * ignoraba, así que un chofer con $10 de propina veía las mismas ganancias que
+ * sin ella.
+ *
+ * La propina va entera al chofer -Urbont no cobra comisión sobre ella-, así que
+ * se suma tal cual, sin aplicarle el 85 %.
+ */
+export function gananciaConPropina(viaje: {
+  driver_earnings?: number | string | null;
+  fare?: number | string | null;
+  tip_amount?: number | string | null;
+}): number {
+  const propina = Number(viaje.tip_amount);
+  const conPropina = Number.isFinite(propina) && propina > 0 ? propina : 0;
+  return Math.round((gananciaDelChofer(viaje) + conPropina) * 100) / 100;
+}
