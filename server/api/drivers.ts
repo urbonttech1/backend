@@ -829,16 +829,30 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
     const weekStart = new Date(now); weekStart.setDate(now.getDate() - now.getDay()); weekStart.setHours(0, 0, 0, 0);
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    // Con `detail=1` la app pide además la lista de viajes, para la pestaña de
+    // actividad. Pedía ese detalle desde siempre y aquí no se miraba nunca: la
+    // respuesta no traía `rides`, así que la lista decía «No trips yet» aunque
+    // el total de arriba dijera otra cosa.
+    const conDetalle = req.query.detail === '1' || req.query.detail === 'true';
+    const columnas = conDetalle
+      ? 'id, fare, driver_earnings, created_at, started_at, completed_at, tip_amount, distance_miles, duration_minutes, pickup_address, dropoff_address'
+      : 'fare, driver_earnings, created_at';
+
     const { data: rides } = await supabaseAdmin
       .from('rides')
-      .select('fare, driver_earnings, created_at')
+      .select(columnas)
       .eq('driver_id', driverId)
       .eq('ride_status', 'completed')
       .gte('created_at', monthStart.toISOString())
       .order('created_at', { ascending: false });
 
-    const list = (rides ?? []) as Array<{
+    const list = (rides ?? []) as unknown as Array<{
+      id?: string;
       fare: number | null; driver_earnings: number | null; created_at: string;
+      started_at?: string | null; completed_at?: string | null;
+      tip_amount?: number | null; distance_miles?: number | null;
+      duration_minutes?: number | null;
+      pickup_address?: string | null; dropoff_address?: string | null;
     }>;
 
     let today = 0, todayTrips = 0;
@@ -870,6 +884,28 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
       month: parseFloat(month.toFixed(2)),
       monthTrips,
       weeklyChart: chart.map(v => parseFloat(v.toFixed(2))),
+      // El primer día de la ventana de siete, para que la gráfica sepa qué día
+      // es cada barra. Sin esto la app etiquetaba de lunes a domingo a mano y la
+      // barra de hoy caía bajo la letra que tocara.
+      weeklyChartStart: new Date(now.getTime() - 6 * 86400000).toISOString(),
+      ...(conDetalle ? {
+        rides: list.map((r) => ({
+          id: r.id,
+          created_at: r.created_at,
+          started_at: r.started_at ?? null,
+          completed_at: r.completed_at ?? null,
+          // Lo que gana el chofer, igual que los totales de arriba.
+          driverEarnings: gananciaDelChofer(r),
+          fare: r.fare != null ? Number(r.fare) : null,
+          tip: r.tip_amount != null ? Number(r.tip_amount) : 0,
+          distance: r.distance_miles != null ? Number(r.distance_miles) : 0,
+          // La estimación del reserva; la duración real la saca la app de los
+          // sellos, que van aquí arriba.
+          duration_minutes: r.duration_minutes != null ? Number(r.duration_minutes) : null,
+          pickupAddress: r.pickup_address ?? null,
+          dropoffAddress: r.dropoff_address ?? null,
+        })),
+      } : {}),
     });
   } catch (err: any) {
     log.error({ err: err.message, driverId }, 'earnings fetch error');
