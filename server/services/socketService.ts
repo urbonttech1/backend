@@ -716,6 +716,67 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/** Reservations go to every nearby chauffeur at once. Live trips keep the wave dispatch. */
+export const SCHEDULED_OFFER_RADIUS_KM = 15;
+
+/**
+ * Offer a future ride to every online chauffeur within `radiusKm` of the pickup,
+ * in the same instant. Returns the driver ids that were in range (connected or not)
+ * so the caller can also send the push.
+ */
+export async function broadcastScheduledOffer(args: {
+  rideId: string;
+  vehicleType: string;
+  pickupAddress: string;
+  pickupLat?: number | null;
+  pickupLng?: number | null;
+  scheduledAt: string;
+  radiusKm?: number;
+}): Promise<string[]> {
+  const radius = args.radiusKm ?? SCHEDULED_OFFER_RADIUS_KM;
+  const payload = {
+    rideId: args.rideId,
+    vehicleType: args.vehicleType,
+    pickupAddress: args.pickupAddress,
+    ts: Date.now(),
+    scheduledAt: args.scheduledAt,
+    offer: 'scheduled',
+  };
+
+  let nearby: Array<{ driver_id: string; distance_km: number }> = [];
+  const hasCoords = typeof args.pickupLat === 'number' && typeof args.pickupLng === 'number';
+  try {
+    // Every online chauffeur inside the radius, not a capped nearest-N list.
+    const result = await pool.query(
+      `SELECT driver_id, lat, lng FROM driver_locations
+        WHERE is_online = true AND updated_at >= NOW() - INTERVAL '15 minutes'`,
+    );
+    nearby = result.rows
+      .map((r: { driver_id: string; lat: string; lng: string }) => {
+        const distance_km = hasCoords
+          ? haversineKm(args.pickupLat as number, args.pickupLng as number, parseFloat(r.lat), parseFloat(r.lng))
+          : 0;
+        return { driver_id: r.driver_id, distance_km };
+      })
+      .filter((r) => !hasCoords || r.distance_km <= radius);
+  } catch (err: unknown) {
+    log.error({ err: err instanceof Error ? err.message : String(err), rideId: args.rideId }, 'scheduled offer lookup failed');
+    return [];
+  }
+
+  const ids = [...new Set(nearby.map((r) => r.driver_id))];
+  if (io) {
+    for (const driverId of ids) {
+      const sid = driverSocketMap.get(driverId);
+      if (sid) io.to(sid).emit('ride:new_request', payload);
+      io.to(`driver:${driverId}`).emit('ride:new_request', payload);
+    }
+    recordRideOffers(args.rideId, ids, 'socket');
+  }
+  log.info({ rideId: args.rideId, drivers: ids.length, radiusKm: radius }, 'scheduled offer broadcast');
+  return ids;
+}
+
 // ── Distance-aware dispatch ───────────────────────────────────────────────────
 // When pickup coordinates are available:
 //   Wave 0 (immediate) : connected drivers within  5 km of pickup

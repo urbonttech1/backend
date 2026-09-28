@@ -533,7 +533,8 @@ export async function runMigrations() {
       INSERT INTO app_config (key, value) VALUES
         ('maintenance_mode', 'false'),
         ('min_version', '1.0.0'),
-        ('surge_multiplier', '1.0')
+        ('surge_multiplier', '1.0'),
+        ('scheduled_claim_lead_minutes', '30')
       ON CONFLICT (key) DO NOTHING;
     `);
 

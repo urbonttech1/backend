@@ -6,6 +6,7 @@ import { pool } from '../db/pool';
 import { supabaseAdmin } from '../db/client';
 import { findStaleRides, reassignRide } from '../services/rideReassignment';
 import { notifyAvailableDrivers, getIo, broadcastRideStatus } from '../services/socketService';
+import { offerScheduledRide, scheduledClaimLeadMinutes } from '../services/scheduledOffer';
 import { reasignacionesVencidas, MINUTOS_PARA_REEMPLAZO, type ViajeEnReasignacion } from '../services/reassignTimeout';
 import { getStripe } from '../api/rides/helpers';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
@@ -384,29 +385,26 @@ async function driverAcceptanceTimeout() {
   }
 }
 
-// ── Scheduled Ride Dispatch (Uber/Lyft T-30 model) ───────────────────────────
-// Rides booked >30 min in advance have ride_status='scheduled'.
+// ── Scheduled ride safety net ────────────────────────────────────────────────
+// Reservations are offered to nearby chauffeurs at booking time.
 // This cron runs every 5 minutes and:
-//  1. Transitions 'scheduled' rides to 'searching' when pickup is ≤35 min away
-//     (5-min buffer so the notification arrives before the ride window opens)
-//  2. Sends push + socket dispatch to all matching available drivers
-//  3. Also cancels any 'scheduled' rides that are overdue (missed dispatch window)
-//
-// After transition → 'searching', driverAcceptanceTimeout handles re-dispatch
-// every 5 min until a driver accepts.
+//  1. Cancels unclaimed reservations whose pickup is more than 30 min in the past
+//  2. Inside the lead window (app_config scheduled_claim_lead_minutes, default 30):
+//     unclaimed rides become a live request and are offered again to everyone nearby
+//  3. Claimed rides in that window remind the assigned chauffeur to head out
 async function dispatchScheduledRides() {
   try {
-    const now                = new Date();
-    const thirtyFiveMinsFromNow = new Date(now.getTime() + 35 * 60 * 1000).toISOString();
-    const thirtyMinsAgo      = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
+    const now = new Date();
+    const leadMin = await scheduledClaimLeadMinutes();
+    const leadFromNow = new Date(now.getTime() + leadMin * 60 * 1000).toISOString();
+    const thirtyMinsAgo = new Date(now.getTime() - 30 * 60 * 1000).toISOString();
 
-    // ── Step 1: Cancel overdue 'scheduled' rides ───────────────────────────
-    // If scheduled_at has passed (pickup time already gone) and still in
-    // 'scheduled' status, the server missed the dispatch window — auto-cancel.
+    // ── Step 1: Cancel overdue unclaimed reservations ──────────────────────
     const { data: overdueRides } = await supabaseAdmin
       .from('rides')
       .update({ ride_status: 'cancelled', cancel_reason: 'no_driver_available', updated_at: now.toISOString() })
       .eq('ride_status', 'scheduled')
+      .is('driver_id', null)
       .lt('scheduled_at', thirtyMinsAgo)
       .select('id, passenger_id');
 
@@ -419,14 +417,14 @@ async function dispatchScheduledRides() {
       }
     }
 
-    // ── Step 2: Find 'scheduled' rides entering the T-35 min window ─────────
+    // ── Step 2: Unclaimed reservations entering the lead window ────────────
     const { data: readyRides, error } = await supabaseAdmin
       .from('rides')
-      .select('id, vehicle_type, pickup_address, pickup_lat, pickup_lng, scheduled_at, passenger_id')
+      .select('id, vehicle_type, pickup_address, pickup, pickup_lat, pickup_lng, scheduled_at, passenger_id')
       .eq('ride_status', 'scheduled')
       .is('driver_id', null)
       .gte('scheduled_at', now.toISOString())
-      .lte('scheduled_at', thirtyFiveMinsFromNow)
+      .lte('scheduled_at', leadFromNow)
       .limit(20);
 
     if (error) {
@@ -437,7 +435,7 @@ async function dispatchScheduledRides() {
     if (readyRides && readyRides.length > 0) {
       log.info(`[CRON] Dispatching ${readyRides.length} scheduled ride(s) - transitioning to 'searching'...`);
 
-      for (const ride of readyRides as Array<{ id: string; vehicle_type: string | null; pickup_address: string | null; pickup_lat: number | null; pickup_lng: number | null; scheduled_at: string | null; passenger_id: string | null }>) {
+      for (const ride of readyRides as Array<{ id: string; vehicle_type: string | null; pickup_address: string | null; pickup: { address?: string } | string | null; pickup_lat: number | null; pickup_lng: number | null; scheduled_at: string | null; passenger_id: string | null }>) {
         const minutesUntil = Math.round((new Date(ride.scheduled_at!).getTime() - now.getTime()) / 60000);
 
         // Transition: scheduled -> searching
@@ -453,16 +451,19 @@ async function dispatchScheduledRides() {
           continue;
         }
 
-        log.info(`[CRON]   Ride ${ride.id} (in ${minutesUntil} min)   searching - dispatching to drivers`);
+        log.info(`[CRON]   Ride ${ride.id} (in ${minutesUntil} min)   searching - offering again to nearby chauffeurs`);
 
-        // Dispatch to drivers
-        notifyAvailableDrivers(
-          ride.id,
-          ride.vehicle_type || 'executive',
-          ride.pickup_address || 'Miami, FL',
-          ride.pickup_lat ?? null,
-          ride.pickup_lng ?? null,
-        );
+        const pickupAddr = ride.pickup_address
+          || (typeof ride.pickup === 'string' ? ride.pickup : ride.pickup?.address)
+          || 'Miami, FL';
+        offerScheduledRide({
+          rideId: ride.id,
+          vehicleType: ride.vehicle_type || 'executive',
+          pickupAddress: pickupAddr,
+          pickupLat: ride.pickup_lat ?? null,
+          pickupLng: ride.pickup_lng ?? null,
+          scheduledAt: ride.scheduled_at || now.toISOString(),
+        }).catch(() => {});
 
         // Notify passenger that driver search has started
         if (ride.passenger_id) {
@@ -484,7 +485,7 @@ async function dispatchScheduledRides() {
       .eq('dispatch_35m_sent', false)
       .is('driver_id', null)
       .gte('scheduled_at', now.toISOString())
-      .lte('scheduled_at', thirtyFiveMinsFromNow)
+      .lte('scheduled_at', leadFromNow)
       .limit(20);
 
     for (const ride of (retryRides ?? []) as Array<{ id: string; passenger_id: string | null; scheduled_at: string }>) {
@@ -505,6 +506,36 @@ async function dispatchScheduledRides() {
         log.info(`[CRON] Retried dispatch notification for ride ${ride.id}`);
       } catch (e) {
         log.error({ err: e, rideId: ride.id }, '[CRON] Retry failed to send dispatch notification');
+      }
+    }
+
+    // Step 4: claimed reservations inside the lead window — remind the chauffeur to leave.
+    const { data: assignedDue } = await supabaseAdmin
+      .from('rides')
+      .select('id, driver_id, passenger_id, scheduled_at')
+      .eq('ride_status', 'scheduled')
+      .not('driver_id', 'is', null)
+      .eq('dispatch_35m_sent', false)
+      .gte('scheduled_at', now.toISOString())
+      .lte('scheduled_at', leadFromNow)
+      .limit(20);
+
+    for (const ride of (assignedDue ?? []) as Array<{ id: string; driver_id: string; passenger_id: string | null; scheduled_at: string }>) {
+      const { data: claimed } = await supabaseAdmin
+        .from('rides')
+        .update({ dispatch_35m_sent: true, updated_at: now.toISOString() })
+        .eq('id', ride.id)
+        .eq('dispatch_35m_sent', false)
+        .select('id');
+      if (!claimed || claimed.length === 0) continue;
+      const minutesUntil = Math.max(1, Math.round((new Date(ride.scheduled_at).getTime() - now.getTime()) / 60000));
+      notifyUser(ride.driver_id, {
+        title: 'Time to head to pickup',
+        body: `Your reserved ride is in ${minutesUntil} min. Start toward the pickup.`,
+        data: { type: 'scheduled_depart', ride_id: ride.id, screen: 'driver_home' },
+      }).catch(() => {});
+      if (ride.passenger_id) {
+        notifyUser(ride.passenger_id, passengerNotif.scheduled15min(ride.id, minutesUntil)).catch(() => {});
       }
     }
   } catch (err: any) {

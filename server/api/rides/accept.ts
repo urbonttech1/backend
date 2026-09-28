@@ -12,7 +12,8 @@ import {
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
   CONSECUTIVE_TRIP_BONUS,
 } from "../../config/pricing";
-import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
+import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory, SCHEDULED_OFFER_RADIUS_KM } from "../../services/socketService";
+import { claimFailed, claimScheduledRide } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -47,25 +48,31 @@ router.get("/available", requireSupabaseAuth, async (req: Request, res: Response
 
     // ── Recency guard ─────────────────────────────────────────────────────────
     // Immediate rides: valid for only 20 minutes after creation.
-    //   If a ride hasn't been accepted in 20 min it's considered stale — prevents
-    //   old test/abandoned rides from surfacing as new requests.
-    // Scheduled rides: only show within 90 minutes of the scheduled pickup time
-    //   (with a 30-minute grace window for slightly-late pickups).
-    //   A ride booked for tomorrow must NOT appear to drivers today.
+    // Unclaimed reservations stay visible until pickup so a chauffeur who comes
+    // online later can still reserve one. The lead-window cron turns the ones
+    // nobody took into a live request.
     const twentyMinsAgo   = new Date(Date.now() - 20 * 60 * 1000).toISOString();
     const thirtyMinsAgo   = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-    const ninetyMinsFromNow = new Date(Date.now() + 90 * 60 * 1000).toISOString();
 
+    const nowIso = new Date().toISOString();
     let query = supabaseAdmin.from('rides')
       .select('*')
       .eq('ride_status', 'searching')
       .is('driver_id', null)
       .or(
         `and(scheduled_at.is.null,created_at.gt.${twentyMinsAgo}),` +
-        `and(scheduled_at.not.is.null,scheduled_at.gt.${thirtyMinsAgo},scheduled_at.lt.${ninetyMinsFromNow})`
+        `and(scheduled_at.not.is.null,scheduled_at.gt.${thirtyMinsAgo})`
       )
       .order('created_at', { ascending: false })
       .limit(50);
+
+    let scheduledQuery = supabaseAdmin.from('rides')
+      .select('*')
+      .eq('ride_status', 'scheduled')
+      .is('driver_id', null)
+      .gt('scheduled_at', nowIso)
+      .order('scheduled_at', { ascending: true })
+      .limit(30);
 
     // Filter by vehicle type using normalized category matching.
     // Driver profile stores category as 'Sedan'/'SUV'/'executive'/'suv'/'concierge'.
@@ -123,12 +130,36 @@ router.get("/available", requireSupabaseAuth, async (req: Request, res: Response
       }
       // Include valet rides for all drivers (bypasses vehicle-type restriction)
       query = query.or(`dispatched_by_valet.eq.true,${vehicleFilter}`);
+      scheduledQuery = scheduledQuery.or(`dispatched_by_valet.eq.true,${vehicleFilter}`);
     }
 
-    const { data, error } = await query;
+    const [{ data, error }, scheduledResult] = await Promise.all([query, scheduledQuery]);
     if (error) throw error;
+    if (scheduledResult.error) throw scheduledResult.error;
 
-    let rides = (data ?? []) as Array<Record<string, any>>;
+    let openReservations = (scheduledResult.data ?? []) as Array<Record<string, any>>;
+    // Only chauffeurs near the pickup see the open reservation. No location yet: show it,
+    // so a chauffeur who just came online is not blind to a booking in their city.
+    if (role === 'chauffeur') {
+      const loc = await pool.query<{ lat: string; lng: string }>(
+        `SELECT lat, lng FROM driver_locations
+          WHERE driver_id = $1 AND updated_at >= NOW() - INTERVAL '30 minutes'`,
+        [req.supabaseUid!],
+      );
+      const here = loc.rows[0];
+      if (here) {
+        const lat = parseFloat(here.lat);
+        const lng = parseFloat(here.lng);
+        openReservations = openReservations.filter((ride) => {
+          const pLat = typeof ride.pickup_lat === 'number' ? ride.pickup_lat : ride.pickup?.lat;
+          const pLng = typeof ride.pickup_lng === 'number' ? ride.pickup_lng : ride.pickup?.lng;
+          if (typeof pLat !== 'number' || typeof pLng !== 'number') return true;
+          return haversineKm(lat, lng, pLat, pLng) <= SCHEDULED_OFFER_RADIUS_KM;
+        });
+      }
+    }
+
+    let rides = [...openReservations, ...((data ?? []) as Array<Record<string, any>>)];
 
     const destMode = req.query.destMode === '1' || req.query.destMode === 'true';
     if (destMode) {
@@ -170,6 +201,25 @@ router.get("/available", requireSupabaseAuth, async (req: Request, res: Response
   } catch (err: any) {
     logger.error(`[RIDES] available error:: ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch available rides' });
+  }
+});
+
+// First chauffeur to claim a future ride keeps it on their schedule.
+// Inside the lead window this confirms the trip instead.
+router.post("/:id/claim", requireSupabaseAuth, async (req: Request, res: Response) => {
+  try {
+    const role = req.supabaseRole || 'passenger';
+    if (role !== 'chauffeur' && role !== 'driver' && role !== 'admin') {
+      return res.status(403).json({ error: 'Only chauffeurs can reserve a ride' });
+    }
+    const result = await claimScheduledRide(req.params.id, req.supabaseUid!);
+    if (claimFailed(result)) {
+      return res.status(result.http).json({ error: result.error, currentStatus: result.currentStatus });
+    }
+    return res.json(result);
+  } catch (err: unknown) {
+    logger.error(`[RIDES] claim error:: ${err instanceof Error ? err.message : String(err)}`);
+    return res.status(500).json({ error: 'Failed to reserve ride' });
   }
 });
 

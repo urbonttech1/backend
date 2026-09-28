@@ -22,10 +22,18 @@ export const passengerNotif = {
     };
   },
 
+  chauffeurReserved(rideId: string, driverName: string, whenLabel: string): PushTemplate {
+    return {
+      title: 'Chauffeur reserved',
+      body: `${driverName} will pick you up ${whenLabel}.`,
+      data: { type: 'ride_scheduled_assigned', ride_id: rideId, screen: 'ride_tracking' },
+    };
+  },
+
   rideScheduled(rideId: string): PushTemplate {
     return {
       title: 'Ride booked ✓',
-      body: "You're confirmed. We'll assign your chauffeur 30 minutes before pickup.",
+      body: "Nearby chauffeurs can reserve it now. You'll see who is picking you up as soon as one accepts.",
       data: { type: 'ride_scheduled', ride_id: rideId, screen: 'ride_tracking' },
     };
   },
@@ -160,6 +168,15 @@ export const driverNotif = {
       title: "You're ready to drive!",
       body: `${firstName ? `Welcome, ${firstName}! ` : ''}Go online to start earning on premium ride requests.`,
       data: { type: 'driver_welcome', screen: 'driver_home' },
+    };
+  },
+
+  scheduledRideOffer(rideId: string, vehicleType: string, address: string, whenLabel: string): PushTemplate {
+    const short = address.length > 55 ? address.slice(0, 52) + '...' : address;
+    return {
+      title: 'Scheduled ride',
+      body: `${whenLabel} — ${vehicleType} at ${short}`,
+      data: { type: 'scheduled_ride_offer', ride_id: rideId, vehicle_type: vehicleType, screen: 'ride_offer' },
     };
   },
 

@@ -17,6 +17,7 @@ import { getEffectiveSurge } from "../config";
 import { ensureFaresFresh } from "../../services/fareConfig";
 import { resolveZone, ensureZonesFresh } from "../../services/serviceZones";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
+import { offerScheduledRide } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -511,12 +512,10 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       ? rideRecord.pickup
       : (rideRecord.pickup?.address || 'Miami, FL');
 
-    // ── Scheduled ride guard (Uber/Lyft model) ─────────────────────────────
-    // Rides with status 'scheduled' must NOT be dispatched at booking time.
-    // The ride is too far in the future — drivers can't accept it yet, and it
-    // won't appear in the driver's available-rides list.
-    // The cron job (dispatchScheduledRides) transitions it to 'searching' and
-    // dispatches at T-30 min before the scheduled pickup time.
+    // Scheduled rides are offered immediately to every nearby chauffeur.
+    // The first to accept keeps the reservation on their agenda.
+    // The cron still opens an unclaimed ride as a live request inside the
+    // lead window (scheduled_claim_lead_minutes, default 30).
     const createdStatus = rideRecord.ride_status as string;
 
     // ── Notify passenger: booking confirmation ────────────────────────────────
@@ -525,7 +524,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       if (createdStatus === 'scheduled') {
         notifyUser(paxId, {
           title: 'Ride Scheduled',
-          body: 'Your ride is confirmed. We\'ll assign your chauffeur closer to pickup time.',
+          body: 'Nearby chauffeurs can reserve it now. You will see who is picking you up as soon as one accepts.',
           data: { type: 'ride_scheduled', ride_id: rideRecord.id, screen: 'ride_tracking' },
         }).catch(() => {});
       } else {
@@ -555,7 +554,17 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     } else {
       const sa = rideRecord.scheduled_at as string;
       const minsUntil = Math.round((new Date(sa).getTime() - Date.now()) / 60000);
-      logger.info(`[RIDES] Scheduled ride ${rideRecord.id} is ${minsUntil} min away — driver dispatch deferred to T-30 cron`);
+      logger.info(`[RIDES] Scheduled ride ${rideRecord.id} is ${minsUntil} min away — offering to every nearby chauffeur now`);
+      offerScheduledRide({
+        rideId: rideRecord.id,
+        vehicleType: finalVehicleType,
+        pickupAddress: pickupAddr,
+        pickupLat: typeof pLat === 'number' ? pLat : null,
+        pickupLng: typeof pLng === 'number' ? pLng : null,
+        scheduledAt: sa,
+      }).catch((err: unknown) => {
+        logger.error(`[RIDES] scheduled offer failed for ${rideRecord.id}: ${err instanceof Error ? err.message : String(err)}`);
+      });
     }
 
     // Return ride + PIN so the passenger can share it with the driver

@@ -2405,8 +2405,14 @@ adminRouter.put("/config/:key", async (req: Request, res: Response) => {
   // `service_area_km` salió de esta lista: el área de servicio vive en
   // `service_zones` y se edita desde /zones. Seguir aceptándola aquí dejaba una
   // perilla que se guardaba, no fallaba, y no cambiaba absolutamente nada.
-  const safeKeys = ['maintenance_mode', 'min_version', 'surge_multiplier', 'surge_reason'];
+  const safeKeys = ['maintenance_mode', 'min_version', 'surge_multiplier', 'surge_reason', 'scheduled_claim_lead_minutes'];
   if (!safeKeys.includes(req.params.key)) return res.status(400).json({ error: 'Config key not editable' });
+  if (req.params.key === 'scheduled_claim_lead_minutes') {
+    const minutes = parseInt(String(value), 10);
+    if (!Number.isFinite(minutes) || minutes < 5 || minutes > 240) {
+      return res.status(400).json({ error: 'scheduled_claim_lead_minutes must be between 5 and 240' });
+    }
+  }
   try {
     await pgPool.query(
       `INSERT INTO app_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,

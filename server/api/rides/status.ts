@@ -15,6 +15,7 @@ import {
 } from "../../config/pricing";
 import { pagarChoferPorViaje } from "../../services/ridePayout";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
+import { claimFailed, claimScheduledRide } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -219,6 +220,74 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       !(isDriver && finalStatus === 'confirmed') // drivers can accept unassigned rides
     ) {
       return res.status(403).json({ error: 'Access denied. You are not a participant in this ride.' });
+    }
+
+    // The chauffeur who already reserved this ride is heading to the pickup.
+    // That is the moment the trip becomes a normal confirmed ride.
+    if (isDriver && finalStatus === 'confirmed' && currentStatus === 'scheduled' && r.driver_id === uid) {
+      const { data: driverActive } = await supabaseAdmin
+        .from('rides')
+        .select('id')
+        .eq('driver_id', uid)
+        .in('ride_status', ['confirmed', 'driver_arrived', 'in_progress'])
+        .maybeSingle();
+      if (driverActive) {
+        return res.status(409).json({
+          error: 'You already have an active ride. Please complete it before starting this one.',
+          code: 'DRIVER_BUSY',
+        });
+      }
+
+      const now = new Date().toISOString();
+      const { data: started, error: startErr } = await supabaseAdmin
+        .from('rides')
+        .update({ ride_status: 'confirmed', updated_at: now })
+        .eq('id', req.params.id)
+        .eq('ride_status', 'scheduled')
+        .eq('driver_id', uid)
+        .select('id');
+      if (startErr) throw startErr;
+      if (!started || started.length === 0) {
+        return res.status(409).json({ error: 'This reservation can no longer be started', currentStatus });
+      }
+
+      broadcastRideStatus(req.params.id, 'confirmed', {
+        driverId: uid,
+        passengerId: r.passenger_id,
+      });
+      const passengerId = String(r.passenger_id || '');
+      if (passengerId) {
+        notifyUser(passengerId, {
+          title: 'Your scheduled ride has started',
+          body: 'Your chauffeur is on the way to the pickup.',
+          data: { type: 'ride_scheduled_started', ride_id: req.params.id, screen: 'ride_tracking' },
+        }).catch(() => {});
+      }
+      logger.info(`[RIDES] Scheduled ride started: ${req.params.id} by ${uid}`);
+      return res.json({ success: true, started: true, ride_status: 'confirmed', driver_id: uid });
+    }
+
+    // Reserving a future ride must not start the trip. The claim writes driver_id
+    // and leaves the ride scheduled until the lead window.
+    if (
+      isDriver &&
+      finalStatus === 'confirmed' &&
+      (currentStatus === 'scheduled' || (currentStatus === 'searching' && r.scheduled_at))
+    ) {
+      const claimed = await claimScheduledRide(req.params.id, uid!);
+      if (claimFailed(claimed)) {
+        return res.status(claimed.http).json({ error: claimed.error, currentStatus: claimed.currentStatus });
+      }
+      broadcastRideStatus(req.params.id, claimed.ride_status, {
+        driverId: claimed.driver_id,
+        passengerId: r.passenger_id,
+      });
+      return res.json({
+        success: true,
+        reserved: claimed.reserved,
+        ride_status: claimed.ride_status,
+        driver_id: claimed.driver_id,
+      });
     }
 
     // State machine validation

@@ -105,7 +105,7 @@ router.get("/my", requireSupabaseAuth, async (req: Request, res: Response) => {
     // El precio sin impuesto sigue disponible en `fare_subtotal`, y es el que
     // se reparte con el chofer. La base de datos no cambia.
     const tasa = await tasaImpuestoRespaldo();
-    const rides = ((data ?? []) as Record<string, unknown>[]).map((r) => {
+    const rides: Array<Record<string, unknown>> = ((data ?? []) as Record<string, unknown>[]).map((r) => {
       const t = totalDeViaje(r, tasa);
       return {
         ...r,
@@ -118,6 +118,26 @@ router.get("/my", requireSupabaseAuth, async (req: Request, res: Response) => {
         tax_estimated:  t.estimado,
       };
     });
+
+    const driverIds = [...new Set(rides.map((r) => r.driver_id).filter((id): id is string => typeof id === 'string' && id.length > 0))];
+    if (driverIds.length > 0) {
+      const { data: drivers } = await supabaseAdmin
+        .from('profiles')
+        .select('id, first_name, last_name, avatar_url, rating, vehicle, phone')
+        .in('id', driverIds);
+      const byId = new Map((drivers ?? []).map((p: Record<string, unknown>) => [p.id as string, p]));
+      for (const ride of rides) {
+        const dp = byId.get(String(ride.driver_id || ''));
+        if (!dp) continue;
+        const vehicle = (dp.vehicle as Record<string, unknown> | null) ?? {};
+        ride.driver_name = [`${dp.first_name || ''}`, `${dp.last_name || ''}`].join(' ').trim() || null;
+        ride.driver_avatar_url = dp.avatar_url ?? null;
+        ride.driver_rating = dp.rating ?? null;
+        ride.driver_phone = dp.phone ?? null;
+        ride.driver_vehicle = [vehicle.color, vehicle.make, vehicle.model].filter(Boolean).join(' ') || null;
+        ride.driver_vehicle_plate = vehicle.plate ?? null;
+      }
+    }
 
     res.json({
       rides,

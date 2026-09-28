@@ -11,9 +11,10 @@
  *  completed      — trip finished
  *  cancelled      — cancelled by passenger, driver, or system
  *
- * Uber/Lyft model for scheduled rides:
- *  scheduled → searching  (system/cron at T-30 min before pickup)
- *  searching → confirmed  (driver accepts)
+ * Scheduled rides are offered to nearby chauffeurs at booking time.
+ * The first to accept keeps driver_id while status stays scheduled.
+ *  scheduled → searching  (cron, only if still unclaimed inside the lead window)
+ *  searching → confirmed  (driver accepts a live request)
  *  confirmed → driver_arrived → in_progress → completed
  */
 export type RideStatus = 'scheduled' | 'searching' | 'confirmed' | 'driver_arrived' | 'in_progress' | 'completed' | 'cancelled';
