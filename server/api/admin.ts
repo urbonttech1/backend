@@ -16,6 +16,7 @@ import { nombreDeConductor, type PerfilConductor } from '../services/driverName'
 import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
+import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
@@ -1192,6 +1193,66 @@ adminRouter.get("/rides", async (req: Request, res: Response) => {
   } catch (err: any) {
     logger.error(`[admin/rides] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to load rides' });
+  }
+});
+
+// ── GET /api/admin/rides/:id — el detalle de un viaje, con el desglose de dinero ──
+//
+// El panel de /rides no tenía vista de detalle: la lista solo mostraba la
+// tarifa. Aquí se trae la fila completa y se calcula el desglose con
+// `desgloseDeDinero`, la misma regla que usa el pago al chofer, para que el
+// panel no diga un número distinto del que de verdad se cobró o se transfirió.
+adminRouter.get("/rides/:id", async (req: Request, res: Response) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .select(`
+        id, created_at, ride_status, booking_type, scheduled_at,
+        started_at, completed_at, cancelled_at, cancel_reason,
+        pickup, dropoff, pickup_address, dropoff_address,
+        stops, distance_miles, duration_minutes,
+        fare, tax_amount, total_with_tax, tip_amount, promo_discount,
+        total_price, cancellation_fee, wait_fee, no_show_fee, valet_surcharge,
+        driver_earnings, stripe_transfer_id, platform_fee_amount, base_fare_breakdown,
+        payment_status, payment_method, payment_intent_id,
+        vehicle_type, surge_multiplier, rating, passenger_rating,
+        passenger_id, driver_id,
+        passenger:profiles!rides_passenger_id_fkey(id, first_name, last_name, email, phone),
+        driver:profiles!rides_driver_id_fkey(id, first_name, last_name, email, phone)
+      `)
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Ride not found' });
+
+    const row = data as Record<string, unknown>;
+    const nombre = (p: unknown) => {
+      const x = p as { first_name?: string; last_name?: string } | null;
+      if (!x) return null;
+      return `${x.first_name || ''} ${x.last_name || ''}`.trim() || null;
+    };
+    const direccion = (json: unknown, texto: unknown) => {
+      const j = json as { address?: string } | string | null;
+      if (typeof j === 'string' && j) return j;
+      if (j && typeof j === 'object' && j.address) return j.address;
+      return (texto as string) || null;
+    };
+
+    res.json({
+      ride: {
+        ...row,
+        status: row.ride_status,
+        pickupAddress: direccion(row.pickup, row.pickup_address),
+        dropoffAddress: direccion(row.dropoff, row.dropoff_address),
+        passengerName: nombre(row.passenger),
+        driverName: nombre(row.driver),
+      },
+      money: desgloseDeDinero(row),
+    });
+  } catch (err: any) {
+    logger.error(`[admin/rides/:id] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load ride' });
   }
 });
 
