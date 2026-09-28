@@ -38,20 +38,25 @@ async function liberarCobro(stripe: Stripe, pi: Stripe.PaymentIntent): Promise<v
 }
 
 /**
- * Cobra sólo `feeCents` y libera el resto. Devuelve si pudo cobrar: un
- * PaymentIntent en otro estado (sin método de pago, ya cancelado) no se toca.
+ * Cobra sólo `feeCents` y libera el resto. Devuelve el PaymentIntent ya
+ * cobrado —para poder pagarle al chofer su parte de ESE cargo— o `null` si no
+ * se pudo cobrar: un PaymentIntent en otro estado (sin método de pago, ya
+ * cancelado) no se toca.
  */
-async function cobrarParcial(stripe: Stripe, pi: Stripe.PaymentIntent, feeCents: number): Promise<boolean> {
+async function cobrarParcial(stripe: Stripe, pi: Stripe.PaymentIntent, feeCents: number): Promise<Stripe.PaymentIntent | null> {
   if (pi.status === 'requires_capture') {
-    await stripe.paymentIntents.capture(pi.id, { amount_to_capture: Math.min(feeCents, pi.amount) });
-    return true;
+    return stripe.paymentIntents.capture(pi.id, { amount_to_capture: Math.min(feeCents, pi.amount) });
   }
   if (pi.status === 'succeeded') {
-    const refundAmount = Math.max(0, pi.amount_received - feeCents);
+    const montoNeto = Math.min(feeCents, pi.amount_received);
+    const refundAmount = Math.max(0, pi.amount_received - montoNeto);
     if (refundAmount > 0) await stripe.refunds.create({ payment_intent: pi.id, amount: refundAmount });
-    return true;
+    // El PI que devuelve Stripe no refleja el reembolso que acaba de hacerse:
+    // se corrige a mano para que quien pague al chofer reparta sobre lo que de
+    // verdad quedó cobrado, no sobre el total capturado antes del reembolso.
+    return { ...pi, amount_received: montoNeto };
   }
-  return false;
+  return null;
 }
 
 export function registerCancelRoutes(router: Router): void {
@@ -167,9 +172,22 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
           const { fee } = calcularCancelacionReserva(horasAntes, totalViaje);
           if (fee <= 0) {
             await liberarCobro(stripe, pi);
-          } else if (await cobrarParcial(stripe, pi, Math.round(fee * 100))) {
-            cancellationFee = fee;
-            stripeChargeId = piId;
+          } else {
+            const cobrado = await cobrarParcial(stripe, pi, Math.round(fee * 100));
+            if (cobrado) {
+              cancellationFee = fee;
+              stripeChargeId = piId;
+              // Se cobró de verdad: si ya había un chofer asignado, se reparte con
+              // él como cualquier otro cobro. Antes este dinero se quedaba entero
+              // en Urbont — el chofer ya había apartado la hora para esta reserva.
+              const driverIdParaPago = String((ride as any).driver_id || '');
+              if (driverIdParaPago) {
+                await pagarChoferPorViaje({
+                  stripe, pi: cobrado, rideId: req.params.id, driverId: driverIdParaPago,
+                  concepto: 'cancellation fee',
+                });
+              }
+            }
           }
 
         } else {
@@ -186,11 +204,16 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
     // Legacy cancellation fee path (pre-booked/scheduled rides) — kept for edge cases
     const fee = cancellationFee || 0;
 
+    // Se cobraba y nunca quedaba registrado: `cancellationFee` viajaba en la
+    // respuesta HTTP y ahí se perdía — la fila nunca decía cuánto se le cobró
+    // al pasajero por cancelar tarde. Sin este dato el panel no puede mostrarlo
+    // ni nadie puede conciliarlo después contra Stripe.
     let { error: cancelErr, data: cancelledRows } = await supabaseAdmin.from('rides').update({
       ride_status: 'cancelled',
       cancel_reason: reason || null,
       cancelled_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      ...(fee > 0 ? { cancellation_fee: fee } : {}),
     }).eq('id', req.params.id)
       .eq('ride_status', rideStatus) // Atomic check: only cancel if status hasn't changed since we read it above
       .select('id');
@@ -462,10 +485,22 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
               });
             }
           } else if (pi.status === 'requires_capture') {
-            await stripe.paymentIntents.capture(piId, {
+            // A demanda: se captura sólo el cargo parcial (espera + 10 %), y el
+            // chofer cobra su parte de ESE cargo.
+            //
+            // Antes se cobraba al pasajero y ahí terminaba el flujo — nadie
+            // volvía a mirar el viaje para pagarle al chofer. `pagarChoferPorViaje`
+            // lee lo que de verdad se capturó (`pi.amount_received`), así que
+            // funciona igual con una captura parcial que con el viaje completo.
+            const cobrado = await stripe.paymentIntents.capture(piId, {
               amount_to_capture: Math.min(Math.round(noShowFee * 100), pi.amount),
             });
-            noShowCharged = true;
+            if (cobrado.status === 'succeeded') {
+              noShowCharged = true;
+              await pagarChoferPorViaje({
+                stripe, pi: cobrado, rideId: req.params.id, driverId: uid, concepto: 'on-demand no-show',
+              });
+            }
           }
         } catch (stripeErr: unknown) {
           logger.error(`[RIDES] No-show Stripe charge failed:: ${errMsg(stripeErr)}`);

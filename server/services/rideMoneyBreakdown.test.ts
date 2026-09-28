@@ -100,6 +100,67 @@ describe('desgloseDeDinero', () => {
     expect(d.descuentoPromo).toBe(2);
   });
 
+  describe('cargo por espera', () => {
+    // status.ts reescribe fare = locked_fare + wait_fee al completar el viaje.
+    const conEspera = {
+      fare: 26.00, locked_fare: 23.25, wait_fee: 2.75,
+      base_fare_breakdown: JSON.stringify({ booking_fee: 0, booking_fee_flat: 2.50 }),
+    };
+
+    it('no se cuenta dos veces: va dentro de la tarifa, no encima', () => {
+      const d = desgloseDeDinero(conEspera);
+      expect(d.tarifaBase).toBe(26.00);
+      expect(d.cobradoAlPasajero).toBe(26.00);
+      expect(d.cargoEspera).toBe(2.75);
+    });
+
+    it('las partes de la tarifa suman la tarifa', () => {
+      const d = desgloseDeDinero(conEspera);
+      expect(d.tarifaRecorrido).toBeCloseTo(20.75, 2);
+      expect(d.tarifaRecorrido + (d.bookingFee ?? 0) + d.cargoEspera).toBeCloseTo(d.tarifaBase, 2);
+    });
+
+    it('entra en el reparto 85/15, como el resto del precio', () => {
+      const d = desgloseDeDinero(conEspera);
+      expect(d.gananciaChoferViaje).toBeCloseTo(26.00 * 0.85, 1);
+    });
+
+    it('si la reescritura de fare falló, la espera se suma igual', () => {
+      // La escritura va sin esperar resultado: si falla, fare se queda en la
+      // tarifa congelada, pero la espera sí se capturó.
+      const d = desgloseDeDinero({ ...conEspera, fare: 23.25 });
+      expect(d.tarifaBase).toBe(26.00);
+      expect(d.cobradoAlPasajero).toBe(26.00);
+    });
+
+    it('sin espera, nada cambia', () => {
+      const d = desgloseDeDinero({ fare: 23.25, locked_fare: 23.25 });
+      expect(d.tarifaBase).toBe(23.25);
+      expect(d.cargoEspera).toBe(0);
+    });
+  });
+
+  describe('comisión del valet', () => {
+    it('no se cuenta como de Urbont: se transfiere al valet', () => {
+      const d = desgloseDeDinero({ fare: 40, valet_surcharge: 10 });
+      // 40 de servicio: 10 al valet, y el 85/15 se aplica a los 30 restantes.
+      expect(d.comisionValet).toBe(10);
+      expect(d.comisionUrbont).toBeCloseTo(4.50, 2);
+      expect(d.gananciaChoferViaje).toBeCloseTo(25.50, 2);
+    });
+
+    it('Urbont + Valet + Chofer suman lo cobrado, estimado o registrado', () => {
+      const estimado = desgloseDeDinero({ fare: 40, valet_surcharge: 10, tax_amount: 2.60 });
+      expect(estimado.comisionUrbont + estimado.comisionValet + estimado.gananciaChoferViaje)
+        .toBeCloseTo(estimado.cobradoAlPasajero, 2);
+
+      const registrado = desgloseDeDinero({ fare: 40, valet_surcharge: 10, driver_earnings: 25.50 });
+      expect(registrado.comisionUrbont).toBeCloseTo(4.50, 2);
+      expect(registrado.comisionUrbont + registrado.comisionValet + registrado.gananciaChoferViaje)
+        .toBeCloseTo(registrado.cobradoAlPasajero, 2);
+    });
+  });
+
   describe('bookingFee', () => {
     it('lo saca del desglose guardado: el fijo más el de clase', () => {
       const d = desgloseDeDinero({
@@ -107,7 +168,7 @@ describe('desgloseDeDinero', () => {
         base_fare_breakdown: JSON.stringify({ base_fare: 17, distance_charge: 0, time_charge: 0.10, booking_fee: 10, booking_fee_flat: 2.50 }),
       });
       expect(d.bookingFee).toBe(12.50);
-      expect(d.tarifaSinBooking).toBeCloseTo(29.60 - 12.50, 2);
+      expect(d.tarifaRecorrido).toBeCloseTo(29.60 - 12.50, 2);
     });
 
     it('acepta el desglose ya parseado, no sólo texto', () => {
@@ -120,7 +181,8 @@ describe('desgloseDeDinero', () => {
       // Un viaje sin booking fee real no existe: un 0 se leería como un dato.
       const d = desgloseDeDinero({ fare: 20 });
       expect(d.bookingFee).toBeNull();
-      expect(d.tarifaSinBooking).toBeNull();
+      // El recorrido se queda con el booking fee dentro: no se puede separar.
+      expect(d.tarifaRecorrido).toBe(20);
     });
 
     it('JSON corrupto no lanza: cae a null', () => {

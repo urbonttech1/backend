@@ -33,6 +33,8 @@ export interface FilaDeViaje {
   cancellation_fee?: number | string | null;
   driver_earnings?: number | string | null;
   stripe_transfer_id?: string | null;
+  /** La tarifa congelada al reservar; sirve para saber si la espera ya está dentro de `fare`. */
+  locked_fare?: number | string | null;
   /**
    * El desglose de `fare` en sus partes (base, distancia, tiempo, booking fee),
    * guardado al crear el viaje. Llega como texto JSON desde Supabase. Es `null`
@@ -43,8 +45,9 @@ export interface FilaDeViaje {
 }
 
 export interface DesgloseDeDinero {
-  /** Lo que pagó el pasajero: tarifa + impuesto (los cargos aparte no están incluidos). */
+  /** Lo que pagó el pasajero por el viaje: servicio (espera incluida) + impuesto. Sin propina. */
   cobradoAlPasajero: number;
+  /** El precio del servicio, espera incluida: recorrido + booking fee + espera. */
   tarifaBase: number;
   /**
    * El cargo de reserva incluido en `tarifaBase`: el fijo ($2.50, en todo
@@ -53,20 +56,26 @@ export interface DesgloseDeDinero {
    * no existe, así que un 0 se leería como un dato, no como su ausencia.
    */
   bookingFee: number | null;
-  /** `tarifaBase` sin el booking fee, o `null` cuando `bookingFee` también lo es. */
-  tarifaSinBooking: number | null;
+  /**
+   * `tarifaBase` sin booking fee ni espera: lo que cuesta el recorrido. Con
+   * `bookingFee` y `cargoEspera` suma `tarifaBase`. Si `bookingFee` es null,
+   * el booking fee sigue dentro de este número.
+   */
+  tarifaRecorrido: number;
   impuesto: number;
+  /** Lo que va al valet: sale del cobro, pasa por Urbont y se le transfiere entero. */
   comisionValet: number;
   propina: number;
+  /** El cargo por espera. Va dentro de `tarifaBase` y entra en el reparto 85/15. */
   cargoEspera: number;
   cargoNoShow: number;
   descuentoPromo: number;
-  /** Lo que retiene Urbont: su 15 %, el impuesto y la comisión del valet. */
+  /** Lo que se queda Urbont: su 15 % y el impuesto. Sin la comisión del valet. */
   comisionUrbont: number;
   /**
-   * Lo que le corresponde al chofer POR EL VIAJE, sin la propina. Junto con
-   * `comisionUrbont` suma exactamente `cobradoAlPasajero` — es el par a usar
-   * para cualquier proporción o barra del reparto. `gananciaChofer` no sirve
+   * Lo que le corresponde al chofer POR EL VIAJE, sin la propina. Con
+   * `comisionUrbont` y `comisionValet` suma exactamente `cobradoAlPasajero` —
+   * son las partes a usar en la barra del reparto. `gananciaChofer` no sirve
    * para eso: incluye la propina, que es un cobro aparte y no del viaje.
    */
   gananciaChoferViaje: number;
@@ -110,22 +119,51 @@ function bookingFeeDelBreakdown(raw: FilaDeViaje['base_fare_breakdown']): number
   return total > 0 ? Math.round(total * 100) / 100 : null;
 }
 
+/**
+ * Si el cargo por espera ya está sumado dentro de `fare`.
+ *
+ * Al completar el viaje, `rides/status.ts` reescribe `fare = locked_fare +
+ * wait_fee` y captura ese total. Pero esa escritura va sin esperar resultado:
+ * si falla, `fare` se queda en la tarifa congelada aunque la espera sí se
+ * cobró. Se detecta comparando con `locked_fare`; sin él no hay forma de
+ * saberlo y se asume el caso normal, que la escritura salió bien.
+ */
+function esperaDentroDeFare(fare: number, lockedFare: number, espera: number): boolean {
+  if (espera <= 0) return false;
+  if (lockedFare <= 0) return true;
+  return Math.abs(fare - (lockedFare + espera)) < 0.01;
+}
+
 export function desgloseDeDinero(viaje: FilaDeViaje): DesgloseDeDinero {
-  const tarifaBase = numero(viaje.fare);
   const bookingFee = bookingFeeDelBreakdown(viaje.base_fare_breakdown);
   const impuesto = numero(viaje.tax_amount);
   const comisionValet = numero(viaje.valet_surcharge);
   const propina = numero(viaje.tip_amount);
+  const cargoEspera = numero(viaje.wait_fee);
 
-  // Antes de cargarlo a Stripe Tax, total_with_tax puede no estar escrito
-  // todavía: se completa tarifa + impuesto para que el número no salga en cero.
-  const cobradoAlPasajero = numero(viaje.total_with_tax) || tarifaBase + impuesto;
+  // El precio del servicio que de verdad se cobró: `fare` con la espera dentro.
+  //
+  // Antes el desglose mostraba la espera dos veces —escondida dentro de la
+  // tarifa, y otra vez aparte con la etiqueta «fuera del reparto 85/15»—, y la
+  // etiqueta además era falsa: si la espera está en `fare`, entra en el reparto
+  // como cualquier otra parte del precio. Ahora es una línea más de lo cobrado.
+  const fare = numero(viaje.fare);
+  const tarifaBase = esperaDentroDeFare(fare, numero(viaje.locked_fare), cargoEspera)
+    ? fare
+    : Math.round((fare + cargoEspera) * 100) / 100;
+
+  // Lo cobrado es servicio + impuesto. No se usa `total_with_tax`: se escribe al
+  // reservar, antes de que exista la espera, y con espera se queda corto.
+  const cobradoAlPasajero = Math.round((tarifaBase + impuesto) * 100) / 100;
 
   const reparto = calcularReparto({
     fareCents: Math.round(tarifaBase * 100),
     taxCents: Math.round(impuesto * 100),
     valetCents: Math.min(Math.round(comisionValet * 100), Math.round(tarifaBase * 100)),
   });
+  // Lo que se aplica a la comisión del valet no cabe en ninguna de las dos
+  // partes: sale del cobro, pero va a un tercero.
+  const valetAplicado = Math.min(comisionValet, tarifaBase);
 
   const registrado = numero(viaje.driver_earnings) > 0;
 
@@ -151,21 +189,33 @@ export function desgloseDeDinero(viaje: FilaDeViaje): DesgloseDeDinero {
   //
   // Restando en vez de calcular en paralelo, la tarjeta cuadra siempre con el
   // único dato 100 % real que hay: lo que de verdad se transfirió por el viaje.
+  //
+  // La comisión del valet se resta aparte: `calcularReparto` la mete en
+  // `applicationFeeCents` porque Stripe la retiene en la cuenta de Urbont, pero
+  // después se transfiere entera al valet (`integrations.ts`, flujo
+  // `valet_card_checkout`). Contarla como de Urbont inflaba su caja con dinero
+  // que no se queda.
   const comisionUrbont = registrado
-    ? Math.max(0, Math.round((cobradoAlPasajero - gananciaChoferViaje) * 100) / 100)
-    : Math.round(reparto.applicationFeeCents) / 100;
+    ? Math.max(0, Math.round((cobradoAlPasajero - gananciaChoferViaje - valetAplicado) * 100) / 100)
+    : Math.round(reparto.applicationFeeCents - valetAplicado * 100) / 100;
 
   const gananciaChofer = Math.round((gananciaChoferViaje + propina) * 100) / 100;
+
+  // La tarifa en sus partes, que suman `tarifaBase`: el recorrido (base,
+  // distancia y tiempo), el booking fee y la espera. La espera se separa
+  // siempre; el booking fee sólo si hay desglose guardado — sin él, sigue
+  // dentro del recorrido y el panel lo avisa.
+  const tarifaRecorrido = Math.round((tarifaBase - (bookingFee ?? 0) - cargoEspera) * 100) / 100;
 
   return {
     cobradoAlPasajero,
     tarifaBase,
     bookingFee,
-    tarifaSinBooking: bookingFee != null ? Math.round((tarifaBase - bookingFee) * 100) / 100 : null,
+    tarifaRecorrido,
     impuesto,
-    comisionValet,
+    comisionValet: valetAplicado,
     propina,
-    cargoEspera: numero(viaje.wait_fee),
+    cargoEspera,
     cargoNoShow: numero(viaje.no_show_fee),
     descuentoPromo: numero(viaje.promo_discount),
     comisionUrbont,

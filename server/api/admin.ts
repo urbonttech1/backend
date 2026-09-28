@@ -1213,7 +1213,7 @@ adminRouter.get("/rides/:id", async (req: Request, res: Response) => {
         stops, distance_miles, duration_minutes,
         fare, tax_amount, total_with_tax, tip_amount, promo_discount,
         total_price, cancellation_fee, wait_fee, no_show_fee, valet_surcharge,
-        driver_earnings, stripe_transfer_id, platform_fee_amount, base_fare_breakdown,
+        driver_earnings, stripe_transfer_id, platform_fee_amount, base_fare_breakdown, locked_fare,
         payment_status, payment_method, payment_intent_id,
         vehicle_type, surge_multiplier, rating, passenger_rating,
         passenger_id, driver_id,
