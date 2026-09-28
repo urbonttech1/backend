@@ -37,6 +37,31 @@ export function isRedisAdapterReady(): boolean { return _redisAdapterReady; }
 
 const log = createContextLogger('SOCKET');
 
+/** Live passenger GPS during pickup. Never written to the database. */
+const passengerLive = new Map<string, { lat: number; lng: number; ts: number }>();
+const lastPassengerRelay = new Map<string, number>();
+const shareGateCache = new Map<string, { passengerId: string; driverId: string | null; status: string; at: number }>();
+
+async function loadShareGate(rideId: string) {
+  const cached = shareGateCache.get(rideId);
+  if (cached && Date.now() - cached.at < 8_000) return cached;
+  const { data } = await supabaseAdmin
+    .from('rides')
+    .select('passenger_id, driver_id, ride_status')
+    .eq('id', rideId)
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as { passenger_id: string; driver_id: string | null; ride_status: string };
+  const gate = {
+    passengerId: row.passenger_id,
+    driverId: row.driver_id,
+    status: row.ride_status,
+    at: Date.now(),
+  };
+  shareGateCache.set(rideId, gate);
+  return gate;
+}
+
 let io: SocketIOServer | null = null;
 export function getIo(): SocketIOServer | null { return io; }
 
@@ -352,6 +377,15 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
           if (isParticipant || userRole === 'admin') {
             await socket.join(`ride-chat:${rideId}`);
           }
+
+          // The public ride room must not receive the passenger's live GPS.
+          // Only the assigned chauffeur gets the last point, if sharing is on.
+          if (userId && userId === snap.driver_id) {
+            const live = passengerLive.get(rideId);
+            if (live) {
+              socket.emit('location:passenger_update', { rideId, ...live, sharing: true });
+            }
+          }
         }
       } catch (err: any) {
         log.warn({ err: err?.message, rideId }, 'catch-up status fetch failed');
@@ -442,6 +476,45 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
 
     socket.on('passenger:leave_nearby', () => {
       socket.leave('nearby_drivers_broadcast');
+    });
+
+    // Passenger live location during pickup. Relayed only to the assigned
+    // chauffeur, and only while the ride is on the way to pickup or waiting
+    // there. The public tracking room never sees these coordinates.
+    socket.on('passenger:location', async (payload: {
+      rideId?: string;
+      lat?: number;
+      lng?: number;
+      sharing?: boolean;
+      ts?: number;
+    }) => {
+      const rideId = payload?.rideId;
+      if (!userId || !rideId) return;
+
+      const gate = await loadShareGate(rideId);
+      if (!gate || gate.passengerId !== userId || !gate.driverId) return;
+
+      const room = `driver:${gate.driverId}`;
+      const allowed = gate.status === 'confirmed' || gate.status === 'driver_arrived';
+      if (payload.sharing === false || !allowed) {
+        passengerLive.delete(rideId);
+        io?.to(room).emit('location:passenger_update', { rideId, sharing: false, ts: Date.now() });
+        return;
+      }
+
+      const lat = Number(payload.lat);
+      const lng = Number(payload.lng);
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) return;
+      if (!Number.isFinite(lng) || lng < -180 || lng > 180) return;
+
+      const now = Date.now();
+      const prev = lastPassengerRelay.get(rideId) ?? 0;
+      if (now - prev < 1_500) return;
+      lastPassengerRelay.set(rideId, now);
+
+      const update = { rideId, lat, lng, sharing: true as const, ts: now };
+      passengerLive.set(rideId, update);
+      io?.to(room).emit('location:passenger_update', update);
     });
 
     // ── Ride status broadcast ────────────────────────────────────────────────
