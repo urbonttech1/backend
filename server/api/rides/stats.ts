@@ -217,7 +217,7 @@ router.get("/driver-history", requireSupabaseAuth, async (req: Request, res: Res
     const from  = (page - 1) * limit;
     const to    = from + limit - 1;
 
-    const columnas = 'id, created_at, completed_at, ride_status, rating, fare, tip_amount, driver_earnings, surge_multiplier, base_fare_breakdown, vehicle_type, distance_meters, duration_minutes, pickup, dropoff, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, passenger_id, scheduled_at, booking_type, cancel_reason';
+    const columnas = 'id, created_at, completed_at, ride_status, rating, fare, locked_fare, wait_fee, tip_amount, driver_earnings, surge_multiplier, base_fare_breakdown, vehicle_type, distance_meters, duration_minutes, pickup, dropoff, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, passenger_id, scheduled_at, booking_type, cancel_reason';
     const { data, error, count } = await supabaseAdmin.from('rides')
       .select(columnas, { count: 'exact' })
       .eq('driver_id', driver_id)
