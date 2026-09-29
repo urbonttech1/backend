@@ -9,6 +9,7 @@ import {
   VOICE_BUCKET, AUDIO_TIPOS, AUDIO_MAX_BYTES, AUDIO_MAX_DURACION_MS, AUDIO_DESCARGA_SEGUNDOS,
   AUDIO_SUBIDA_SEGUNDOS, TEXTO_NOTA_ARCHIVO, normalizarMime, mimeDeRuta, rutaNota, normalizarDuracion, esUuid,
 } from '../services/voiceNote';
+import { cargarConfigTraduccion, configTraduccionEnMemoria } from '../services/translationConfig';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -17,25 +18,22 @@ export const translationRouter = Router();
 
 async function translateText(text: string, from: string, to: string): Promise<string> {
   if (from === to || !text.trim()) return text;
-  
-  // GROK_API_KEY actually holds a Groq Cloud key (gsk_*). We route through
-  // Groq's OpenAI-compatible endpoint with a low-latency Llama model so the
-  // chauffeur ↔ passenger translator stays under ~200ms per turn.
-  const GROQ_KEY = process.env.GROK_API_KEY || process.env.GROQ_API_KEY;
-  if (!GROQ_KEY) {
+
+  await cargarConfigTraduccion();
+  const { apiKey, model } = configTraduccionEnMemoria();
+  if (!apiKey) {
     return text;
   }
 
   try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'openai/gpt-oss-120b',
-        reasoning_effort: 'low',
+        model,
         messages: [
           {
             role: 'system',
@@ -52,7 +50,7 @@ async function translateText(text: string, from: string, to: string): Promise<st
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      log.error({ status: response.status, body: body.slice(0, 300) }, 'Groq translation API failed');
+      log.error({ status: response.status, body: body.slice(0, 300) }, 'OpenAI translation API failed');
       return text;
     }
 
@@ -66,10 +64,10 @@ async function translateText(text: string, from: string, to: string): Promise<st
     if (translated.startsWith('"') && translated.endsWith('"')) {
       translated = translated.slice(1, -1);
     }
-    
+
     return translated || text;
   } catch (err: unknown) {
-    log.error({ err: errMsg(err) }, 'Grok network translation error');
+    log.error({ err: errMsg(err) }, 'OpenAI network translation error');
     return text;
   }
 }

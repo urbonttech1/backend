@@ -19,6 +19,7 @@
 import crypto from 'crypto';
 import { createContextLogger } from '../lib/logger';
 import { claveDeServidor } from './mapsKeys';
+import { configTraduccion } from './translationConfig';
 
 const log = createContextLogger('CHECKS');
 
@@ -44,7 +45,7 @@ export interface CheckResult {
   details?: DetailRow[];
 }
 
-export type Integration = 'stripe' | 'google_maps' | 'firebase' | 'twilio' | 'email';
+export type Integration = 'stripe' | 'google_maps' | 'firebase' | 'twilio' | 'email' | 'translation';
 
 const results: Record<Integration, CheckResult> = {
   stripe:      { status: 'pending', verifiedAt: null },
@@ -52,6 +53,7 @@ const results: Record<Integration, CheckResult> = {
   firebase:    { status: 'pending', verifiedAt: null },
   twilio:      { status: 'pending', verifiedAt: null },
   email:       { status: 'pending', verifiedAt: null },
+  translation: { status: 'pending', verifiedAt: null },
 };
 
 const TIMEOUT_MS = 8000;
@@ -123,6 +125,45 @@ async function checkStripe(): Promise<CheckResult> {
     return {
       status: 'connected', verifiedAt: now(), probe, latencyMs, details,
       summary: live ? 'Cobros habilitados · producción' : 'Cobros habilitados · pruebas',
+    };
+  } catch (err) {
+    return {
+      status: 'disconnected', verifiedAt: now(), probe, latencyMs: Date.now() - t0,
+      summary: err instanceof Error ? err.message.slice(0, 90) : String(err),
+    };
+  }
+}
+
+/**
+ * Lista los modelos disponibles — gratis y de solo lectura, igual de barato que
+ * el `GET /v1/account` de Stripe. No hace una traducción real para no gastar
+ * cuota en cada arranque/guardado, solo confirma que la key es válida.
+ */
+async function checkTranslation(): Promise<CheckResult> {
+  const probe = 'GET https://api.openai.com/v1/models';
+  const { apiKey } = await configTraduccion();
+  if (!apiKey) return notConfigured(probe);
+
+  const t0 = Date.now();
+  try {
+    const r = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    const latencyMs = Date.now() - t0;
+
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({} as { error?: { message?: string } })) as { error?: { message?: string } };
+      return {
+        status: 'disconnected', verifiedAt: now(), probe, latencyMs,
+        summary: b.error?.message?.slice(0, 90) ?? `HTTP ${r.status}`,
+      };
+    }
+
+    return {
+      status: 'connected', verifiedAt: now(), probe, latencyMs,
+      summary: 'Traducción de chat operativa',
+      details: [{ label: 'Respuesta', value: `HTTP 200 · ${latencyMs} ms` }],
     };
   } catch (err) {
     return {
@@ -679,12 +720,13 @@ export async function runIntegrationChecks(): Promise<void> {
     status: 'disconnected', verifiedAt: now(), summary: String(e).slice(0, 90),
   });
 
-  const [stripe, maps, firebase, twilio, email] = await Promise.all([
+  const [stripe, maps, firebase, twilio, email, translation] = await Promise.all([
     checkStripe().catch(fallback),
     checkGoogleMaps().catch(fallback),
     checkFirebase().catch(fallback),
     checkTwilio().catch(fallback),
     checkEmail().catch(fallback),
+    checkTranslation().catch(fallback),
   ]);
 
   results.stripe = stripe;
@@ -692,6 +734,7 @@ export async function runIntegrationChecks(): Promise<void> {
   results.firebase = firebase;
   results.twilio = twilio;
   results.email = email;
+  results.translation = translation;
 
   for (const [name, r] of Object.entries(results)) {
     const line = { integration: name, status: r.status, summary: r.summary, latencyMs: r.latencyMs };
@@ -703,4 +746,17 @@ export async function runIntegrationChecks(): Promise<void> {
 
 export function getIntegrationChecks(): Record<Integration, CheckResult> {
   return { ...results };
+}
+
+/**
+ * Re-verifica sólo la traducción, para que el panel muestre el resultado al
+ * instante al guardar una key nueva, sin esperar al próximo arranque del
+ * servidor (que es cuando corren las demás integraciones).
+ */
+export async function refreshTranslationCheck(): Promise<CheckResult> {
+  const r = await checkTranslation().catch((e: unknown): CheckResult => ({
+    status: 'disconnected', verifiedAt: now(), summary: String(e).slice(0, 90),
+  }));
+  results.translation = r;
+  return r;
 }

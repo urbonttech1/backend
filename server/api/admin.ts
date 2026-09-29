@@ -5,11 +5,12 @@ import { supabaseAdmin } from "../db/client";
 import { pool as pgPool } from "../db/pool";
 import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
-import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis } from '../services/integrationChecks';
+import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis, refreshTranslationCheck } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
 import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore';
 import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
 import { ensureComisionFresh, guardarComision, comoPorcentaje as comoPorcentajeComision, COMISION_MAXIMA } from '../services/commissionConfig';
+import { cargarConfigTraduccion, guardarConfigTraduccion, estadoConfigTraduccion } from '../services/translationConfig';
 import { getPlatformCommission } from '../config/pricing';
 import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
@@ -994,6 +995,46 @@ adminRouter.put("/fares/tax", async (req: Request, res: Response) => {
   if (tasa === undefined) return res.status(500).json({ error: 'No se pudo guardar la tasa de impuesto.' });
 
   return res.json({ success: true, taxFallbackRatePercent: comoPorcentaje(tasa) });
+});
+
+// GET /api/admin/settings/translation — estado de la key de OpenAI del traductor
+// del chat. Nunca la key completa: sólo si está configurada y sus últimos 4 caracteres.
+adminRouter.get("/settings/translation", async (_req: Request, res: Response) => {
+  await cargarConfigTraduccion();
+  res.json(estadoConfigTraduccion());
+});
+
+// PATCH /api/admin/settings/translation — guarda la key y/o el modelo, y la
+// prueba al instante contra OpenAI para que el panel no tenga que esperar al
+// próximo arranque del servidor para saber si funciona.
+adminRouter.patch("/settings/translation", async (req: Request, res: Response) => {
+  const { apiKey, model } = (req.body ?? {}) as { apiKey?: unknown; model?: unknown };
+  const quien = (req as Request & { adminEmail?: string }).adminEmail || 'admin';
+
+  if (apiKey !== undefined && typeof apiKey !== 'string') {
+    return res.status(400).json({ error: 'apiKey debe ser texto.', errorCode: 'INVALID_API_KEY', field: 'apiKey' });
+  }
+  if (model !== undefined && typeof model !== 'string') {
+    return res.status(400).json({ error: 'model debe ser texto.', errorCode: 'INVALID_MODEL', field: 'model' });
+  }
+
+  let resultado: { ok: true } | { ok: false; error: string };
+  try {
+    resultado = await guardarConfigTraduccion(
+      { apiKey: apiKey as string | undefined, model: model as string | undefined },
+      quien,
+    );
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] guardar config de traducción');
+    resultado = { ok: false, error: 'No se pudo guardar la configuración de traducción.' };
+  }
+
+  if ('error' in resultado) {
+    return res.status(400).json({ error: resultado.error, errorCode: 'INVALID_TRANSLATION_CONFIG', field: 'apiKey' });
+  }
+
+  const check = await refreshTranslationCheck();
+  return res.json({ success: true, ...estadoConfigTraduccion(), check });
 });
 
 adminRouter.put("/fares", async (req: Request, res: Response) => {
