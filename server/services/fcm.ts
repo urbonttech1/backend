@@ -45,6 +45,84 @@ export interface PushPayload {
   imageUrl?: string;
 }
 
+// ── Per-notification delivery tuning ─────────────────────────────────────────
+// Every message used to go out with the same generic options, which was fine
+// while iOS push did not work at all. Now that it does, the difference between
+// a ride offer and a weekly earnings summary matters: one is useless after a
+// minute and has to cut through Focus mode, the other can wait.
+
+// Must reach the user now, and expires fast.
+const URGENT_TYPES = new Set([
+  'new_ride',
+  'ride_request',
+  'scheduled_ride_offer',
+  'ride_confirmed',
+  'driver_arriving_soon',
+  'driver_arrived',
+  'sos_alert',
+]);
+
+// Ride-status updates where only the latest one is worth showing: "arriving in
+// 2 min" is noise once "your ride is here" has landed, so they replace each
+// other per ride. Ride offers are deliberately excluded — a driver has to see
+// every distinct offer, and FCM only keeps 4 pending collapse keys per device.
+const COLLAPSIBLE_TYPES = new Set([
+  'ride_confirmed',
+  'ride_searching',
+  'driver_arriving_soon',
+  'driver_arrived',
+  'ride_started',
+  'driver_cancelled_reassigning',
+]);
+
+// A ride offer that lands five minutes late is worse than one that never lands.
+const URGENT_TTL_SECONDS = 60;
+
+export function deliveryOptions(payload: PushPayload) {
+  const type = payload.data?.type ?? '';
+  const rideId = payload.data?.ride_id;
+  const urgent = URGENT_TYPES.has(type);
+  const collapseId = COLLAPSIBLE_TYPES.has(type) ? rideId : undefined;
+
+  return {
+    android: {
+      priority: (urgent ? 'high' : 'normal') as 'high' | 'normal',
+      ...(urgent ? { ttl: URGENT_TTL_SECONDS * 1000 } : {}),
+      ...(collapseId ? { collapseKey: collapseId } : {}),
+      notification: {
+        sound: 'default',
+        channelId: 'urbont_rides',
+      },
+    },
+    apns: {
+      headers: {
+        'apns-push-type': 'alert',
+        // 10 delivers immediately; 5 is the power-considerate value Apple asks
+        // for on anything that is not time critical.
+        'apns-priority': urgent ? '10' : '5',
+        ...(urgent
+          ? { 'apns-expiration': String(Math.floor(Date.now() / 1000) + URGENT_TTL_SECONDS) }
+          : {}),
+        ...(collapseId ? { 'apns-collapse-id': collapseId } : {}),
+      },
+      payload: {
+        aps: {
+          sound: 'default',
+          // Cuts through Focus / Do Not Disturb. iOS ignores it when the app is
+          // not signed with the Time Sensitive Notifications entitlement, so it
+          // is safe to send either way.
+          ...(urgent ? { 'interruption-level': 'time-sensitive' } : {}),
+          // Groups every notification of one ride into a single thread.
+          ...(rideId ? { threadId: rideId } : {}),
+          // No badge on purpose. It was hardcoded to 1, so the icon carried a
+          // permanent "1" that matched nothing and never cleared. Real unread
+          // counts need the client to reset them — separate change.
+        },
+      },
+    },
+  };
+}
+
 export async function sendToToken(token: string, payload: PushPayload): Promise<boolean> {
   const fcm = await getMessaging();
   if (!fcm) return false;
@@ -58,21 +136,7 @@ export async function sendToToken(token: string, payload: PushPayload): Promise<
         ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}),
       },
       data: payload.data ?? {},
-      android: {
-        priority: 'high',
-        notification: {
-          sound: 'default',
-          channelId: 'urbont_rides',
-        },
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1,
-          },
-        },
-      },
+      ...deliveryOptions(payload),
     });
     return true;
   } catch (err: any) {
@@ -110,13 +174,7 @@ export async function sendMulticast(tokens: string[], payload: PushPayload): Pro
         ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}),
       },
       data: payload.data ?? {},
-      android: {
-        priority: 'high',
-        notification: { sound: 'default', channelId: 'urbont_rides' },
-      },
-      apns: {
-        payload: { aps: { sound: 'default', badge: 1 } },
-      },
+      ...deliveryOptions(payload),
     });
 
     sent += response.successCount;
