@@ -34,7 +34,8 @@ async function translateText(text: string, from: string, to: string): Promise<st
         'Authorization': `Bearer ${GROQ_KEY}`
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
+        reasoning_effort: 'low',
         messages: [
           {
             role: 'system',
@@ -57,8 +58,11 @@ async function translateText(text: string, from: string, to: string): Promise<st
 
     const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
     let translated = data.choices?.[0]?.message?.content?.trim() || '';
+    translated = translated.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    const lastLine = translated.split('\n').map(line => line.trim()).filter(Boolean).pop() || '';
+    if (lastLine) translated = lastLine;
 
-    // Strip accidental quotes if Grok defies instructions
+    // Strip accidental quotes if the model defies instructions
     if (translated.startsWith('"') && translated.endsWith('"')) {
       translated = translated.slice(1, -1);
     }
@@ -277,6 +281,7 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
       originalText,
       translatedText: (!isVoiceNote && translatedText !== originalText) ? translatedText : undefined,
       createdAt,
+      targetLang: targetLang || 'es',
       ...audioCampos,
     });
 
