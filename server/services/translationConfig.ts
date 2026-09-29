@@ -2,18 +2,16 @@
  * Config del traductor de chat chofer↔pasajero, editable desde el panel.
  *
  * Antes vivía sólo en `GROK_API_KEY` (variable de entorno). Ahora la API key se
- * guarda en `app_config`, igual que las tarifas (ver `taxConfig.ts`), pero
- * CIFRADA con `secretCrypto`: es el primer secreto de este backend que vive en
- * la base en vez de en el entorno, así que a diferencia de `tax_config`/
- * `commission_config` no se guarda en texto plano.
+ * guarda en `app_config`, igual que las tarifas (ver `taxConfig.ts`) — en texto
+ * plano, mismo tratamiento que el resto de valores de esa tabla. El `GET` del
+ * panel igual nunca devuelve la key completa (ver `estadoConfigTraduccion`).
  *
- * Si `CONFIG_ENCRYPTION_KEY` no está configurada, o si la base no tiene nada
- * guardado, cae a `OPENAI_API_KEY` del entorno — igual de silencioso que el
- * resto de la config: nunca rompe el chat, como mucho deja de traducir.
+ * Si la base no tiene nada guardado, cae a `OPENAI_API_KEY` del entorno — igual
+ * de silencioso que el resto de la config: nunca rompe el chat, como mucho deja
+ * de traducir.
  */
 import { pool } from '../db/pool';
 import { logger } from '../lib/logger';
-import { cifrar, descifrar } from '../lib/secretCrypto';
 
 const CONFIG_KEY = 'translation_config';
 const TTL_MS = 60_000;
@@ -21,7 +19,7 @@ const TTL_MS = 60_000;
 export const MODELO_POR_DEFECTO = 'gpt-4o-mini';
 
 interface ConfigGuardada {
-  apiKeyEncrypted?: string;
+  apiKey?: string;
   model?: string;
   updatedBy?: string;
   updatedAt?: string;
@@ -41,7 +39,7 @@ let vigente: ConfigVigente = {
 let ultimaLectura = 0;
 let leyendo: Promise<void> | null = null;
 
-/** Lee la config guardada. Nunca lanza: sin base o sin poder descifrar, sigue la que ya estaba (o el env var). */
+/** Lee la config guardada. Nunca lanza: sin base, sigue la que ya estaba (o el env var). */
 export async function cargarConfigTraduccion(force = false): Promise<void> {
   if (!force && Date.now() - ultimaLectura < TTL_MS) return;
   if (leyendo) return leyendo;
@@ -59,20 +57,8 @@ export async function cargarConfigTraduccion(force = false): Promise<void> {
       }
 
       const guardado = JSON.parse(rows[0].value) as ConfigGuardada;
-      let apiKey: string | null = null;
-      if (guardado.apiKeyEncrypted) {
-        try {
-          apiKey = descifrar(guardado.apiKeyEncrypted);
-        } catch (err) {
-          logger.error(`[Traducción] No se pudo descifrar la key guardada, se usa OPENAI_API_KEY si existe: ${(err as Error).message}`);
-          apiKey = process.env.OPENAI_API_KEY || null;
-        }
-      } else {
-        apiKey = process.env.OPENAI_API_KEY || null;
-      }
-
       vigente = {
-        apiKey,
+        apiKey: guardado.apiKey || process.env.OPENAI_API_KEY || null,
         model: guardado.model || MODELO_POR_DEFECTO,
         updatedBy: guardado.updatedBy,
         updatedAt: guardado.updatedAt,
@@ -107,31 +93,25 @@ export async function guardarConfigTraduccion(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const modeloNuevo = input.model?.trim() || vigente.model || MODELO_POR_DEFECTO;
 
-  let apiKeyEncrypted: string | undefined;
-  let apiKeyPlano = vigente.apiKey;
+  let apiKeyGuardar: string | undefined;
 
   if (input.apiKey && input.apiKey.trim()) {
     const key = input.apiKey.trim();
     if (!key.startsWith('sk-')) {
       return { ok: false, error: 'La API key de OpenAI debe empezar con "sk-".' };
     }
-    try {
-      apiKeyEncrypted = cifrar(key);
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-    apiKeyPlano = key;
+    apiKeyGuardar = key;
   } else {
-    // No cambia la key: se conserva la ya cifrada en la base para no perderla
-    // al reescribir el JSON completo (por ejemplo, al guardar sólo el modelo).
+    // No cambia la key: se conserva la ya guardada para no perderla al
+    // reescribir el JSON completo (por ejemplo, al guardar sólo el modelo).
     const { rows } = await pool.query<{ value: string }>(
       `SELECT value FROM app_config WHERE key = $1`, [CONFIG_KEY],
     );
-    apiKeyEncrypted = rows[0]?.value ? (JSON.parse(rows[0].value) as ConfigGuardada).apiKeyEncrypted : undefined;
+    apiKeyGuardar = rows[0]?.value ? (JSON.parse(rows[0].value) as ConfigGuardada).apiKey : undefined;
   }
 
   const actualizado: ConfigGuardada = {
-    apiKeyEncrypted,
+    apiKey: apiKeyGuardar,
     model: modeloNuevo,
     updatedBy: quien,
     updatedAt: new Date().toISOString(),
@@ -143,7 +123,7 @@ export async function guardarConfigTraduccion(
     [CONFIG_KEY, JSON.stringify(actualizado)],
   );
 
-  vigente = { apiKey: apiKeyPlano, model: modeloNuevo, updatedBy: quien, updatedAt: actualizado.updatedAt };
+  vigente = { apiKey: apiKeyGuardar || null, model: modeloNuevo, updatedBy: quien, updatedAt: actualizado.updatedAt };
   ultimaLectura = Date.now();
   logger.info(`[Traducción] Configuración de OpenAI actualizada por ${quien}`);
   return { ok: true };
