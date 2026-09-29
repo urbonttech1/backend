@@ -9,6 +9,7 @@ import { notifyAvailableDrivers, getIo, broadcastRideStatus } from '../services/
 import { offerScheduledRide, scheduledClaimLeadMinutes } from '../services/scheduledOffer';
 import { reasignacionesVencidas, MINUTOS_PARA_REEMPLAZO, type ViajeEnReasignacion } from '../services/reassignTimeout';
 import { getStripe } from '../api/rides/helpers';
+import { devolverCobroDelViaje } from '../services/rideRefund';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { notifyUser, sendMulticast } from '../services/fcm';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
@@ -85,7 +86,7 @@ async function cancelExpiredSearchingRides() {
       .is('driver_id', null)
       .is('scheduled_at', null)
       .lt('created_at', twoHoursAgo)
-      .select('id, passenger_id');
+      .select('id, passenger_id, payment_intent_id');
 
     // Cancel scheduled rides whose scheduled_at has passed by more than 30 minutes
     const { data: expiredScheduled, error: e2 } = await supabaseAdmin
@@ -95,14 +96,16 @@ async function cancelExpiredSearchingRides() {
       .is('driver_id', null)
       .not('scheduled_at', 'is', null)
       .lt('scheduled_at', thirtyMinsAgo)
-      .select('id, passenger_id');
+      .select('id, passenger_id, payment_intent_id');
 
     if (e1) log.error({ err: e1 }, '[CRON] Cancel expired immediate rides error');
     if (e2) log.error({ err: e2 }, '[CRON] Cancel expired scheduled rides error');
 
     // Notify passengers of cancelled rides (no driver found)
     const allExpired = [...(expiredImmediate ?? []), ...(expiredScheduled ?? [])];
-    for (const ride of (allExpired ?? []) as Array<{ id: string; passenger_id: string | null }>) {
+    for (const ride of (allExpired ?? []) as Array<{ id: string; passenger_id: string | null; payment_intent_id: string | null }>) {
+      // Se cobró al reservar: sin chofer no hubo viaje, se devuelve entero.
+      await devolverCobroDelViaje(ride.payment_intent_id, ride.id);
       if (ride.passenger_id) {
         notifyUser(String(ride.passenger_id), passengerNotif.rideCancelledNoDriver(ride.id)).catch(() => {});
       }
@@ -145,7 +148,6 @@ async function cancelarReasignacionesVencidas() {
     const vencidos = reasignacionesVencidas((data ?? []) as ViajeEnReasignacion[], new Date());
     if (!vencidos.length) return;
 
-    const stripe = getStripe();
     const ahora = new Date().toISOString();
 
     for (const viaje of vencidos) {
@@ -170,16 +172,9 @@ async function cancelarReasignacionesVencidas() {
 
       if (cancelErr || !cancelado) continue;
 
-      // La retención de la tarjeta se libera: el pasajero no pagó nada.
-      const piId = fila?.payment_intent_id as string | undefined;
-      if (stripe && piId) {
-        try {
-          const pi = await stripe.paymentIntents.retrieve(piId);
-          if (pi.status === 'requires_capture') await stripe.paymentIntents.cancel(pi.id);
-        } catch (err: any) {
-          log.warn({ err: err?.message, rideId: viaje.id }, '[CRON] no se pudo liberar la retención');
-        }
-      }
+      // Se libera la retención o, si ya se capturó —las reservas se cobran al
+      // reservar—, se reembolsa: el pasajero no paga un viaje que no se hizo.
+      await devolverCobroDelViaje(fila?.payment_intent_id as string | undefined, viaje.id);
 
       const passengerId = String(cancelado.passenger_id || '');
       if (passengerId) {
@@ -406,11 +401,12 @@ async function dispatchScheduledRides() {
       .eq('ride_status', 'scheduled')
       .is('driver_id', null)
       .lt('scheduled_at', thirtyMinsAgo)
-      .select('id, passenger_id');
+      .select('id, passenger_id, payment_intent_id');
 
     if (overdueRides?.length) {
       log.info(`[CRON] Auto-cancelled ${overdueRides.length} overdue scheduled ride(s) (missed dispatch window)`);
-      for (const ride of (overdueRides ?? []) as Array<{ id: string; passenger_id: string | null }>) {
+      for (const ride of (overdueRides ?? []) as Array<{ id: string; passenger_id: string | null; payment_intent_id: string | null }>) {
+        await devolverCobroDelViaje(ride.payment_intent_id, ride.id);
         if (ride.passenger_id) {
           notifyUser(String(ride.passenger_id), passengerNotif.rideCancelledNoDriver(ride.id)).catch(() => {});
         }

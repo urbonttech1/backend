@@ -19,6 +19,9 @@ import { pagarChoferPorViaje } from "../../services/ridePayout";
 import type Stripe from 'stripe';
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { recordDriverRelease } from "../../services/driverRideHistory";
+import { liberarCobro } from "../../services/rideRefund";
+import { quienCancela } from "../../services/cancelActor";
+import { offerScheduledRide } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -27,15 +30,6 @@ import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
-
-/** Libera el cobro retenido, o lo reembolsa entero si ya se había capturado. */
-async function liberarCobro(stripe: Stripe, pi: Stripe.PaymentIntent): Promise<void> {
-  if (pi.status === 'requires_capture') {
-    await stripe.paymentIntents.cancel(pi.id);
-  } else if (pi.status === 'succeeded') {
-    await stripe.refunds.create({ payment_intent: pi.id });
-  }
-}
 
 /**
  * Cobra sólo `feeCents` y libera el resto. Devuelve el PaymentIntent ya
@@ -72,6 +66,18 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
       return res.status(404).json({ error: 'Ride not found' });
     }
 
+    const actor = quienCancela({
+      uid: req.supabaseUid,
+      role: req.supabaseRole,
+      passengerId: (ride as any).passenger_id,
+      driverId: (ride as any).driver_id,
+      cancelledBy,
+    });
+    if (!actor.permitido) {
+      return res.status(403).json({ error: 'Access denied. You are not a participant in this ride.' });
+    }
+    const { cancelaChofer } = actor;
+
     const rideStatus = (ride as any).ride_status;
     if (rideStatus === 'completed' || rideStatus === 'cancelled') {
       return res.status(400).json({ error: 'Ride cannot be cancelled in its current state' });
@@ -81,19 +87,77 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
     // seguía activo a su nombre hasta que el watchdog lo reasignaba y terminaba
     // cancelado "sin asignar". Se cancela conservando su driver_id y su motivo.
     // Sólo el conductor asignado: el pasajero sigue sin poder cancelar un viaje en curso.
-    const conductorAbandona = rideStatus === 'in_progress'
-      && cancelledBy === 'driver'
-      && !!req.supabaseUid
-      && (ride as any).driver_id === req.supabaseUid;
+    const conductorAbandona = rideStatus === 'in_progress' && cancelaChofer;
     if (rideStatus === 'in_progress' && !conductorAbandona) {
       return res.status(400).json({ error: 'Cannot cancel a ride that is already in progress' });
+    }
+
+    // ── El chofer suelta una reserva que había tomado ────────────────────────
+    // La reserva sigue en `scheduled` hasta que él la inicia, así que antes caía
+    // en la regla de antelación de abajo: se cancelaba entera, se le cobraba la
+    // penalización al pasajero y el 90 % iba al mismo chofer que cancelaba. Ahora
+    // vuelve a quedar abierta para otro chofer y el pasajero no paga nada.
+    if (cancelaChofer && rideStatus === 'scheduled' && (ride as any).driver_id) {
+      const driverIdStr = String((ride as any).driver_id);
+      const { data: liberada, error: releaseErr } = await supabaseAdmin.from('rides').update({
+        driver_id: null,
+        accepted_at: null,
+        // Que el cron vuelva a avisar al entrar en la ventana previa.
+        dispatch_35m_sent: false,
+        updated_at: new Date().toISOString(),
+      }).eq('id', req.params.id)
+        .eq('ride_status', 'scheduled')
+        .eq('driver_id', driverIdStr)
+        .select('id, vehicle_type, pickup, pickup_address, pickup_lat, pickup_lng, scheduled_at, passenger_id')
+        .maybeSingle();
+      if (releaseErr) throw releaseErr;
+      if (!liberada) {
+        return res.status(409).json({ error: 'Ride status changed while cancelling — please refresh and try again.' });
+      }
+
+      recordDriverRelease(req.params.id, driverIdStr, 'driver_cancelled', reason || 'driver_released_reservation');
+
+      const fila = liberada as {
+        vehicle_type: string | null; pickup: { address?: string } | string | null; pickup_address: string | null;
+        pickup_lat: number | null; pickup_lng: number | null; scheduled_at: string | null; passenger_id: string | null;
+      };
+      broadcastRideStatus(req.params.id, 'scheduled', {
+        driverCancelled: true,
+        passengerId: fila.passenger_id,
+        driverId: driverIdStr,
+      });
+      if (fila.passenger_id) {
+        notifyUser(fila.passenger_id, {
+          title: 'Your chauffeur changed',
+          body: "Your reserved chauffeur can no longer make it. We're offering your ride to other chauffeurs — you won't be charged extra.",
+          data: { type: 'ride_scheduled', ride_id: req.params.id, screen: 'ride_tracking' },
+        }).catch(() => {});
+      }
+      // Se vuelve a ofrecer ya a los choferes cercanos. Si ya está dentro de la
+      // ventana previa, el cron además la pasa a searching en su próxima vuelta.
+      const pickupAddr = fila.pickup_address
+        || (typeof fila.pickup === 'string' ? fila.pickup : fila.pickup?.address)
+        || 'Miami, FL';
+      if (fila.scheduled_at) {
+        offerScheduledRide({
+          rideId: req.params.id,
+          vehicleType: fila.vehicle_type || 'executive',
+          pickupAddress: pickupAddr,
+          pickupLat: fila.pickup_lat,
+          pickupLng: fila.pickup_lng,
+          scheduledAt: fila.scheduled_at,
+        }).catch((err: unknown) => logger.error(`[RIDES] re-offer of released reservation ${req.params.id} failed: ${errMsg(err)}`));
+      }
+
+      logger.info(`[RIDES] Driver ${driverIdStr} released reservation ${req.params.id} — open again for other chauffeurs`);
+      return res.json({ success: true, released: true, cancellationFee: 0 });
     }
 
     // ── Driver-initiated cancellation: reassign to searching ─────────────────
     // When a driver cancels a ride they accepted, we reset the ride to 'searching'
     // so another available driver can pick it up — exactly like Uber/Lyft.
     // No Stripe charges are applied to the passenger.
-    if (cancelledBy === 'driver' && ['confirmed', 'accepted', 'driver_arrived'].includes(rideStatus)) {
+    if (cancelaChofer && ['confirmed', 'accepted', 'driver_arrived'].includes(rideStatus)) {
       const { error: resetErr } = await supabaseAdmin.from('rides').update({
         ride_status: 'searching',
         driver_id: null,

@@ -18,6 +18,7 @@ import { ensureFaresFresh } from "../../services/fareConfig";
 import { resolveZone, ensureZonesFresh } from "../../services/serviceZones";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { offerScheduledRide } from "../../services/scheduledOffer";
+import { devolverCobroDelViaje } from "../../services/rideRefund";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -237,12 +238,15 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         : null;
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Active ride guard — passenger can only have one active ride at a time
+    // Active ride guard — passenger can only have one active ride at a time.
+    // Una reserva que todavía está en `scheduled` no cuenta: quien reservó el
+    // aeropuerto del viernes puede pedir un viaje hoy, o reservar otro. Cuenta
+    // desde que entra en la ventana previa (pasa a searching) o tiene chofer en camino.
     const { data: existing } = await supabaseAdmin
       .from('rides')
-      .select('id, ride_status, created_at, updated_at')
+      .select('id, ride_status, created_at, updated_at, scheduled_at, payment_intent_id')
       .eq('passenger_id', passenger_id)
-      .in('ride_status', ACTIVE_STATUSES)
+      .in('ride_status', ACTIVE_STATUSES.filter((st) => st !== 'scheduled'))
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -251,7 +255,10 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       // Auto-cleanup stale ride: if active ride is older than 6 hours, auto-cancel it so passenger isn't blocked forever
       const lastActivity = new Date(existing.updated_at || existing.created_at).getTime();
       const ageHours = (Date.now() - lastActivity) / (1000 * 60 * 60);
-      if (ageHours > 6) {
+      // Una reserva cuya hora aún no llegó no está abandonada, por vieja que sea
+      // la fila: antes se cancelaba en silencio al pedir cualquier otro viaje.
+      const reservaFutura = !!existing.scheduled_at && new Date(existing.scheduled_at).getTime() > Date.now();
+      if (ageHours > 6 && !reservaFutura) {
         logger.warn(`[RIDES] Stale active ride ${existing.id} (${existing.ride_status}, age: ${ageHours.toFixed(1)}h) auto-cancelled for passenger ${passenger_id}`);
         await supabaseAdmin
           .from('rides')
@@ -261,6 +268,12 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
             updated_at: new Date().toISOString(),
           })
           .eq('id', existing.id);
+        // Si ningún chofer llegó a tomarlo, el viaje no se prestó y se devuelve
+        // lo cobrado al reservar. Uno ya aceptado o en curso pudo hacerse: ése
+        // queda para revisión manual, no se reembolsa a ciegas.
+        if (existing.ride_status === 'searching') {
+          await devolverCobroDelViaje(existing.payment_intent_id, existing.id);
+        }
       } else {
         return res.status(409).json({
           error: 'You already have an active ride in progress. Please complete or cancel it before requesting a new one.',

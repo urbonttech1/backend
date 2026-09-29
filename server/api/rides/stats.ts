@@ -18,6 +18,7 @@ import {
 } from "../../config/pricing";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
+import { SCHEDULED_START_GRACE_MINUTES, scheduledClaimLeadMinutes, scheduledStartableAt } from "../../services/scheduledOffer";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
@@ -45,6 +46,7 @@ router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         return res.status(403).json({ error: 'Drivers only' });
       }
       const now = new Date().toISOString();
+      const graceStart = new Date(Date.now() - SCHEDULED_START_GRACE_MINUTES * 60 * 1000).toISOString();
       const { data, error } = await supabaseAdmin
         .from('rides')
         .select('id, pickup, dropoff, scheduled_at, vehicle_type, passenger_id, fare, notes, ride_status, guest_name, valet_booking_ref, passengers, luggage')
@@ -53,12 +55,22 @@ router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         // `confirmed` cuando un chofer acepta. Filtrando por `accepted`, las
         // reservas ya asignadas no salían nunca en la pestaña Upcoming del chofer.
         .in('ride_status', ['scheduled', 'searching', 'confirmed'])
-        .gt('scheduled_at', now)
+        // Una reserva que el chofer aún no inició sigue saliendo un rato después
+        // de su hora: si llegaba un minuto tarde, desaparecía de la lista y no
+        // había forma de iniciarla desde la app.
+        .or(`scheduled_at.gt.${now},and(ride_status.eq.scheduled,scheduled_at.gt.${graceStart})`)
         .order('scheduled_at', { ascending: true })
         .limit(limit);
 
       if (error) throw error;
-      return res.json({ rides: data ?? [] });
+      // `startable_at`: desde cuándo acepta el servidor el inicio, para que la
+      // app no ofrezca "Start trip" antes de tiempo.
+      const lead = await scheduledClaimLeadMinutes();
+      const rides = (data ?? []).map((ride) => ({
+        ...ride,
+        startable_at: scheduledStartableAt(ride.scheduled_at as string | null, lead)?.toISOString() ?? null,
+      }));
+      return res.json({ rides });
     }
 
     // Default: return the caller's own rides (same as /my)

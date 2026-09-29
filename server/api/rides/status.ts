@@ -15,7 +15,7 @@ import {
 } from "../../config/pricing";
 import { pagarChoferPorViaje } from "../../services/ridePayout";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
-import { claimFailed, claimScheduledRide } from "../../services/scheduledOffer";
+import { claimFailed, claimScheduledRide, scheduledClaimLeadMinutes, scheduledStartableAt } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -76,13 +76,18 @@ router.get("/:id", (req: Request, _res: Response, next: (deferToNext?: 'route') 
 
     const isDriver = role === 'chauffeur' || role === 'driver';
     const isSearching = ride.ride_status === 'searching';
+    // Una reserva sin chofer también se le ofrece a todos los cercanos. Sin esto
+    // el 403 hacía que la app del chofer mostrara la oferta vacía: $0.00, sin
+    // destino ni pasajero, mientras el pasajero veía el precio real.
+    const isOpenReservation = ride.ride_status === 'scheduled' && !ride.driver_id;
 
-    // Only the passenger, assigned driver, admin, or any driver (for searching rides) can view a ride
+    // Only the passenger, assigned driver, admin, or any driver (for searching rides
+    // and open reservations) can view a ride
     if (
       role !== 'admin' &&
       ride.passenger_id !== uid &&
       ride.driver_id !== uid &&
-      !(isDriver && isSearching)
+      !(isDriver && (isSearching || isOpenReservation))
     ) {
       return res.status(403).json({ error: 'Access denied.' });
     }
@@ -225,13 +230,28 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
     // The chauffeur who already reserved this ride is heading to the pickup.
     // That is the moment the trip becomes a normal confirmed ride.
     if (isDriver && finalStatus === 'confirmed' && currentStatus === 'scheduled' && r.driver_id === uid) {
-      const { data: driverActive } = await supabaseAdmin
+      // Sólo dentro de la ventana previa a la hora reservada. Antes se podía
+      // iniciar días antes: el pasajero recibía "on the way" y el chofer quedaba
+      // ocupado, sin poder aceptar otros viajes, hasta terminar éste.
+      const startableAt = scheduledStartableAt(r.scheduled_at as string | null, await scheduledClaimLeadMinutes());
+      if (startableAt && Date.now() < startableAt.getTime()) {
+        return res.status(409).json({
+          error: `You can start this reservation from ${startableAt.toISOString()}.`,
+          code: 'TOO_EARLY',
+          startable_at: startableAt.toISOString(),
+        });
+      }
+
+      // `.limit(1)` y no `.maybeSingle()`: con dos o más filas maybeSingle
+      // devuelve error y data null, y la comprobación dejaba pasar al chofer.
+      const { data: driverActive, error: activeErr } = await supabaseAdmin
         .from('rides')
         .select('id')
         .eq('driver_id', uid)
         .in('ride_status', ['confirmed', 'driver_arrived', 'in_progress'])
-        .maybeSingle();
-      if (driverActive) {
+        .limit(1);
+      if (activeErr) throw activeErr;
+      if (driverActive && driverActive.length > 0) {
         return res.status(409).json({
           error: 'You already have an active ride. Please complete it before starting this one.',
           code: 'DRIVER_BUSY',

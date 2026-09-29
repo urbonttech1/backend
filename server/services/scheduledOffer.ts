@@ -22,6 +22,24 @@ export async function scheduledClaimLeadMinutes(): Promise<number> {
   return DEFAULT_LEAD_MINUTES;
 }
 
+/**
+ * How long after the reserved time the assigned chauffeur can still find and
+ * start the reservation. Same margin the cron gives unclaimed reservations.
+ */
+export const SCHEDULED_START_GRACE_MINUTES = 30;
+
+/**
+ * Moment from which the chauffeur who reserved a ride may start it: the same
+ * lead window in which the cron reminds them to head out. Starting earlier
+ * would tell the passenger "on the way" days ahead and keep the chauffeur busy.
+ * Null when the ride has no valid reserved time (nothing to hold back).
+ */
+export function scheduledStartableAt(scheduledAt: string | null | undefined, leadMinutes: number): Date | null {
+  const ms = scheduledAt ? new Date(scheduledAt).getTime() : NaN;
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms - leadMinutes * 60 * 1000);
+}
+
 function whenLabel(iso: string): string {
   return new Date(iso).toLocaleString('en-US', {
     weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
