@@ -234,20 +234,29 @@ Identificado y **no** hecho, por orden de impacto:
 4. **Canales de Android por categoría.** Todo va por `urbont_rides`.
 5. **Badge real.** Requiere que el cliente resetee el contador.
 
-### Seguridad: `/speak` sin autenticar es intencionado
+### Seguridad: `/speak` ya va autenticado (revisado el 30/09/2026)
 
-`POST /api/translation/speak` **no lleva middleware de autenticación, y así se
-queda** (decisión del 29/09/2026). No es un descuido: no lo añadas sin hablarlo
-antes, porque el cliente puede no estar mandando el token en ese endpoint y lo
-romperías.
+Este endpoint se dejó sin autenticar el 29/09 por temor a que la app no mandara
+el token. **La app sí lo manda**, en los cuatro sitios desde los que llama
+(`SmartChat.tsx`, líneas 465, 513, 607 y 644), y ningún otro cliente lo usa: ni
+el panel ni la web. La premisa de aquella decisión era falsa, así que se revisó.
 
-Lo que eso implica, para que esté por escrito: cualquiera que conozca un `rideId`
-puede inyectar mensajes en ese chat y, desde estos cambios, disparar
-notificaciones push y consumir cuota de OpenAI transcribiendo audios. El `rideId`
-es un UUID y no se publica, así que en la práctica hace falta filtrarlo primero.
+Lo que estaba expuesto mientras tanto: cualquiera con un `rideId` podía inyectar
+mensajes en ese chat, hacerse pasar por el chofer, disparar notificaciones push
+y **gastar cuota de OpenAI** transcribiendo audios — esto último desde los
+cambios del 29/09, que convierte el problema en gasto real.
 
-Si algún día se revisa, el cambio es añadir `requireSupabaseAuth` al router —
-verificando antes que la app manda `Authorization` en `/speak`.
+Ahora el router lleva `requireSupabaseAuth` y, antes de guardar nada:
+
+- comprueba que quien llama sea el pasajero o el chofer **de ese viaje**
+  (403 `ACCESS_DENIED` si no);
+- comprueba que `senderRole` coincida con su rol real en el viaje
+  (403 `ROLE_MISMATCH`), porque ese campo decide de qué lado sale el mensaje y a
+  quién se notifica: lo fija el servidor, no el cliente;
+- un `admin` pasa sin atarse a un rol.
+
+La regla vive en `server/services/chatActor.ts` (`quienEscribe`), aparte del
+handler para poder probarla, con 5 casos en `chatActor.test.ts`.
 
 ---
 

@@ -8,6 +8,7 @@ import { notifyUser } from '../services/fcm';
 import { chatMessage } from '../services/notificationTemplates';
 import { vistaPreviaMensaje } from '../services/chatPreview';
 import { requireSupabaseAuth } from '../middleware';
+import { quienEscribe } from '../services/chatActor';
 import {
   VOICE_BUCKET, AUDIO_TIPOS, AUDIO_MAX_BYTES, AUDIO_MAX_DURACION_MS, AUDIO_DESCARGA_SEGUNDOS,
   AUDIO_SUBIDA_SEGUNDOS, TEXTO_NOTA_ARCHIVO, normalizarMime, mimeDeRuta, rutaNota, normalizarDuracion, esUuid,
@@ -127,7 +128,7 @@ async function buscarNotaSubida(rideId: string, voiceNoteId: string) {
   return { path, mimeType, size };
 }
 
-translationRouter.post('/speak', async (req: Request, res: Response) => {
+translationRouter.post('/speak', requireSupabaseAuth, async (req: Request, res: Response) => {
   const { rideId, senderRole, inputType, content, sourceLang, targetLang, voiceNoteId, durationMs } = req.body as {
     rideId: string;
     senderRole: 'chauffeur' | 'passenger';
@@ -140,6 +141,37 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
   };
 
   if (!rideId) return res.status(400).json({ error: 'rideId required' });
+
+  // Sólo el pasajero o el chofer del viaje, y cada uno bajo su propio rol.
+  //
+  // Este endpoint estaba sin autenticar a propósito (ver
+  // docs/NOTIFICACIONES_Y_CHAT.md), por temor a que la app no mandara el token.
+  // Sí lo manda, en los cuatro sitios desde los que llama, y ningún otro cliente
+  // lo usa. Sin esta comprobación, cualquiera con un rideId podía escribir en el
+  // chat haciéndose pasar por el chofer, disparar push y gastar cuota de OpenAI
+  // transcribiendo audios.
+  if ((req.supabaseRole || 'passenger') !== 'admin') {
+    const { data: ride, error: rideErr } = await supabaseAdmin
+      .from('rides').select('driver_id, passenger_id').eq('id', rideId).maybeSingle();
+    if (rideErr) {
+      log.error({ err: rideErr.message, rideId }, 'speak ride lookup error');
+      return res.status(500).json({ error: 'Failed to save message', errorCode: 'MESSAGE_NOT_SAVED' });
+    }
+    if (!ride) return res.status(404).json({ error: 'Ride not found', errorCode: 'RIDE_NOT_FOUND' });
+    const r = ride as { driver_id: string | null; passenger_id: string | null };
+    const autor = quienEscribe({
+      uid: req.supabaseUid,
+      role: req.supabaseRole,
+      passengerId: r.passenger_id,
+      driverId: r.driver_id,
+      senderRole,
+    });
+    if (!autor.permitido) {
+      return autor.motivo === 'no_participa'
+        ? res.status(403).json({ error: 'Not a participant of this ride', errorCode: 'ACCESS_DENIED' })
+        : res.status(403).json({ error: 'senderRole does not match your role in this ride', errorCode: 'ROLE_MISMATCH' });
+    }
+  }
 
   // Nota de voz subida como archivo: se manda el voiceNoteId en vez del base64.
   let audio: { path: string; mimeType: string; durationMs: number | null } | null = null;
