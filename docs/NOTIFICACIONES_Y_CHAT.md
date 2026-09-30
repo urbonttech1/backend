@@ -207,12 +207,20 @@ Identificado y **no** hecho, por orden de impacto:
 4. **Canales de Android por categoría.** Todo va por `urbont_rides`.
 5. **Badge real.** Requiere que el cliente resetee el contador.
 
-### Seguridad, sin resolver
+### Seguridad: `/speak` sin autenticar es intencionado
 
-`POST /api/translation/speak` **no tiene middleware de autenticación**. Cualquiera
-con un `rideId` puede inyectar mensajes en un chat y, desde estos cambios,
-disparar notificaciones push. Añadir `requireSupabaseAuth` es de una línea, pero
-hay que verificar antes que el cliente manda el token en ese endpoint.
+`POST /api/translation/speak` **no lleva middleware de autenticación, y así se
+queda** (decisión del 29/09/2026). No es un descuido: no lo añadas sin hablarlo
+antes, porque el cliente puede no estar mandando el token en ese endpoint y lo
+romperías.
+
+Lo que eso implica, para que esté por escrito: cualquiera que conozca un `rideId`
+puede inyectar mensajes en ese chat y, desde estos cambios, disparar
+notificaciones push y consumir cuota de OpenAI transcribiendo audios. El `rideId`
+es un UUID y no se publica, así que en la práctica hace falta filtrarlo primero.
+
+Si algún día se revisa, el cambio es añadir `requireSupabaseAuth` al router —
+verificando antes que la app manda `Authorization` en `/speak`.
 
 ---
 
