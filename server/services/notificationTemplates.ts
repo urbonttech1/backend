@@ -150,6 +150,24 @@ export const passengerNotif = {
     };
   },
 
+  // Stripe told us the charge failed and the ride row was flagged, but nobody
+  // told the passenger — so the first they knew was a blocked next booking.
+  paymentFailed(rideId: string): PushTemplate {
+    return {
+      title: 'Payment failed',
+      body: "We couldn't charge your card for this ride. Update your payment method to keep riding.",
+      data: { type: 'payment_failed', ride_id: rideId, screen: 'payment_methods' },
+    };
+  },
+
+  subscriptionPastDue(): PushTemplate {
+    return {
+      title: 'Membership payment failed',
+      body: 'We could not renew your URBONT membership. Update your card to keep your benefits.',
+      data: { type: 'subscription_past_due', screen: 'subscription' },
+    };
+  },
+
   promoApplied(rideId: string, discount: number, code: string): PushTemplate {
     return {
       title: `$${discount.toFixed(2)} saved!`,

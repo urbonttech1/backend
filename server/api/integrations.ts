@@ -8,6 +8,8 @@ import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { calculateRideMetrics, calcularReparto } from '../services/rideMetrics';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
 import { codigoPostalDe, codigoPostalDelViaje } from '../services/taxLocation';
+import { notifyUser } from '../services/fcm';
+import { passengerNotif } from '../services/notificationTemplates';
 
 const log = createContextLogger('INTEGRATIONS');
 
@@ -176,12 +178,19 @@ integrationsRouter.post(
           if (rideId) {
             const failReason = pi.last_payment_error?.message ?? 'Unknown payment error';
             log.warn(`[STRIPE_WEBHOOK] Payment failed for ride ${rideId}: ${failReason}`);
-            // Update ride payment state so the passenger can be notified and retry
-            await supabaseAdmin.from('rides').update({
+            // Update ride payment state so the passenger can retry
+            const { data: filas } = await supabaseAdmin.from('rides').update({
               payment_status: 'failed',
               payment_error: failReason,
               updated_at: new Date().toISOString(),
-            }).eq('id', rideId);
+            }).eq('id', rideId).select('passenger_id');
+
+            // Telling the passenger is the whole point of flagging the row: a
+            // silent failure only surfaces when their next booking is blocked.
+            const paxId = (filas ?? [])[0]?.passenger_id;
+            if (paxId) {
+              notifyUser(String(paxId), passengerNotif.paymentFailed(rideId)).catch(() => {});
+            }
           }
           break;
         }
@@ -242,9 +251,15 @@ integrationsRouter.post(
             ? invoice.subscription
             : (invoice.subscription as Stripe.Subscription | null)?.id;
           if (subId) {
-            await supabaseAdmin.from('urbont_subscriptions')
+            const { data: subs } = await supabaseAdmin.from('urbont_subscriptions')
               .update({ status: 'past_due', updated_at: new Date().toISOString() })
-              .eq('stripe_subscription_id', subId);
+              .eq('stripe_subscription_id', subId)
+              .select('user_id');
+
+            const subUserId = (subs ?? [])[0]?.user_id;
+            if (subUserId) {
+              notifyUser(String(subUserId), passengerNotif.subscriptionPastDue()).catch(() => {});
+            }
             log.warn(`[STRIPE_WEBHOOK] Invoice payment failed for subscription ${subId} â marked past_due`);
           }
           break;
