@@ -739,6 +739,8 @@ export function broadcastChatMessage(rideId: string, msg: {
  */
 export function broadcastChatTranscript(rideId: string, patch: {
   id: string;
+  // Who recorded it: a client reading messages aloud must skip its own notes.
+  senderRole: string;
   transcript: string;
   transcriptTranslated?: string;
 }): void {

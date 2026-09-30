@@ -298,6 +298,7 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
       void transcribirYTraducir({
         msgId,
         rideId,
+        senderRole,
         audioPath: audio.path,
         mime: audio.mimeType,
         sourceLang: sourceLang || 'en',
@@ -492,12 +493,13 @@ async function notifyChatRecipient(
 async function transcribirYTraducir(args: {
   msgId: string;
   rideId: string;
+  senderRole: string;
   audioPath: string;
   mime: string;
   sourceLang: string;
   targetLang: string;
 }): Promise<void> {
-  const { msgId, rideId, audioPath, mime, sourceLang, targetLang } = args;
+  const { msgId, rideId, senderRole, audioPath, mime, sourceLang, targetLang } = args;
   try {
     const transcript = await transcribirNota(audioPath, normalizarMime(mime), sourceLang);
     if (!transcript) return;
@@ -514,7 +516,7 @@ async function transcribirYTraducir(args: {
       return;
     }
 
-    broadcastChatTranscript(rideId, { id: msgId, transcript, transcriptTranslated });
+    broadcastChatTranscript(rideId, { id: msgId, senderRole, transcript, transcriptTranslated });
   } catch (err) {
     log.error({ err: errMsg(err), msgId }, 'transcripción de nota de voz falló');
   }
