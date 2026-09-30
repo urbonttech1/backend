@@ -10,7 +10,16 @@ import { deliveryOptions } from './fcm';
 const base = { title: 'T', body: 'B' };
 
 describe('deliveryOptions', () => {
-  it('sends a ride offer as urgent, with a short life', () => {
+  it('always asks iOS for an alert, so it shows with the app backgrounded', () => {
+    // Without apns-push-type: alert, iOS can treat the payload as a silent
+    // background wake and never display anything.
+    for (const type of ['new_ride', 'chat_message', 'weekly_earnings']) {
+      const o = deliveryOptions({ ...base, data: { type } });
+      expect(o.apns.headers['apns-push-type']).toBe('alert');
+    }
+  });
+
+  it('sends a ride offer immediately and lets it die after a minute', () => {
     const o = deliveryOptions({ ...base, data: { type: 'new_ride', ride_id: 'r1' } });
 
     expect(o.android.priority).toBe('high');
@@ -18,11 +27,21 @@ describe('deliveryOptions', () => {
     expect(o.apns.headers['apns-priority']).toBe('10');
     expect(o.apns.payload.aps['interruption-level']).toBe('time-sensitive');
 
-    // Expiration is an absolute unix timestamp roughly a minute out.
-    const exp = Number(o.apns.headers['apns-expiration']);
-    const delta = exp - Math.floor(Date.now() / 1000);
+    const delta = Number(o.apns.headers['apns-expiration']) - Math.floor(Date.now() / 1000);
     expect(delta).toBeGreaterThan(50);
     expect(delta).toBeLessThanOrEqual(60);
+  });
+
+  it('delivers chat instantly but never expires it', () => {
+    // A ride offer from ten minutes ago is useless; a message is still worth
+    // reading. Priority and lifetime are separate decisions.
+    const o = deliveryOptions({ ...base, data: { type: 'chat_message', ride_id: 'r1' } });
+
+    expect(o.android.priority).toBe('high');
+    expect(o.android.ttl).toBeUndefined();
+    expect(o.apns.headers['apns-expiration']).toBeUndefined();
+    // Chat should not punch through Do Not Disturb.
+    expect(o.apns.payload.aps['interruption-level']).toBeUndefined();
   });
 
   it('lets a non-urgent notification travel power-considerately', () => {
@@ -32,14 +51,18 @@ describe('deliveryOptions', () => {
     expect(o.android.ttl).toBeUndefined();
     expect(o.apns.headers['apns-priority']).toBe('5');
     expect(o.apns.payload.aps['interruption-level']).toBeUndefined();
-    expect(o.apns.headers['apns-expiration']).toBeUndefined();
   });
 
-  it('collapses successive status updates of the same ride', () => {
-    const o = deliveryOptions({ ...base, data: { type: 'driver_arrived', ride_id: 'r1' } });
+  it('keeps chat and ride-status collapsing in separate groups', () => {
+    // Sharing one key per ride would make an arrival notice erase an unread
+    // message, and vice versa.
+    const ride = deliveryOptions({ ...base, data: { type: 'driver_arrived', ride_id: 'r1' } });
+    const chat = deliveryOptions({ ...base, data: { type: 'chat_message', ride_id: 'r1' } });
 
-    expect(o.android.collapseKey).toBe('r1');
-    expect(o.apns.headers['apns-collapse-id']).toBe('r1');
+    expect(ride.android.collapseKey).toBe('ride_r1');
+    expect(chat.android.collapseKey).toBe('chat_r1');
+    expect(ride.apns.headers['apns-collapse-id']).toBe('ride_r1');
+    expect(chat.apns.headers['apns-collapse-id']).toBe('chat_r1');
   });
 
   it('never collapses ride offers, so a driver sees every one', () => {
@@ -67,6 +90,7 @@ describe('deliveryOptions', () => {
     const o = deliveryOptions(base);
 
     expect(o.android.priority).toBe('normal');
+    expect(o.android.collapseKey).toBeUndefined();
     expect(o.apns.payload.aps.threadId).toBeUndefined();
     expect(o.android.notification.channelId).toBe('urbont_rides');
   });

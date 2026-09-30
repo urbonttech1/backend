@@ -47,47 +47,76 @@ export interface PushPayload {
 
 // ── Per-notification delivery tuning ─────────────────────────────────────────
 // Every message used to go out with the same generic options, which was fine
-// while iOS push did not work at all. Now that it does, the difference between
-// a ride offer and a weekly earnings summary matters: one is useless after a
-// minute and has to cut through Focus mode, the other can wait.
+// while iOS push did not work at all. Now that it does, three independent axes
+// matter, and conflating them gets it wrong: a chat message deserves immediate
+// delivery but must never expire, while a ride offer needs both.
 
-// Must reach the user now, and expires fast.
-const URGENT_TYPES = new Set([
+// Delivered immediately rather than batched for battery.
+const HIGH_PRIORITY_TYPES = new Set([
   'new_ride',
   'ride_request',
   'scheduled_ride_offer',
+  'scheduled_depart',
   'ride_confirmed',
-  'driver_arriving_soon',
-  'driver_arrived',
-  'sos_alert',
-]);
-
-// Ride-status updates where only the latest one is worth showing: "arriving in
-// 2 min" is noise once "your ride is here" has landed, so they replace each
-// other per ride. Ride offers are deliberately excluded — a driver has to see
-// every distinct offer, and FCM only keeps 4 pending collapse keys per device.
-const COLLAPSIBLE_TYPES = new Set([
-  'ride_confirmed',
-  'ride_searching',
   'driver_arriving_soon',
   'driver_arrived',
   'ride_started',
-  'driver_cancelled_reassigning',
+  'chat_message',
+  'payment_failed',
+  'sos_alert',
 ]);
 
-// A ride offer that lands five minutes late is worse than one that never lands.
-const URGENT_TTL_SECONDS = 60;
+// Allowed to break through Focus / Do Not Disturb. Reserved for things the user
+// is actively waiting on or that cost them money if missed.
+const TIME_SENSITIVE_TYPES = new Set([
+  'new_ride',
+  'ride_request',
+  'scheduled_ride_offer',
+  'scheduled_depart',
+  'driver_arriving_soon',
+  'driver_arrived',
+  'payment_failed',
+  'sos_alert',
+]);
+
+// Worthless if they arrive late, so they are dropped rather than queued. Only
+// ride offers: a chat message from ten minutes ago is still worth reading.
+const EPHEMERAL_TYPES = new Set([
+  'new_ride',
+  'ride_request',
+  'scheduled_ride_offer',
+]);
+const EPHEMERAL_TTL_SECONDS = 60;
+
+// Types where only the latest one is worth showing. "Arriving in 2 min" is noise
+// once "your ride is here" has landed, and twenty chat pings are worse than one.
+// Ride offers are deliberately absent — a driver has to see every distinct offer,
+// and FCM only keeps 4 pending collapse keys per device.
+const COLLAPSE_GROUPS: Record<string, string> = {
+  ride_confirmed:               'ride',
+  ride_searching:               'ride',
+  driver_arriving_soon:         'ride',
+  driver_arrived:               'ride',
+  ride_started:                 'ride',
+  driver_cancelled_reassigning: 'ride',
+  chat_message:                 'chat',
+};
 
 export function deliveryOptions(payload: PushPayload) {
-  const type = payload.data?.type ?? '';
+  const type   = payload.data?.type ?? '';
   const rideId = payload.data?.ride_id;
-  const urgent = URGENT_TYPES.has(type);
-  const collapseId = COLLAPSIBLE_TYPES.has(type) ? rideId : undefined;
+
+  const highPriority  = HIGH_PRIORITY_TYPES.has(type);
+  const timeSensitive = TIME_SENSITIVE_TYPES.has(type);
+  const ephemeral     = EPHEMERAL_TYPES.has(type);
+
+  const group      = COLLAPSE_GROUPS[type];
+  const collapseId = group && rideId ? `${group}_${rideId}` : undefined;
 
   return {
     android: {
-      priority: (urgent ? 'high' : 'normal') as 'high' | 'normal',
-      ...(urgent ? { ttl: URGENT_TTL_SECONDS * 1000 } : {}),
+      priority: (highPriority ? 'high' : 'normal') as 'high' | 'normal',
+      ...(ephemeral ? { ttl: EPHEMERAL_TTL_SECONDS * 1000 } : {}),
       ...(collapseId ? { collapseKey: collapseId } : {}),
       notification: {
         sound: 'default',
@@ -96,12 +125,15 @@ export function deliveryOptions(payload: PushPayload) {
     },
     apns: {
       headers: {
+        // 'alert' is what makes iOS display the notification while the app is
+        // backgrounded or killed. Without it the payload can be treated as a
+        // silent background wake and never shown.
         'apns-push-type': 'alert',
         // 10 delivers immediately; 5 is the power-considerate value Apple asks
         // for on anything that is not time critical.
-        'apns-priority': urgent ? '10' : '5',
-        ...(urgent
-          ? { 'apns-expiration': String(Math.floor(Date.now() / 1000) + URGENT_TTL_SECONDS) }
+        'apns-priority': highPriority ? '10' : '5',
+        ...(ephemeral
+          ? { 'apns-expiration': String(Math.floor(Date.now() / 1000) + EPHEMERAL_TTL_SECONDS) }
           : {}),
         ...(collapseId ? { 'apns-collapse-id': collapseId } : {}),
       },
@@ -111,7 +143,7 @@ export function deliveryOptions(payload: PushPayload) {
           // Cuts through Focus / Do Not Disturb. iOS ignores it when the app is
           // not signed with the Time Sensitive Notifications entitlement, so it
           // is safe to send either way.
-          ...(urgent ? { 'interruption-level': 'time-sensitive' } : {}),
+          ...(timeSensitive ? { 'interruption-level': 'time-sensitive' } : {}),
           // Groups every notification of one ride into a single thread.
           ...(rideId ? { threadId: rideId } : {}),
           // No badge on purpose. It was hardcoded to 1, so the icon carried a
