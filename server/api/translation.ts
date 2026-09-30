@@ -2,8 +2,8 @@ import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
-import { broadcastChatMessage, broadcastChatTranscript, isUserWatchingChat } from '../services/socketService';
-import { transcribirNota } from '../services/voiceTranscription';
+import { broadcastChatMessage, isUserWatchingChat } from '../services/socketService';
+import { procesarNota } from '../services/voiceTranscription';
 import { notifyUser } from '../services/fcm';
 import { chatMessage } from '../services/notificationTemplates';
 import { vistaPreviaMensaje } from '../services/chatPreview';
@@ -12,68 +12,12 @@ import {
   VOICE_BUCKET, AUDIO_TIPOS, AUDIO_MAX_BYTES, AUDIO_MAX_DURACION_MS, AUDIO_DESCARGA_SEGUNDOS,
   AUDIO_SUBIDA_SEGUNDOS, TEXTO_NOTA_ARCHIVO, normalizarMime, mimeDeRuta, rutaNota, normalizarDuracion, esUuid,
 } from '../services/voiceNote';
-import { cargarConfigTraduccion, configTraduccionEnMemoria } from '../services/translationConfig';
+import { translateText } from '../services/translate';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
 const log = pino({ level: 'info' });
 export const translationRouter = Router();
-
-async function translateText(text: string, from: string, to: string): Promise<string> {
-  if (from === to || !text.trim()) return text;
-
-  await cargarConfigTraduccion();
-  const { apiKey, model } = configTraduccionEnMemoria();
-  if (!apiKey) {
-    return text;
-  }
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: 'system',
-            content: 'You are an elite, invisible URBONT Chauffeur-Passenger real-time translation module. You must translate the user text accurately maintaining its precise intent and tone (formal/polite if passenger, professional if chauffeur). CRITICAL INSTRUCTION: Return ONLY the raw translated text. Absolutely no quotes, no explanations, no markdown, and no pleasantries. Just the translated text string.'
-          },
-          {
-            role: 'user',
-            content: `Translate strictly from ${from} to ${to}: "${text}"`
-          }
-        ],
-        temperature: 0.1,
-      })
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      log.error({ status: response.status, body: body.slice(0, 300) }, 'OpenAI translation API failed');
-      return text;
-    }
-
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    let translated = data.choices?.[0]?.message?.content?.trim() || '';
-    translated = translated.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    const lastLine = translated.split('\n').map(line => line.trim()).filter(Boolean).pop() || '';
-    if (lastLine) translated = lastLine;
-
-    // Strip accidental quotes if the model defies instructions
-    if (translated.startsWith('"') && translated.endsWith('"')) {
-      translated = translated.slice(1, -1);
-    }
-
-    return translated || text;
-  } catch (err: unknown) {
-    log.error({ err: errMsg(err) }, 'OpenAI network translation error');
-    return text;
-  }
-}
 
 // POST /api/translation/speak — translate and store a chat message
 // ─── Notas de voz como archivo ───────────────────────────────────────────────
@@ -247,7 +191,9 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
         translated_text: (!isVoiceNote && translatedText !== originalText) ? translatedText : null,
         source_lang: sourceLang || 'en',
         target_lang: targetLang || 'es',
-        ...(audio ? { audio_path: audio.path, audio_mime: audio.mimeType, audio_duration_ms: audio.durationMs } : {}),
+        // 'pending' desde el principio: si el proceso muere antes de transcribir,
+        // el barrido del cron la encuentra y la reintenta.
+        ...(audio ? { audio_path: audio.path, audio_mime: audio.mimeType, audio_duration_ms: audio.durationMs, transcript_status: 'pending' } : {}),
       })
       .select('id')
       .single();
@@ -295,7 +241,7 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
     // Transcribir tarda un par de segundos y el audio no puede esperar: el
     // mensaje ya salió, esto lo alcanza después y parchea la fila.
     if (audio) {
-      void transcribirYTraducir({
+      void procesarNota({
         msgId,
         rideId,
         senderRole,
@@ -341,7 +287,7 @@ translationRouter.get('/messages/:rideId', requireSupabaseAuth, async (req: Requ
 
   const { data, error } = await supabaseAdmin
     .from('ride_chats')
-    .select('id, ride_id, sender_role, original_text, translated_text, source_lang, target_lang, created_at, audio_path, audio_mime, audio_duration_ms, transcript, transcript_translated')
+    .select('id, ride_id, sender_role, original_text, translated_text, source_lang, target_lang, created_at, audio_path, audio_mime, audio_duration_ms, transcript, transcript_translated, transcript_status')
     .eq('ride_id', rideId)
     .order('created_at', { ascending: true })
     .limit(200);
@@ -479,45 +425,5 @@ async function notifyChatRecipient(
     await notifyUser(recipientId, chatMessage(rideId, senderRole, body));
   } catch (err) {
     log.error({ err: errMsg(err), rideId }, 'chat push notification failed');
-  }
-}
-
-
-/**
- * Transcribe la nota, la traduce y parchea la fila.
- *
- * Va fuera del ciclo de la petición a propósito: el que graba ya recibió su
- * respuesta y el que escucha ya tiene el audio. Si algo de esto falla, el
- * mensaje se queda como estaba antes de que existiera la transcripción.
- */
-async function transcribirYTraducir(args: {
-  msgId: string;
-  rideId: string;
-  senderRole: string;
-  audioPath: string;
-  mime: string;
-  sourceLang: string;
-  targetLang: string;
-}): Promise<void> {
-  const { msgId, rideId, senderRole, audioPath, mime, sourceLang, targetLang } = args;
-  try {
-    const transcript = await transcribirNota(audioPath, normalizarMime(mime), sourceLang);
-    if (!transcript) return;
-
-    const traducido = await translateText(transcript, sourceLang, targetLang);
-    const transcriptTranslated = traducido !== transcript ? traducido : undefined;
-
-    const { error } = await supabaseAdmin
-      .from('ride_chats')
-      .update({ transcript, transcript_translated: transcriptTranslated ?? null })
-      .eq('id', msgId);
-    if (error) {
-      log.error({ err: error.message, msgId }, 'no se pudo guardar la transcripción');
-      return;
-    }
-
-    broadcastChatTranscript(rideId, { id: msgId, senderRole, transcript, transcriptTranslated });
-  } catch (err) {
-    log.error({ err: errMsg(err), msgId }, 'transcripción de nota de voz falló');
   }
 }

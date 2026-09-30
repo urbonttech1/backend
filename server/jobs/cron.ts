@@ -12,6 +12,7 @@ import { getStripe } from '../api/rides/helpers';
 import { devolverCobroDelViaje } from '../services/rideRefund';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { notifyUser, sendMulticast } from '../services/fcm';
+import { procesarNota, MAX_INTENTOS } from '../services/voiceTranscription';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
 
 async function anonymizeOldRides() {
@@ -800,6 +801,56 @@ async function checkCancellationPatterns() {
   }
 }
 
+// ── Notas de voz que se quedaron sin transcribir ─────────────────────────────
+// La transcripción se lanza fuera del ciclo de la petición, así que un reinicio
+// del proceso la pierde y la nota se queda en 'pending' para siempre. Esto la
+// recoge. También cubre un fallo puntual de red o de la API.
+async function retranscribirNotasPendientes() {
+  try {
+    // Un minuto de margen: si acaba de llegar, la petición aún la está haciendo.
+    const haceUnMinuto = new Date(Date.now() - 60 * 1000).toISOString();
+
+    const { data: pendientes } = await supabaseAdmin
+      .from('ride_chats')
+      .select('id, ride_id, sender_role, audio_path, audio_mime, source_lang, target_lang, transcript_attempts')
+      .eq('transcript_status', 'pending')
+      .lt('transcript_attempts', MAX_INTENTOS)
+      .lte('created_at', haceUnMinuto)
+      .not('audio_path', 'is', null)
+      .limit(10);
+
+    if (!pendientes || pendientes.length === 0) return;
+
+    for (const fila of pendientes as Array<Record<string, unknown>>) {
+      const intentos = Number(fila.transcript_attempts ?? 0);
+      // Reclamo atómico: sube el contador antes de trabajar, así dos instancias
+      // no transcriben la misma nota y no se paga dos veces la llamada.
+      const { data: reclamada } = await supabaseAdmin
+        .from('ride_chats')
+        .update({ transcript_attempts: intentos + 1 })
+        .eq('id', fila.id as string)
+        .eq('transcript_attempts', intentos)
+        .select('id');
+      if (!reclamada || reclamada.length === 0) continue;
+
+      await procesarNota({
+        msgId: String(fila.id),
+        rideId: String(fila.ride_id),
+        senderRole: String(fila.sender_role ?? 'passenger'),
+        audioPath: String(fila.audio_path),
+        mime: (fila.audio_mime as string | null) ?? null,
+        sourceLang: String(fila.source_lang ?? 'en'),
+        targetLang: String(fila.target_lang ?? 'es'),
+        intentosPrevios: intentos,
+      });
+    }
+
+    log.info(`[CRON] Notas de voz reintentadas: ${pendientes.length}`);
+  } catch (err: any) {
+    log.error({ err }, '[CRON] retranscribirNotasPendientes error');
+  }
+}
+
 export async function startCronJobs() {
   // ── Leader Election for Horizontal Scaling (Google Cloud Run 1..10 instances) ──
   // Acquire a PostgreSQL session-level advisory lock (id: 72728).
@@ -927,6 +978,11 @@ export async function startCronJobs() {
   log.info('[CRON] Cancellation pattern check scheduled every 6 hours.');
 
   // Document expiry check daily at 08:00
+  // Cada 2 minutos: notas de voz que se quedaron a medias.
+  cron.schedule('*/2 * * * *', () => {
+    retranscribirNotasPendientes();
+  });
+
   cron.schedule('0 8 * * *', () => {
     checkDocumentExpiry();
   });

@@ -743,6 +743,8 @@ export function broadcastChatTranscript(rideId: string, patch: {
   senderRole: string;
   transcript: string;
   transcriptTranslated?: string;
+  /** 'done' o 'failed': la app distingue "aún no" de "no se pudo". */
+  status: 'done' | 'failed';
 }): void {
   if (!io) return;
   io.to(`ride-chat:${rideId}`).emit('chat:message_updated', { rideId, ...patch });

@@ -615,6 +615,18 @@ export async function runMigrations() {
         ADD COLUMN IF NOT EXISTS transcript            TEXT,
         ADD COLUMN IF NOT EXISTS transcript_translated TEXT;
     `);
+    // Estado de la transcripción. Sin esto, `transcript IS NULL` significa a la
+    // vez "aún no" y "no se pudo", así que ni la app sabe qué mostrar ni el
+    // servidor sabe qué reintentar tras un reinicio.
+    //   pending → encolada o en curso   done → lista   failed → se agotaron los intentos
+    await client.query(`
+      ALTER TABLE ride_chats
+        ADD COLUMN IF NOT EXISTS transcript_status   VARCHAR(12),
+        ADD COLUMN IF NOT EXISTS transcript_attempts SMALLINT NOT NULL DEFAULT 0;
+    `);
+    // El barrido del cron busca justo por aquí.
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_ride_chats_transcript_pendiente
+      ON ride_chats(transcript_status, created_at) WHERE transcript_status = 'pending'`);
 
     // ─── Driver Scoring & Verification ───────────────────────────────────────
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS priority_score     NUMERIC(4,2) DEFAULT 1.00`);

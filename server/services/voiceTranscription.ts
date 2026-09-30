@@ -12,7 +12,9 @@
 import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
 import { cargarConfigTraduccion, configTraduccionEnMemoria } from './translationConfig';
-import { VOICE_BUCKET, AUDIO_MAX_BYTES, type AudioTipo } from './voiceNote';
+import { VOICE_BUCKET, AUDIO_MAX_BYTES, normalizarMime, type AudioTipo } from './voiceNote';
+import { translateText } from './translate';
+import { broadcastChatTranscript } from './socketService';
 
 const log = createContextLogger('VOICE_TRANSCRIPTION');
 
@@ -99,5 +101,88 @@ export async function transcribirNota(
     const mensaje = err instanceof Error ? err.message : String(err);
     log.error({ audioPath, err: mensaje }, 'error transcribiendo la nota');
     return null;
+  }
+}
+
+/** Pasados estos intentos se marca `failed` y se deja de reintentar. */
+export const MAX_INTENTOS = 3;
+
+/**
+ * Transcribe una nota, la traduce, guarda el resultado y avisa por socket.
+ *
+ * La llama el endpoint de chat nada más recibir la nota, y el cron cuando una
+ * se quedó a medias — por ejemplo si el proceso se reinició justo aquí. Por eso
+ * vive en el servicio y no en el router: sin esto, una nota pendiente no se
+ * transcribía nunca.
+ *
+ * @returns true si quedó transcrita.
+ */
+export async function procesarNota(args: {
+  msgId: string;
+  rideId: string;
+  senderRole: string;
+  audioPath: string;
+  mime: string | null;
+  sourceLang: string;
+  targetLang: string;
+  intentosPrevios?: number;
+}): Promise<boolean> {
+  const { msgId, rideId, senderRole, audioPath, mime, sourceLang, targetLang } = args;
+  const intento = (args.intentosPrevios ?? 0) + 1;
+
+  try {
+    const transcript = await transcribirNota(audioPath, normalizarMime(mime), sourceLang);
+
+    if (!transcript) {
+      // Se agotaron los intentos: `failed` para que la app lo diga y el cron
+      // deje de intentarlo. Si no, sigue `pending` y el barrido vuelve luego.
+      const agotado = intento >= MAX_INTENTOS;
+      await supabaseAdmin
+        .from('ride_chats')
+        .update({
+          transcript_attempts: intento,
+          transcript_status: agotado ? 'failed' : 'pending',
+        })
+        .eq('id', msgId);
+
+      if (agotado) {
+        log.warn({ msgId, intento }, 'nota de voz sin transcribir tras agotar los intentos');
+        broadcastChatTranscript(rideId, { id: msgId, senderRole, transcript: '', status: 'failed' });
+      }
+      return false;
+    }
+
+    const traducido = await translateText(transcript, sourceLang, targetLang);
+    const transcriptTranslated = traducido !== transcript ? traducido : undefined;
+
+    const { error } = await supabaseAdmin
+      .from('ride_chats')
+      .update({
+        transcript,
+        transcript_translated: transcriptTranslated ?? null,
+        transcript_status: 'done',
+        transcript_attempts: intento,
+      })
+      .eq('id', msgId);
+
+    if (error) {
+      log.error({ err: error.message, msgId }, 'no se pudo guardar la transcripción');
+      return false;
+    }
+
+    broadcastChatTranscript(rideId, { id: msgId, senderRole, transcript, transcriptTranslated, status: 'done' });
+    return true;
+  } catch (err) {
+    const mensaje = err instanceof Error ? err.message : String(err);
+    log.error({ msgId, err: mensaje, intento }, 'procesarNota falló');
+    await supabaseAdmin
+      .from('ride_chats')
+      .update({
+        transcript_attempts: intento,
+        transcript_status: intento >= MAX_INTENTOS ? 'failed' : 'pending',
+      })
+      .eq('id', msgId)
+      .then(() => {}, () => {});
+    return false;
   }
 }
