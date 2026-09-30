@@ -607,6 +607,15 @@ export async function runMigrations() {
     // Un archivo, un mensaje: evita que el mismo voiceNoteId se envíe dos veces.
     await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ride_chats_audio_path ON ride_chats(audio_path) WHERE audio_path IS NOT NULL`);
 
+    // Transcripción de la nota de voz y su traducción. `original_text` se deja
+    // como está ('Voice message'): es lo que distingue una nota de un mensaje
+    // escrito en las vistas previas y en el cliente, y cambiarlo rompería ambas.
+    await client.query(`
+      ALTER TABLE ride_chats
+        ADD COLUMN IF NOT EXISTS transcript            TEXT,
+        ADD COLUMN IF NOT EXISTS transcript_translated TEXT;
+    `);
+
     // ─── Driver Scoring & Verification ───────────────────────────────────────
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS priority_score     NUMERIC(4,2) DEFAULT 1.00`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS trips_completed    INTEGER      DEFAULT 0`);

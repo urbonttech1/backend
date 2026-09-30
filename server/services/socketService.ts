@@ -731,6 +731,22 @@ export function broadcastChatMessage(rideId: string, msg: {
 }
 
 /**
+ * A voice note's transcript arrived after the message was already delivered.
+ *
+ * Transcribing takes a couple of seconds and the audio must not wait for it, so
+ * the message is sent first and patched here. Clients that never receive this
+ * event simply show the note without a transcript, exactly as before.
+ */
+export function broadcastChatTranscript(rideId: string, patch: {
+  id: string;
+  transcript: string;
+  transcriptTranslated?: string;
+}): void {
+  if (!io) return;
+  io.to(`ride-chat:${rideId}`).emit('chat:message_updated', { rideId, ...patch });
+}
+
+/**
  * Is this user currently joined to the ride's private chat room?
  *
  * Used to decide whether a chat message also needs a push. A socket in the room

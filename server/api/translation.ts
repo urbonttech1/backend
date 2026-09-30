@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
-import { broadcastChatMessage, isUserWatchingChat } from '../services/socketService';
+import { broadcastChatMessage, broadcastChatTranscript, isUserWatchingChat } from '../services/socketService';
+import { transcribirNota } from '../services/voiceTranscription';
 import { notifyUser } from '../services/fcm';
 import { chatMessage } from '../services/notificationTemplates';
 import { vistaPreviaMensaje } from '../services/chatPreview';
@@ -291,6 +292,19 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
     // never fail the send, the message is already stored and broadcast.
     void notifyChatRecipient(rideId, senderRole, isVoiceNote ? '' : originalText);
 
+    // Transcribir tarda un par de segundos y el audio no puede esperar: el
+    // mensaje ya salió, esto lo alcanza después y parchea la fila.
+    if (audio) {
+      void transcribirYTraducir({
+        msgId,
+        rideId,
+        audioPath: audio.path,
+        mime: audio.mimeType,
+        sourceLang: sourceLang || 'en',
+        targetLang: targetLang || 'es',
+      });
+    }
+
     return res.json({
       conversationId: msgId,
       originalText,
@@ -326,7 +340,7 @@ translationRouter.get('/messages/:rideId', requireSupabaseAuth, async (req: Requ
 
   const { data, error } = await supabaseAdmin
     .from('ride_chats')
-    .select('id, ride_id, sender_role, original_text, translated_text, source_lang, target_lang, created_at, audio_path, audio_mime, audio_duration_ms')
+    .select('id, ride_id, sender_role, original_text, translated_text, source_lang, target_lang, created_at, audio_path, audio_mime, audio_duration_ms, transcript, transcript_translated')
     .eq('ride_id', rideId)
     .order('created_at', { ascending: true })
     .limit(200);
@@ -464,5 +478,44 @@ async function notifyChatRecipient(
     await notifyUser(recipientId, chatMessage(rideId, senderRole, body));
   } catch (err) {
     log.error({ err: errMsg(err), rideId }, 'chat push notification failed');
+  }
+}
+
+
+/**
+ * Transcribe la nota, la traduce y parchea la fila.
+ *
+ * Va fuera del ciclo de la petición a propósito: el que graba ya recibió su
+ * respuesta y el que escucha ya tiene el audio. Si algo de esto falla, el
+ * mensaje se queda como estaba antes de que existiera la transcripción.
+ */
+async function transcribirYTraducir(args: {
+  msgId: string;
+  rideId: string;
+  audioPath: string;
+  mime: string;
+  sourceLang: string;
+  targetLang: string;
+}): Promise<void> {
+  const { msgId, rideId, audioPath, mime, sourceLang, targetLang } = args;
+  try {
+    const transcript = await transcribirNota(audioPath, normalizarMime(mime), sourceLang);
+    if (!transcript) return;
+
+    const traducido = await translateText(transcript, sourceLang, targetLang);
+    const transcriptTranslated = traducido !== transcript ? traducido : undefined;
+
+    const { error } = await supabaseAdmin
+      .from('ride_chats')
+      .update({ transcript, transcript_translated: transcriptTranslated ?? null })
+      .eq('id', msgId);
+    if (error) {
+      log.error({ err: error.message, msgId }, 'no se pudo guardar la transcripción');
+      return;
+    }
+
+    broadcastChatTranscript(rideId, { id: msgId, transcript, transcriptTranslated });
+  } catch (err) {
+    log.error({ err: errMsg(err), msgId }, 'transcripción de nota de voz falló');
   }
 }
