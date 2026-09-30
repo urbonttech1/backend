@@ -131,6 +131,28 @@ La API de traducción de audio de OpenAI **solo traduce hacia inglés**. URBONT
 necesita es ↔ en ↔ fr ↔ pt, así que se transcribe primero y se traduce después
 con el mismo modelo de chat que ya usa el texto.
 
+### Qué pasa cuando falla
+
+La transcripción se lanza **fuera del ciclo de la petición**, así que un reinicio
+del proceso la perdía y la nota se quedaba sin texto para siempre, sin que nadie
+lo reintentara y sin que la app pudiera distinguir "aún no" de "no se pudo".
+
+Ahora cada nota lleva estado:
+
+| `transcript_status` | Significa | Qué ve el usuario |
+|---|---|---|
+| `pending` | encolada o en curso | "Transcribiendo…" con un spinner |
+| `done` | lista | el texto traducido, y el original en cursiva |
+| `failed` | se agotaron los 3 intentos | "No se pudo transcribir esta nota" |
+
+`retranscribirNotasPendientes()` barre cada 2 minutos las notas en `pending` con
+menos de `MAX_INTENTOS` y más de un minuto de antigüedad (el margen evita pisar
+una petición que aún está trabajando). Sube el contador de intentos **antes** de
+llamar a la API, con un reclamo atómico, así dos instancias no transcriben la
+misma nota ni se paga dos veces la llamada.
+
+El audio siempre se puede reproducir, pase lo que pase con la transcripción.
+
 ### Credencial
 
 Reusa la clave de OpenAI que ya administra el panel (`translationConfig`). **No
@@ -154,7 +176,12 @@ En `server/db/migrations.ts`, idempotente:
 ```sql
 ALTER TABLE ride_chats
   ADD COLUMN IF NOT EXISTS transcript            TEXT,
-  ADD COLUMN IF NOT EXISTS transcript_translated TEXT;
+  ADD COLUMN IF NOT EXISTS transcript_translated TEXT,
+  ADD COLUMN IF NOT EXISTS transcript_status     VARCHAR(12),
+  ADD COLUMN IF NOT EXISTS transcript_attempts   SMALLINT NOT NULL DEFAULT 0;
+
+CREATE INDEX idx_ride_chats_transcript_pendiente
+  ON ride_chats(transcript_status, created_at) WHERE transcript_status = 'pending';
 ```
 
 Se aplica sola al arrancar. No requiere paso manual ni ventana de mantenimiento:
