@@ -2,7 +2,9 @@ import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
-import { broadcastChatMessage } from '../services/socketService';
+import { broadcastChatMessage, isUserWatchingChat } from '../services/socketService';
+import { notifyUser } from '../services/fcm';
+import { chatMessage } from '../services/notificationTemplates';
 import { vistaPreviaMensaje } from '../services/chatPreview';
 import { requireSupabaseAuth } from '../middleware';
 import {
@@ -283,6 +285,12 @@ translationRouter.post('/speak', async (req: Request, res: Response) => {
       ...audioCampos,
     });
 
+    // The socket only reaches an app that is open. Push is what makes the
+    // message arrive when it is backgrounded or killed — which is most of the
+    // time a driver is actually driving. Fire-and-forget: a failed push must
+    // never fail the send, the message is already stored and broadcast.
+    void notifyChatRecipient(rideId, senderRole, isVoiceNote ? '' : originalText);
+
     return res.json({
       conversationId: msgId,
       originalText,
@@ -417,3 +425,44 @@ translationRouter.get('/driver-conversations', requireSupabaseAuth, async (req: 
     return res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 });
+
+
+/**
+ * Push the message to whichever party did not send it.
+ *
+ * Skipped when that user already has a socket in the ride's chat room: the app
+ * is open on the conversation, so a banner would only duplicate what they are
+ * looking at. Any lookup failure falls through to sending — a redundant banner
+ * is a smaller problem than a message nobody sees.
+ */
+async function notifyChatRecipient(
+  rideId: string,
+  senderRole: 'chauffeur' | 'passenger',
+  preview: string,
+): Promise<void> {
+  try {
+    const { data: ride } = await supabaseAdmin
+      .from('rides')
+      .select('passenger_id, driver_id, ride_status')
+      .eq('id', rideId)
+      .maybeSingle();
+    if (!ride) return;
+
+    // Once a ride is over the conversation is history, not something to
+    // interrupt someone for.
+    const status = String((ride as Record<string, unknown>).ride_status ?? '');
+    if (['completed', 'cancelled', 'canceled'].includes(status)) return;
+
+    const recipientId = senderRole === 'chauffeur'
+      ? String((ride as Record<string, unknown>).passenger_id ?? '')
+      : String((ride as Record<string, unknown>).driver_id ?? '');
+    if (!recipientId) return;
+
+    if (await isUserWatchingChat(rideId, recipientId)) return;
+
+    const body = preview.trim() || '🎤 Voice message';
+    await notifyUser(recipientId, chatMessage(rideId, senderRole, body));
+  } catch (err) {
+    log.error({ err: errMsg(err), rideId }, 'chat push notification failed');
+  }
+}

@@ -160,6 +160,37 @@ export const passengerNotif = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Chat — either direction
+// ─────────────────────────────────────────────────────────────────────────────
+const CHAT_PREVIEW_MAX = 120;
+
+/**
+ * A message the other party sent during a ride.
+ *
+ * Chat only travelled over the socket before, so a backgrounded app received
+ * nothing at all — the most common way to miss a driver asking where you are.
+ */
+export function chatMessage(
+  rideId: string,
+  fromRole: 'chauffeur' | 'passenger',
+  preview: string,
+  senderName?: string,
+): PushTemplate {
+  const who = senderName?.trim()
+    || (fromRole === 'chauffeur' ? 'Your chauffeur' : 'Your passenger');
+
+  const body = preview.length > CHAT_PREVIEW_MAX
+    ? `${preview.slice(0, CHAT_PREVIEW_MAX - 1)}…`
+    : preview;
+
+  return {
+    title: who,
+    body,
+    data: { type: 'chat_message', ride_id: rideId, from_role: fromRole, screen: 'ride_chat' },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Driver / Chauffeur
 // ─────────────────────────────────────────────────────────────────────────────
 export const driverNotif = {

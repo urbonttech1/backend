@@ -718,6 +718,8 @@ export function broadcastChatMessage(rideId: string, msg: {
   audioUrlExpiresAt?: string;
   mimeType?: string;
   durationMs?: number | null;
+  // Sent by translation.ts so the client can pick which text to show.
+  targetLang?: string;
 }): void {
   if (!io) return;
   // Private room — only sockets whose authenticated userId matched this
@@ -726,6 +728,27 @@ export function broadcastChatMessage(rideId: string, msg: {
   // `ride:${rideId}` room — that one is intentionally joinable by anyone
   // with the ride's UUID (public tracking links) and must never carry chat.
   io.to(`ride-chat:${rideId}`).emit('chat:new_message', { rideId, ...msg });
+}
+
+/**
+ * Is this user currently joined to the ride's private chat room?
+ *
+ * Used to decide whether a chat message also needs a push. A socket in the room
+ * means the app is open and on that ride, so a banner would be redundant; when
+ * the app goes to the background the socket drops within seconds and the push
+ * becomes the only way the message arrives.
+ *
+ * Never throws: on any failure it reports false, so the push is sent. Missing a
+ * message is worse than showing one banner too many.
+ */
+export async function isUserWatchingChat(rideId: string, userId: string): Promise<boolean> {
+  if (!io || !userId) return false;
+  try {
+    const sockets = await io.in(`ride-chat:${rideId}`).fetchSockets();
+    return sockets.some((s) => (s.handshake.auth as { userId?: string } | undefined)?.userId === userId);
+  } catch {
+    return false;
+  }
 }
 
 export function getIO(): SocketIOServer | null {
