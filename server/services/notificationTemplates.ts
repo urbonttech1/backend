@@ -202,6 +202,24 @@ export const driverNotif = {
     };
   },
 
+  // A chauffeur who accepted a reservation days ago needs the same lead time a
+  // passenger gets. Before this, the first thing they heard was "leave now".
+  reservationTomorrow(rideId: string, timeLabel: string): PushTemplate {
+    return {
+      title: 'Reservation tomorrow',
+      body: `You have a reserved ride tomorrow at ${timeLabel}. Plan your day around it.`,
+      data: { type: 'driver_reminder_24h', ride_id: rideId, screen: 'driver_home' },
+    };
+  },
+
+  reservationInOneHour(rideId: string, timeLabel: string): PushTemplate {
+    return {
+      title: 'Reservation in 1 hour',
+      body: `Your reserved pickup is at ${timeLabel}. Make sure you can be there.`,
+      data: { type: 'driver_reminder_1h', ride_id: rideId, screen: 'driver_home' },
+    };
+  },
+
   scheduledRideOffer(rideId: string, vehicleType: string, address: string, whenLabel: string): PushTemplate {
     const short = address.length > 55 ? address.slice(0, 52) + '...' : address;
     return {

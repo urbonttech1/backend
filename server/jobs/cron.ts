@@ -558,14 +558,14 @@ async function sendScheduledRideReminders() {
     const [res24h, res1h] = await Promise.all([
       supabaseAdmin
         .from('rides')
-        .select('id, passenger_id, scheduled_at')
+        .select('id, passenger_id, driver_id, scheduled_at')
         .eq('ride_status', 'scheduled')
         .eq('reminder_24h_sent', false)
         .gte('scheduled_at', win24hLow)
         .lte('scheduled_at', win24hHigh),
       supabaseAdmin
         .from('rides')
-        .select('id, passenger_id, scheduled_at')
+        .select('id, passenger_id, driver_id, scheduled_at')
         .eq('ride_status', 'scheduled')
         .eq('reminder_1h_sent', false)
         .gte('scheduled_at', win1hLow)
@@ -576,7 +576,7 @@ async function sendScheduledRideReminders() {
       new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
 
     let count24h = 0;
-    for (const ride of (res24h.data ?? []) as Array<{ id: string; passenger_id: string | null; scheduled_at: string }>) {
+    for (const ride of (res24h.data ?? []) as Array<{ id: string; passenger_id: string | null; driver_id: string | null; scheduled_at: string }>) {
       if (!ride.passenger_id) continue;
       // Atomic claim before send
       const { data: claimed } = await supabaseAdmin
@@ -591,10 +591,14 @@ async function sendScheduledRideReminders() {
       count24h++;
       const timeLabel = format(ride.scheduled_at);
       notifyUser(String(ride.passenger_id), passengerNotif.scheduled24h(ride.id, timeLabel)).catch(() => {});
+      // The assigned chauffeur gets the same lead time as the passenger.
+      if (ride.driver_id) {
+        notifyUser(String(ride.driver_id), driverNotif.reservationTomorrow(ride.id, timeLabel)).catch(() => {});
+      }
     }
 
     let count1h = 0;
-    for (const ride of (res1h.data ?? []) as Array<{ id: string; passenger_id: string | null; scheduled_at: string }>) {
+    for (const ride of (res1h.data ?? []) as Array<{ id: string; passenger_id: string | null; driver_id: string | null; scheduled_at: string }>) {
       if (!ride.passenger_id) continue;
       // Atomic claim before send
       const { data: claimed } = await supabaseAdmin
@@ -609,6 +613,9 @@ async function sendScheduledRideReminders() {
       count1h++;
       const timeLabel = format(ride.scheduled_at);
       notifyUser(String(ride.passenger_id), passengerNotif.scheduled1h(ride.id, timeLabel)).catch(() => {});
+      if (ride.driver_id) {
+        notifyUser(String(ride.driver_id), driverNotif.reservationInOneHour(ride.id, timeLabel)).catch(() => {});
+      }
     }
 
     const total = count24h + count1h;
