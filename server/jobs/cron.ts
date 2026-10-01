@@ -736,6 +736,41 @@ async function resetStaleStreaks() {
 }
 
 // ── Auto-flag dormant drivers (30+ days no activity) ─────────────────────────
+/**
+ * Caduca el `is_online` de conductores que llevan horas sin dar senal.
+ *
+ * Antes lo hacia el handler de `disconnect` del socket, que marcaba offline en
+ * cuanto se caia la conexion; se quito porque iOS suspende el WebView al pasar
+ * la app a segundo plano y dejaba offline a un conductor que seguia trabajando.
+ * Sin ese handler nadie limpiaba la columna, asi que quien cierra la app y no
+ * vuelve se quedaba `is_online = true` indefinidamente.
+ *
+ * Esto NO decide a quien se despacha: de eso se encarga el filtro de frescura
+ * de `notifyNearbyDrivers`, que solo mira filas con `updated_at` reciente. Aqui
+ * solo se limpia la bandera para que refleje la realidad en el panel y en las
+ * consultas que la usan sin mirar la frescura.
+ */
+const ONLINE_STALE_HOURS = 8;
+
+async function expireStaleOnlineDrivers() {
+  try {
+    const cutoff = new Date(Date.now() - ONLINE_STALE_HOURS * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabaseAdmin
+      .from('driver_locations')
+      .update({ is_online: false, updated_at: new Date().toISOString() })
+      .eq('is_online', true)
+      .lt('updated_at', cutoff)
+      .select('driver_id');
+
+    if (error) throw error;
+    if (data?.length) {
+      log.info({ count: data.length, hours: ONLINE_STALE_HOURS }, '[CRON] Conductores marcados offline por inactividad');
+    }
+  } catch (err: unknown) {
+    log.error({ err }, '[CRON] expireStaleOnlineDrivers failed');
+  }
+}
+
 async function flagInactiveDrivers() {
   try {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -914,6 +949,12 @@ export async function startCronJobs() {
     autoSurge();
   });
   log.info('[CRON] Auto-surge pricing scheduled every 5 minutes.');
+
+  // Caducidad del estado "conectado": cada 30 minutos basta, el umbral es de horas.
+  cron.schedule('*/30 * * * *', () => {
+    expireStaleOnlineDrivers();
+  });
+  log.info(`[CRON] Stale online-driver expiry scheduled every 30 minutes (${ONLINE_STALE_HOURS}h threshold).`);
 
   // Cada minuto: el plazo para encontrar reemplazo es de minutos, no de horas.
   cron.schedule('* * * * *', () => {
