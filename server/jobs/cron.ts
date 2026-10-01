@@ -757,7 +757,11 @@ async function expireStaleOnlineDrivers() {
     const cutoff = new Date(Date.now() - ONLINE_STALE_HOURS * 60 * 60 * 1000).toISOString();
     const { data, error } = await supabaseAdmin
       .from('driver_locations')
-      .update({ is_online: false, updated_at: new Date().toISOString() })
+      // `updated_at` NO se toca: es la senal de frescura que usa
+      // notifyNearbyDrivers para saber si la posicion sigue viva. Escribirla
+      // aqui dejaria a un conductor muerto pareciendo recien visto, que es justo
+      // lo que hacia mal el handler de disconnect que se quito.
+      .update({ is_online: false })
       .eq('is_online', true)
       .lt('updated_at', cutoff)
       .select('driver_id');
