@@ -11,6 +11,12 @@ import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore
 import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
 import { ensureComisionFresh, guardarComision, comoPorcentaje as comoPorcentajeComision, COMISION_MAXIMA } from '../services/commissionConfig';
 import { cargarConfigTraduccion, guardarConfigTraduccion, estadoConfigTraduccion } from '../services/translationConfig';
+import {
+  estadoSurge, resolverSurge, guardarAutoEnabled, guardarManual,
+  SURGE_MIN, SURGE_MAX,
+} from '../services/surgeConfig';
+import { getTimeSurge as getTimeSurgeActual } from '../config/pricing';
+import { getIo } from '../services/socketService';
 import { getPlatformCommission } from '../config/pricing';
 import { normalizarDocumentoAdmin, CATEGORIAS_CONOCIDAS } from '../services/docCatalog';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
@@ -995,6 +1001,122 @@ adminRouter.put("/fares/tax", async (req: Request, res: Response) => {
   if (tasa === undefined) return res.status(500).json({ error: 'No se pudo guardar la tasa de impuesto.' });
 
   return res.json({ success: true, taxFallbackRatePercent: comoPorcentaje(tasa) });
+});
+
+// ─── Recargo por demanda (surge) ─────────────────────────────────────────────
+// Rutas dedicadas en vez de la whitelist de texto libre de `PUT /config/:key`,
+// que no valida rangos y permitía pisar el candado manual sin enterarse.
+
+/** Todo lo que la tarjeta del panel necesita, en una sola llamada. */
+async function estadoSurgeCompleto() {
+  const cfg = await estadoSurge(true);
+  const franja = getTimeSurgeActual();
+  const { value, origin } = resolverSurge(cfg, franja);
+  return {
+    ...cfg,
+    timeSurgeMultiplier: franja,
+    effectiveMultiplier: value,
+    origin,
+    bounds: { min: SURGE_MIN, max: SURGE_MAX },
+    autoIntervalMinutes: 5,
+    autoLadder: [
+      { ratio: 1.0, multiplier: 1.15 },
+      { ratio: 1.5, multiplier: 1.3 },
+      { ratio: 2.0, multiplier: 1.5 },
+      { ratio: 3.0, multiplier: 2.0 },
+    ],
+  };
+}
+
+/** Avisa a las apps abiertas; si no, se quedan con el valor del arranque. */
+function avisarCambioSurge(previous: number, current: number) {
+  try {
+    getIo()?.emit('surge:changed', {
+      previous,
+      current,
+      dropped: previous > 1.0 && current === 1.0,
+    });
+  } catch (e) {
+    logger.warn({ err: errMsg(e) }, '[admin/surge] no se pudo emitir surge:changed');
+  }
+}
+
+async function auditarSurge(req: Request, action: string, target: string) {
+  try {
+    await pgPool.query(
+      `INSERT INTO audit_logs (admin_name, action, target, ip) VALUES ($1, $2, $3, $4)`,
+      [req.adminUser?.name || req.adminUser?.email || 'desconocido', action, target, req.ip ?? null],
+    );
+  } catch (e) {
+    logger.warn({ err: errMsg(e) }, '[admin/surge] no se pudo registrar en audit_logs');
+  }
+}
+
+adminRouter.get("/surge", async (_req: Request, res: Response) => {
+  try {
+    res.json(await estadoSurgeCompleto());
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/surge] lectura');
+    res.status(500).json({ error: 'No se pudo leer el estado del recargo.' });
+  }
+});
+
+adminRouter.put("/surge/auto", async (req: Request, res: Response) => {
+  const { enabled } = (req.body ?? {}) as { enabled?: unknown };
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled debe ser true o false.', errorCode: 'INVALID_ENABLED', field: 'enabled' });
+  }
+  try {
+    const antes = await estadoSurgeCompleto();
+    await guardarAutoEnabled(enabled, req.adminUser?.email || 'admin');
+    const despues = await estadoSurgeCompleto();
+    avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
+    await auditarSurge(req, 'surge.auto.toggle', enabled ? 'encendido' : 'apagado');
+    res.json(despues);
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/surge] toggle');
+    res.status(500).json({ error: 'No se pudo cambiar el recargo automático.' });
+  }
+});
+
+adminRouter.put("/surge/manual", async (req: Request, res: Response) => {
+  const { multiplier, reason } = (req.body ?? {}) as { multiplier?: unknown; reason?: unknown };
+  try {
+    const antes = await estadoSurgeCompleto();
+    const cfg = await guardarManual(
+      multiplier,
+      typeof reason === 'string' ? reason : null,
+      req.adminUser?.email || 'admin',
+    );
+    if (!cfg) {
+      return res.status(400).json({
+        error: `El multiplicador debe ser un número entre ${SURGE_MIN} y ${SURGE_MAX}.`,
+        errorCode: 'INVALID_MULTIPLIER',
+        field: 'multiplier',
+      });
+    }
+    const despues = await estadoSurgeCompleto();
+    avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
+    await auditarSurge(req, 'surge.manual.set', `${cfg.manualMultiplier}x${cfg.manualReason ? ` (${cfg.manualReason})` : ''}`);
+    res.json(despues);
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/surge] fijar manual');
+    res.status(500).json({ error: 'No se pudo fijar el recargo manual.' });
+  }
+});
+
+adminRouter.delete("/surge/manual", async (req: Request, res: Response) => {
+  try {
+    const antes = await estadoSurgeCompleto();
+    await guardarManual(null, null, req.adminUser?.email || 'admin');
+    const despues = await estadoSurgeCompleto();
+    avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
+    await auditarSurge(req, 'surge.manual.release', 'liberado');
+    res.json(despues);
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/surge] liberar manual');
+    res.status(500).json({ error: 'No se pudo liberar el recargo manual.' });
+  }
 });
 
 // GET /api/admin/settings/translation — estado de la key de OpenAI del traductor
@@ -2446,7 +2568,10 @@ adminRouter.put("/config/:key", async (req: Request, res: Response) => {
   // `service_area_km` salió de esta lista: el área de servicio vive en
   // `service_zones` y se edita desde /zones. Seguir aceptándola aquí dejaba una
   // perilla que se guardaba, no fallaba, y no cambiaba absolutamente nada.
-  const safeKeys = ['maintenance_mode', 'min_version', 'surge_multiplier', 'surge_reason', 'scheduled_claim_lead_minutes'];
+  // `surge_multiplier` y `surge_reason` ya no están: son espejos derivados que
+  // escribe sólo `services/surgeConfig`. Editarlas aquí a pelo pisaba el candado
+  // manual y el cron las revertía al siguiente tick. Se cambian por /admin/surge.
+  const safeKeys = ['maintenance_mode', 'min_version', 'scheduled_claim_lead_minutes'];
   if (!safeKeys.includes(req.params.key)) return res.status(400).json({ error: 'Config key not editable' });
   if (req.params.key === 'scheduled_claim_lead_minutes') {
     const minutes = parseInt(String(value), 10);

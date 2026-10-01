@@ -6,6 +6,7 @@ import { getTimeSurge, getFareClasses, getPricingPolicy, VEHICLE_ALIAS } from ".
 import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
 import { telefonoEmergencias } from "../services/driverIncident";
 import { claveDeNavegador, mapIdPublicado } from '../services/mapsKeys';
+import { surgeVigente, estadoSurge, resolverSurge, guardarManual } from '../services/surgeConfig';
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -17,36 +18,19 @@ const DEFAULTS = {
 };
 
 /**
- * Surge que un admin fijó a mano en `app_config`, combinado con el de franja
- * horaria. Se toma el MAYOR de los dos, que es la regla que la app ya aplica
- * (`screen-renderer.tsx:917`): un recargo manual por un evento puntual no debe
- * quedar anulado por la franja, ni al revés.
+ * El recargo que se va a cobrar de verdad.
  *
- * Cachea 60 s: se consulta en cada cotización y el valor cambia muy de vez en
- * cuando. Ante un fallo de lectura devuelve sólo el de franja horaria — nunca
- * lanza, porque dejaría sin precio a toda la app.
+ * La regla y la caché viven ahora en `services/surgeConfig`, que es el único
+ * sitio que escribe el estado: antes el cron y el admin se pisaban la misma
+ * clave y la caché local de aquí no se invalidaba nunca, así que un cambio
+ * tardaba hasta 60 s en verse. Se conserva el nombre y la firma porque esto lo
+ * llaman las cuatro rutas del camino de precios.
+ *
+ * Igual que antes: nunca lanza. Ante un fallo de lectura degrada a la franja
+ * horaria, porque una excepción aquí deja sin precio a toda la plataforma.
  */
-let surgeCache: { value: number; at: number } | null = null;
-const SURGE_TTL_MS = 60_000;
-
 export async function getEffectiveSurge(now: Date = new Date()): Promise<number> {
-  const timeSurge = getTimeSurge(now);
-
-  if (surgeCache && Date.now() - surgeCache.at < SURGE_TTL_MS) {
-    return Math.max(timeSurge, surgeCache.value);
-  }
-
-  try {
-    const { rows } = await pool.query<{ value: string }>(
-      `SELECT value FROM app_config WHERE key = 'surge_multiplier'`
-    );
-    const manual = parseFloat(rows[0]?.value ?? '1') || 1;
-    surgeCache = { value: manual, at: Date.now() };
-    return Math.max(timeSurge, manual);
-  } catch (err) {
-    log.warn({ err: (err as Error).message }, 'no se pudo leer surge_multiplier — se usa sólo la franja horaria');
-    return timeSurge;
-  }
+  return surgeVigente(now);
 }
 
 /**
@@ -130,10 +114,13 @@ configRouter.get("/", async (req: Request, res: Response) => {
   // restringida por referente. Ver `mapsKeys.ts`.
   const googleMapsApiKey = claveDeNavegador(process.env);
   const googleMapsMapId  = mapIdPublicado(process.env);
-  // El recargo que se va a cobrar de verdad: el mayor entre el manual del panel y
-  // el de la franja horaria. `surge_multiplier` sigue siendo sólo el manual, para
-  // no cambiarle el significado a lo que ya lee la app.
+  // El recargo que se va a cobrar de verdad. `surge_multiplier` es el que ha
+  // decidido la plataforma sin contar la franja horaria: lo escribe sólo
+  // `services/surgeConfig`, que resuelve entre el candado manual y el automático.
   const surgeEfectivo = await getEffectiveSurge();
+  const origenSurge = await estadoSurge()
+    .then(e => resolverSurge(e, getTimeSurge()).origin)
+    .catch(() => null);
   try {
     const { rows } = await pool.query<{ key: string; value: string }>(
       'SELECT key, value FROM app_config'
@@ -145,9 +132,10 @@ configRouter.get("/", async (req: Request, res: Response) => {
       min_version:      cfg['min_version'] ?? DEFAULTS.min_version,
       surge_multiplier: parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier)),
       multiplier:       parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier)),
-      surgeReason:      cfg['surge_reason'] ?? null,
+      surgeReason:      cfg['surge_reason'] || null,
       time_surge_multiplier:      getTimeSurge(),
       effective_surge_multiplier: surgeEfectivo,
+      surge_origin:               origenSurge,
       stripePublishableKey,
       googleMapsApiKey,
       googleMapsMapId,
@@ -274,14 +262,17 @@ configRouter.get("/surge", async (_req: Request, res: Response) => {
     );
     const cfg: Record<string, string> = {};
     for (const row of rows) cfg[row.key] = row.value;
-    // `surge_multiplier` es sólo el recargo manual del panel. El que se cobra es
-    // `effective_surge_multiplier`: el mayor entre ése y el de la franja horaria.
-    // La app lo pedía con una cotización de 0 km porque no se publicaba en ningún lado.
+    // `surge_multiplier` es el recargo que la plataforma ha decidido, sin contar
+    // la franja horaria. El que se cobra es `effective_surge_multiplier`.
+    // `surge_origin` dice de dónde sale, para no tener que adivinarlo.
+    const estado = await estadoSurge().catch(() => null);
     res.json({
       surge_multiplier: parseFloat(cfg['surge_multiplier'] ?? '1.0'),
-      surge_reason:     cfg['surge_reason'] ?? null,
+      surge_reason:     cfg['surge_reason'] || null,
       time_surge_multiplier:      getTimeSurge(),
       effective_surge_multiplier: await getEffectiveSurge(),
+      surge_origin:       estado ? resolverSurge(estado, getTimeSurge()).origin : null,
+      surge_auto_enabled: estado ? estado.autoEnabled : null,
     });
   } catch {
     res.json({
@@ -297,19 +288,18 @@ configRouter.get("/surge", async (_req: Request, res: Response) => {
 configRouter.put("/surge", requireSupabaseAuth, async (req: Request, res: Response) => {
   const role = req.supabaseRole || 'passenger';
   if (role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+  // Fija el candado manual, no la clave a pelo: escribirla directamente dejaba
+  // una segunda vía que el cron pisaba a los cinco minutos.
   const { multiplier } = req.body as { multiplier?: number };
-  if (!multiplier || multiplier < 1.0 || multiplier > 5.0) {
-    return res.status(400).json({ error: 'multiplier must be between 1.0 and 5.0' });
-  }
   try {
-    await pool.query(
-      `INSERT INTO app_config (key, value, updated_at) VALUES ($1, $2, NOW())
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-      ['surge_multiplier', String(multiplier)]
-    );
-    log.info({ multiplier }, 'surge multiplier updated');
-    res.json({ applied: true, surge_multiplier: multiplier });
+    const cfg = await guardarManual(multiplier, null, req.supabaseUid ?? 'admin');
+    if (!cfg) {
+      return res.status(400).json({ error: 'multiplier must be between 1.0 and 5.0' });
+    }
+    log.info({ multiplier: cfg.manualMultiplier }, 'surge manual lock set');
+    res.json({ applied: true, surge_multiplier: cfg.manualMultiplier });
   } catch (err: any) {
+    log.error({ err: err.message }, 'surge update failed');
     res.status(500).json({ error: 'Failed to update surge multiplier' });
   }
 });

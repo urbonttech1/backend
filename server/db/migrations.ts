@@ -534,7 +534,12 @@ export async function runMigrations() {
         ('maintenance_mode', 'false'),
         ('min_version', '1.0.0'),
         ('surge_multiplier', '1.0'),
-        ('scheduled_claim_lead_minutes', '30')
+        ('scheduled_claim_lead_minutes', '30'),
+        -- Estado del recargo por demanda. Se siembra sólo con el interruptor:
+        -- 'parseSurgeConfig' rellena el multiplicador leyendo el
+        -- 'surge_multiplier' que ya hubiera, así una instalación existente
+        -- conserva su valor exacto. Ver server/services/surgeConfig.ts.
+        ('surge_config', '{"autoEnabled":true}')
       ON CONFLICT (key) DO NOTHING;
     `);
 

@@ -14,6 +14,7 @@ import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { notifyUser, sendMulticast } from '../services/fcm';
 import { procesarNota, MAX_INTENTOS } from '../services/voiceTranscription';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
+import { decidirAuto, guardarAuto } from '../services/surgeConfig';
 
 async function anonymizeOldRides() {
   log.info('[CRON] Starting daily PII anonymization job...');
@@ -272,44 +273,36 @@ async function autoSurge() {
     const drivers = onlineDrivers || 0;
     const rides = activeRides || 0;
 
-    // Calculate demand ratio
-    const ratio = drivers > 0 ? rides / drivers : rides;
-    let surgeMultiplier = 1.0;
+    const objetivo = decidirAuto(drivers, rides);
 
-    if (ratio >= 3.0) surgeMultiplier = 2.0;
-    else if (ratio >= 2.0) surgeMultiplier = 1.5;
-    else if (ratio >= 1.5) surgeMultiplier = 1.3;
-    else if (ratio >= 1.0) surgeMultiplier = 1.15;
+    // `guardarAuto` relee el estado dentro de su transacción y con FOR UPDATE:
+    // si un admin acaba de fijar un candado manual o de apagar el automático,
+    // no escribe. Consultarlo desde la caché de 60 s perdería un candado puesto
+    // justo después de la última lectura.
+    const r = await guardarAuto(objetivo);
 
-    // Update surge config
-    const { data: existing } = await supabaseAdmin
-      .from('app_config')
-      .select('value')
-      .eq('key', 'surge_multiplier')
-      .maybeSingle();
+    if (!r.applied) {
+      // El caso "no escribí" importa tanto como el contrario: es la primera
+      // pregunta de un operador cuando el recargo no se mueve.
+      log.info(`[CRON] Surge sin cambios (${r.reason}): objetivo ${objetivo}x, vigente ${r.current}x (${rides} viajes / ${drivers} conductores)`);
+      return;
+    }
 
-    const currentMultiplier = existing?.value ? parseFloat(existing.value) : 1.0;
+    log.info(`[CRON] Surge updated: ${r.previous}x → ${r.current}x (${rides} rides / ${drivers} drivers)`);
 
-    if (Math.abs(currentMultiplier - surgeMultiplier) >= 0.05) {
-      await supabaseAdmin
-        .from('app_config')
-        .upsert({ key: 'surge_multiplier', value: String(surgeMultiplier), updated_at: new Date().toISOString() }, { onConflict: 'key' });
-      log.info(`[CRON] Surge updated: ${currentMultiplier}x → ${surgeMultiplier}x (${rides} rides / ${drivers} drivers)`);
+    // Broadcast surge change to all connected clients
+    const ioInstance = getIo();
+    if (ioInstance) {
+      ioInstance.emit('surge:changed', {
+        previous: r.previous,
+        current: r.current,
+        dropped: r.previous > 1.0 && r.current === 1.0,
+      });
+    }
 
-      // Broadcast surge change to all connected clients
-      const ioInstance = getIo();
-      if (ioInstance) {
-        ioInstance.emit('surge:changed', {
-          previous: currentMultiplier,
-          current: surgeMultiplier,
-          dropped: currentMultiplier > 1.0 && surgeMultiplier === 1.0,
-        });
-      }
-
-      // Notify online drivers when surge activates or increases
-      if (surgeMultiplier > 1.0 && surgeMultiplier > currentMultiplier) {
-        notifyOnlineDriversOfSurge(surgeMultiplier).catch(() => {});
-      }
+    // Notify online drivers when surge activates or increases
+    if (r.current > 1.0 && r.current > r.previous) {
+      notifyOnlineDriversOfSurge(r.current).catch(() => {});
     }
   } catch (err: any) {
     log.error({ err: err }, '[CRON] Auto-surge error');
