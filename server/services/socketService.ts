@@ -627,6 +627,27 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
           if (driverSocketMap.has(userId)) return; // driver is back online
 
           try {
+            // A missing socket is not proof the chauffeur is gone: the OS drops it
+            // the moment they open another app. Reassigning on that alone took the
+            // trip away from a driver who glanced at a message mid-ride.
+            //
+            // GPS is the stronger signal. If the phone is still reporting, the
+            // driver is on the road and the socket is the only thing missing.
+            const { data: loc } = await supabaseAdmin
+              .from('driver_locations')
+              .select('updated_at')
+              .eq('driver_id', userId)
+              .maybeSingle();
+
+            const ultimoPing = loc?.updated_at ? Date.parse(String(loc.updated_at)) : 0;
+            if (Number.isFinite(ultimoPing) && Date.now() - ultimoPing < gracePeriodMs) {
+              log.info(
+                { userId, hace: Math.round((Date.now() - ultimoPing) / 1000) },
+                '[socket] sin socket pero el GPS sigue vivo — no se reasigna',
+              );
+              return;
+            }
+
             const { data: activeRides } = await supabaseAdmin
               .from('rides')
               .select('id, driver_id, ride_status')
