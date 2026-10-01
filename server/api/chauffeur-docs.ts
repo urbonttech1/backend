@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { documentosVigentes } from '../services/docCatalogStore';
+import { esRolValet } from '../services/docCatalog';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
 import { pool } from '../db/pool';
@@ -224,20 +225,25 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
    Con esto la lista es una sola y vive donde se puede cambiar sin publicar una
    versión de la app.
 ────────────────────────────────────────────── */
-chauffeurDocsRouter.get('/required-docs', async (_req: Request, res: Response) => {
-  // Una sola lista para todos, la del catálogo: los documentos ACTIVOS de
-  // `document_catalog`, que el panel administra. Antes había tres esquemas y se
-  // elegía uno según lo que cada conductor tuviera subido, así que dos personas
-  // veían requisitos distintos —el alta móvil pedía once y la web diecisiete—.
-  const activos = await documentosVigentes();
+chauffeurDocsRouter.get('/required-docs', async (req: Request, res: Response) => {
+  // La lista sale del catálogo: los documentos ACTIVOS de `document_catalog`,
+  // que el panel administra. Antes había tres esquemas y se elegía uno según lo
+  // que cada conductor tuviera subido, así que dos personas veían requisitos
+  // distintos —el alta móvil pedía once y la web diecisiete—.
+  //
+  // El rol viaja por query porque este endpoint es público y se consulta antes
+  // de haber iniciado sesión, en pleno formulario de alta. Sin `role` responde
+  // la lista del conductor, que es lo que ya esperaba quien lo llamaba.
+  const rol = typeof req.query.role === 'string' ? req.query.role : null;
+  const activos = await documentosVigentes(rol);
 
   res.json({
     // Hoy una sola lista, sin distinguir país. El día que se decida qué se pide
     // fuera de EE. UU., este endpoint pasa a responder por país y la app no
     // cambia: ya estará leyendo de aquí.
     country: 'US',
-    /** Se mantiene por compatibilidad: la lista ya no depende de quién pregunte. */
-    scope: 'default',
+    /** `valet` cuando se pidió la lista reducida; `default` en los demás casos. */
+    scope: esRolValet(rol) ? 'valet' : 'default',
     docs: activos.map(({ key, label, category, hint, expires }) => ({ key, label, category, hint, expires })),
     totalRequired: activos.length,
     // Todo lo que el servidor acepta guardar, más allá de lo que exige. Incluye

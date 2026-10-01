@@ -24,6 +24,7 @@ import { logger } from '../lib/logger';
 import { esquemaVigente } from './docCatalogStore';
 import {
   REQUIRED_DOC_KEYS,
+  esRolValet,
   normalizarEstadoDoc,
   type DocKey,
   type VerificationStatus,
@@ -37,6 +38,7 @@ export {
   DOC_CATALOG,
   docMeta,
   elegirEsquema,
+  esRolValet,
   normalizarEstadoDoc,
 } from './docCatalog';
 export type { DocKey, DocMeta, VerificationStatus } from './docCatalog';
@@ -77,7 +79,7 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
 
   try {
     const [perfilRes, docsRes] = await Promise.all([
-      supabaseAdmin.from('profiles').select('vehicle').eq('id', driverId).maybeSingle(),
+      supabaseAdmin.from('profiles').select('vehicle, role').eq('id', driverId).maybeSingle(),
       supabaseAdmin.from('driver_documents').select('doc_key, status').eq('driver_id', driverId),
     ]);
 
@@ -86,7 +88,12 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
       return vacio;
     }
 
-    const hasVehicle = tieneVehiculo(perfilRes.data?.vehicle);
+    // El valet trabaja en un local fijo y no conduce, así que ni se le piden los
+    // papeles del vehículo ni tiene sentido exigirle uno para aprobarlo. Sin
+    // esto se quedaba en `pending_documents` para siempre: le faltaban quince
+    // documentos que no le aplican y un vehículo que nunca va a tener.
+    const rolValet = esRolValet(perfilRes.data?.role as string | undefined);
+    const hasVehicle = rolValet ? true : tieneVehiculo(perfilRes.data?.vehicle);
 
     // Un mismo tipo puede tener varias filas si el conductor volvió a subirlo:
     // se queda el estado más favorable, que es el que refleja la última carga
@@ -106,7 +113,7 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
     // usara su criterio, el endpoint le pediría documentos distintos de los que
     // el servidor comprueba. Un documento que el panel desactiva deja de
     // faltar, aunque el conductor nunca lo haya subido.
-    const esquema = await esquemaVigente();
+    const esquema = await esquemaVigente(perfilRes.data?.role as string | undefined);
 
     const missingDocs  = esquema.filter(k => !porTipo.has(k)) as DocKey[];
     const rejectedDocs = esquema.filter(k => porTipo.get(k) === 'rechazado') as DocKey[];
@@ -169,7 +176,7 @@ export interface PermisoOperar {
 export async function puedeOperar(driverId: string): Promise<PermisoOperar> {
   const { data, error } = await supabaseAdmin
     .from('profiles')
-    .select('verification_status, vehicle')
+    .select('verification_status, vehicle, role')
     .eq('id', driverId)
     .maybeSingle();
 
@@ -180,7 +187,8 @@ export async function puedeOperar(driverId: string): Promise<PermisoOperar> {
     return { ok: true, reason: null, code: null };
   }
 
-  if (!tieneVehiculo(data.vehicle)) {
+  // Al valet no se le exige vehículo: atiende desde un local fijo.
+  if (!esRolValet(data.role as string | undefined) && !tieneVehiculo(data.vehicle)) {
     return { ok: false, reason: 'Debes registrar tu vehículo antes de conectarte.', code: 'NO_VEHICLE' };
   }
   if (data.verification_status !== 'approved') {

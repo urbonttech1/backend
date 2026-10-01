@@ -50,6 +50,24 @@ export const WEB_DOC_KEYS = [
   'taxId', 'drugTest', 'backgroundCheck',
 ] as const;
 
+/**
+ * Lo que se le pide a un valet (Valet Front Desk).
+ *
+ * No conduce: trabaja en un local fijo coordinando viajes, así que los permisos
+ * de vehículo, aeropuerto, puerto y limusina no le aplican. Sólo hace falta
+ * verificar su identidad, que es lo que el formulario de /valet ya enseña:
+ * un documento oficial y una foto.
+ *
+ * Son claves que ya existen en el catálogo, así que no hay que dar de alta
+ * ninguna nueva ni tocar `ACCEPTED_DOC_KEYS`.
+ */
+export const VALET_DOC_KEYS = ['license', 'photo'] as const;
+
+/** Roles que usan el esquema reducido del valet. */
+export function esRolValet(role: string | null | undefined): boolean {
+  return role === 'valet' || role === 'concierge';
+}
+
 /** Todo lo que se admite subir, sin importar el esquema. */
 export const ACCEPTED_DOC_KEYS = [
   ...new Set<string>([...REQUIRED_DOC_KEYS, ...LEGACY_DOC_KEYS, ...WEB_DOC_KEYS]),

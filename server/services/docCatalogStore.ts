@@ -13,7 +13,7 @@
  */
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
-import { catalogoSemilla, type DocumentoCatalogo } from './docCatalog';
+import { catalogoSemilla, esRolValet, VALET_DOC_KEYS, type DocumentoCatalogo } from './docCatalog';
 
 const log = pino({ level: 'info' });
 
@@ -65,11 +65,20 @@ export async function catalogoCompleto(): Promise<DocumentoCatalogo[]> {
 }
 
 /** Los que se le piden hoy al conductor. Es contra esta lista que se le evalúa. */
-export async function esquemaVigente(): Promise<readonly string[]> {
-  return (await catalogoCompleto()).filter((d) => d.active).map((d) => d.key);
+export async function esquemaVigente(role?: string | null): Promise<readonly string[]> {
+  return (await documentosVigentes(role)).map((d) => d.key);
 }
 
-/** Metadatos de los activos, tal como los sirve `GET /required-docs`. */
-export async function documentosVigentes(): Promise<DocumentoCatalogo[]> {
-  return (await catalogoCompleto()).filter((d) => d.active);
+/**
+ * Metadatos de los activos, tal como los sirve `GET /required-docs`.
+ *
+ * El valet recibe un subconjunto: no conduce, así que los papeles del vehículo
+ * y los permisos de transporte no le aplican. Se filtra sobre el catálogo
+ * activo —no sobre una lista aparte— para que desactivar un documento desde el
+ * panel siga surtiendo efecto en ambos roles.
+ */
+export async function documentosVigentes(role?: string | null): Promise<DocumentoCatalogo[]> {
+  const activos = (await catalogoCompleto()).filter((d) => d.active);
+  if (!esRolValet(role)) return activos;
+  return activos.filter((d) => (VALET_DOC_KEYS as readonly string[]).includes(d.key));
 }
