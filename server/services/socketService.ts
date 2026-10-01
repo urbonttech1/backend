@@ -604,15 +604,21 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
         unregisterDriverSocket(userId);
         io?.to('nearby_drivers_broadcast').emit('driver:went_offline', { driverId: userId });
 
-        // Mark driver offline in DB immediately so the watchdog can detect it
-        void (async () => {
-          try {
-            await supabaseAdmin
-              .from('driver_locations')
-              .update({ is_online: false, updated_at: new Date().toISOString() })
-              .eq('driver_id', userId);
-          } catch { /* fire-and-forget */ }
-        })();
+        // `is_online` deliberately untouched here. It means "this chauffeur wants
+        // rides", which they set from the app (PATCH /api/drivers/:id/status) —
+        // not "a WebSocket is alive". On a phone the socket dropping is normal:
+        // the OS freezes the app the moment the driver opens WhatsApp.
+        //
+        // Marking them offline here removed them from BOTH dispatch paths, push
+        // included, so a chauffeur who glanced at a message stopped receiving
+        // ride offers until they reopened the app — which is exactly what push
+        // notifications exist to avoid.
+        //
+        // The guard against a driver who force-quit the app is better handled by
+        // freshness: notifyNearbyDrivers only considers rows whose `updated_at`
+        // is under 15 minutes old, and that column is written by real GPS pings.
+        // Touching it here (as this block used to) made a dead driver look fresh,
+        // which was backwards.
 
         // Grace period: if driver doesn't reconnect within 5 min and has an active ride → reassign
         const gracePeriodMs = 5 * 60 * 1000;
