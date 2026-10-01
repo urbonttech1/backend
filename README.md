@@ -93,10 +93,9 @@ admin123
 aws ecr get-login-password --region us-east-1 --profile urbont | docker login --username AWS --password-stdin 083414536603.dkr.ecr.us-east-1.amazonaws.com
 
 
-docker build -t 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest .
+docker build -t 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest . 
 
 
-https://testflight.apple.com/join/WccREBbs
 docker push 083414536603.dkr.ecr.us-east-1.amazonaws.com/urbont-api:latest
 
 
@@ -107,3 +106,4 @@ aws ecs update-service --cluster urbont --service urbont-api \
 aws ecs describe-services --cluster urbont --services urbont-api \
   --query 'services[0].deployments[*].{Status:status,Running:runningCount,Pending:pendingCount}' \
   --output table --region us-east-1 --profile urbont
+
