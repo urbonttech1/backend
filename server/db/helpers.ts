@@ -306,8 +306,10 @@ export async function sendNotification(userId: string, data: Omit<NotificationDo
       user_id: userId,
       title: data.title,
       body: data.body,
+      notif_type: data.type,
       type: data.type,
       read: false,
+      is_read: false,
       created_at: now,
     });
   } catch (err) {

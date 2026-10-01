@@ -213,9 +213,18 @@ export async function sendMulticast(tokens: string[], payload: PushPayload): Pro
     failed += response.failureCount;
 
     response.responses?.forEach((r, idx: number) => {
-      if (!r.success && r.error?.code === 'messaging/registration-token-not-registered') {
+      if (r.success) return;
+      if (r.error?.code === 'messaging/registration-token-not-registered') {
         staleTokens.push(chunk[idx]);
+        return;
       }
+      // Cualquier otro fallo se perdia: el multicast solo devolvia un contador
+      // y no habia forma de saber por que no llegaba una notificacion. El codigo
+      // distingue entre token invalido, credencial APNs ausente y payload malo.
+      log.warn(
+        { code: r.error?.code, err: r.error?.message, token: chunk[idx].slice(-8) },
+        'FCM token delivery failed',
+      );
     });
   }
 
@@ -286,11 +295,13 @@ export async function notifyNearbyDrivers(
 async function persistNotification(userId: string, payload: PushPayload): Promise<void> {
   try {
     await supabaseAdmin.from('notifications').insert({
-      user_id: userId,
-      title:   payload.title,
-      body:    payload.body,
-      type:    payload.data?.type ?? 'system',
-      read:    false,
+      user_id:    userId,
+      title:      payload.title,
+      body:       payload.body,
+      notif_type: payload.data?.type ?? 'system',
+      type:       payload.data?.type ?? 'system',
+      read:       false,
+      is_read:    false,
       data:    payload.data ?? {},
     });
   } catch { /* non-critical — never throw */ }

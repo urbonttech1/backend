@@ -5,6 +5,7 @@ import { supabaseAdmin } from '../db/client';
 import { validate } from '../middleware/validation';
 import { createContextLogger } from '../lib/logger';
 import { z } from 'zod';
+import { buildNotificationCatalog } from '../services/notificationCatalog';
 import { sendMulticast, sendToToken, type PushPayload } from '../services/fcm';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -280,8 +281,13 @@ async function persistBroadcastToInbox(
         user_id,
         title,
         body,
+        // `notif_type` es la columna NOT NULL de la tabla; `type` es la antigua
+        // que todavia lee GET /mine. Omitir la primera hacia fallar el insert
+        // entero en silencio, y por eso el inbox siempre estuvo vacio.
+        notif_type: type,
         type,
         read:       false,
+        is_read:    false,
         data:       data ?? {},
         created_at: now,
       }));
@@ -371,6 +377,91 @@ notificationsRouter.get(
     } catch (err: any) {
       log.error({ err: err.message }, 'stats error');
       return res.status(500).json({ error: 'Failed to fetch notification stats' });
+    }
+  },
+);
+
+/**
+ * GET /api/notifications/catalog
+ * Admin-only: las plantillas que existen, su texto y cuando se disparan.
+ */
+notificationsRouter.get(
+  '/catalog',
+  requireAdminJWT as unknown as (req: Request, res: Response, next: NextFunction) => void,
+  async (_req: Request, res: Response) => {
+    try {
+      const catalog = buildNotificationCatalog();
+      return res.json({
+        total:  catalog.length,
+        wired:  catalog.filter(c => c.status !== 'none').length,
+        catalog,
+      });
+    } catch (err: any) {
+      log.error({ err: err.message }, 'catalog error');
+      return res.status(500).json({ error: 'Failed to build notification catalog' });
+    }
+  },
+);
+
+/**
+ * GET /api/notifications/all
+ * Admin-only: historial de todo lo enviado, para la pestaña del panel.
+ * Pagina de verdad en vez de traerse la tabla entera: una campana a toda la
+ * base inserta una fila por usuario, asi que esto crece rapido.
+ */
+notificationsRouter.get(
+  '/all',
+  requireAdminJWT as unknown as (req: Request, res: Response, next: NextFunction) => void,
+  async (req: Request, res: Response) => {
+    const limit  = Math.min(Number(req.query.limit)  || 50, 200);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const type   = typeof req.query.type === 'string' ? req.query.type : '';
+
+    try {
+      let q = supabaseAdmin
+        .from('notifications')
+        .select('id, user_id, title, body, notif_type, read, data, created_at', { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (type) q = q.eq('notif_type', type);
+
+      const { data: rows, count, error } = await q;
+      if (error) throw error;
+
+      // Un join a profiles por cada fila seria una consulta por notificacion;
+      // se resuelven los nombres de los usuarios distintos de la pagina actual.
+      const ids = [...new Set((rows ?? []).map((r: any) => r.user_id).filter(Boolean))];
+      const names = new Map<string, string>();
+      if (ids.length > 0) {
+        const { data: profiles } = await supabaseAdmin
+          .from('profiles')
+          .select('id, first_name, last_name')
+          .in('id', ids);
+        for (const p of (profiles ?? []) as any[]) {
+          names.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(' ') || 'Sin nombre');
+        }
+      }
+
+      return res.json({
+        total: count ?? 0,
+        limit,
+        offset,
+        notifications: (rows ?? []).map((r: any) => ({
+          id:        r.id,
+          userId:    r.user_id,
+          userName:  r.user_id ? (names.get(r.user_id) ?? 'Desconocido') : 'Sin destinatario',
+          title:     r.title,
+          body:      r.body,
+          type:      r.notif_type,
+          read:      r.read,
+          data:      r.data,
+          createdAt: r.created_at,
+        })),
+      });
+    } catch (err: any) {
+      log.error({ err: err.message }, 'list all notifications error');
+      return res.status(500).json({ error: 'Failed to list notifications' });
     }
   },
 );
