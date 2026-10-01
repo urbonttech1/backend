@@ -498,7 +498,7 @@ export function getPricingPolicy() {
 }
 
 export interface ComisionResult {
-  /** Porcentaje aplicado: siempre 0.10 (10%) */
+  /** Tasa aplicada, la vigente de `getPlatformCommission()` (hoy 0.15). */
   porcentaje: number;
   /** Monto de comisión en USD */
   montoUSD: number;
@@ -508,7 +508,10 @@ export interface ComisionResult {
 
 /**
  * Calcula la comisión de URBONT sobre un viaje.
- * Comisión fija: 10% sobre el precio total.
+ *
+ * Usa la comisión vigente, que el panel puede cambiar en caliente: no hay nada
+ * fijo aquí. El comentario anterior decía 10 % y llevaba desfasado desde que la
+ * tasa pasó a 15 %.
  *
  * @param precioViaje - Precio total del viaje en USD (ej. 45.50)
  * @returns ComisionResult con el monto en centavos listo para Stripe
