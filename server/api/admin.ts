@@ -177,7 +177,7 @@ adminRouter.get("/dashboard", async (_req: Request, res: Response) => {
 
 adminRouter.get("/drivers", async (_req: Request, res: Response) => {
   try {
-    const [ridesRes, docsRes] = await Promise.all([
+    const [ridesRes, docsRes, locsRes] = await Promise.all([
       supabaseAdmin
         .from('rides')
         .select(`
@@ -193,7 +193,20 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       supabaseAdmin
         .from('driver_documents')
         .select('id, driver_id, doc_key, status, file_name, storage_url, created_at, updated_at, expiry_date'),
+      // La conexión real sale de aquí, no de `profiles.status_val`: es la tabla
+      // que consulta el despacho (`notifyNearbyDrivers`) y la que re-afirma el
+      // socket al reconectar. `status_val` sólo lo escribe PATCH /drivers/status,
+      // así que se queda viejo y el panel enseñaba "Inactivo" a quien sí estaba
+      // recibiendo carreras.
+      supabaseAdmin
+        .from('driver_locations')
+        .select('driver_id, is_online, updated_at'),
     ]);
+
+    const conexion = new Map<string, boolean>(
+      ((locsRes.data ?? []) as Record<string, unknown>[])
+        .map(l => [String(l.driver_id), l.is_online === true]),
+    );
 
     // El contador `total_rides` del perfil solo cuenta completados, pero la lista
     // de viajes muestra todos los que tuvo asignados. Verlos juntos parecía un
@@ -396,10 +409,10 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       // caducidad de documentos al vencer uno.
       status: necesitaRevision ? 'suspended'
         : (d.verification_status && d.verification_status !== 'approved') ? 'pending'
-        : d.status_val === 'online' ? 'active'
+        : conexion.get(String(d.id)) ? 'active'
         : 'inactive',
       /** Online de verdad, que es otra cosa que estar habilitado para trabajar. */
-      presence: d.status_val || 'offline',
+      presence: conexion.get(String(d.id)) ? 'online' : 'offline',
       needsReview: necesitaRevision,
       documentsExpired:     caducidad.vencidos,
       documentsExpiringSoon: caducidad.porVencer,
