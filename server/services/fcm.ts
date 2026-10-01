@@ -244,12 +244,23 @@ export async function notifyNearbyDrivers(
   radiusKm = 15,
 ): Promise<void> {
   try {
-    // Get all online drivers (who have been active in the last 15 minutes)
+    // Conductores conectados, sin exigir un ping de GPS reciente.
+    //
+    // Antes se pedia ademas `updated_at` de los ultimos 15 minutos, y eso
+    // rompia justo el caso que el push existe para cubrir: iOS congela la app en
+    // cuanto pasa a segundo plano, el intervalo que persiste la posicion se para
+    // y `updated_at` se queda clavado. A los 15 minutos el conductor dejaba de
+    // ser elegible, asi que no tenia socket (desconectado) ni push (filtrado).
+    // Probado el 2026-10-01: 25 minutos en segundo plano y la oferta no llego.
+    //
+    // La frescura sirve para ordenar por cercania, no para decidir si el aviso
+    // sale; de hecho `radiusKm` no se usa y esta funcion no filtra por distancia.
+    // A quien cerro la app y no volvio lo cubre `expireStaleOnlineDrivers`, que
+    // baja `is_online` tras 8 h sin señal.
     const { data: onlineDrivers, error } = await supabaseAdmin
       .from('driver_locations')
       .select('driver_id')
-      .eq('is_online', true)
-      .gte('updated_at', new Date(Date.now() - 15 * 60 * 1000).toISOString());
+      .eq('is_online', true);
 
     if (error || !onlineDrivers || onlineDrivers.length === 0) {
       log.info({ rideId }, 'No online drivers to notify');
