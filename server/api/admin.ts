@@ -192,7 +192,7 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
         .order('created_at', { ascending: false }),
       supabaseAdmin
         .from('driver_documents')
-        .select('id, driver_id, doc_key, status, file_name, storage_url, created_at, updated_at'),
+        .select('id, driver_id, doc_key, status, file_name, storage_url, created_at, updated_at, expiry_date'),
     ]);
 
     // El contador `total_rides` del perfil solo cuenta completados, pero la lista
@@ -275,6 +275,8 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       updatedAt: unknown;
       /** false = subido pero fuera del esquema que se le exige. */
       required: boolean;
+      /** `null` = este documento no caduca, o nadie le puso fecha al subirlo. */
+      expiryDate: string | null;
     }
     type Docs = { aprobados: number; pendientes: number; rechazados: number; total: number; lista: DocumentoPanel[] };
     const documentos = new Map<string, Docs>();
@@ -296,10 +298,36 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
         uploadedAt: x.created_at,
         updatedAt: x.updated_at,
         required: ACCEPTED_DOC_KEYS.includes(String(x.doc_key)),
+        expiryDate: (x.expiry_date as string) || null,
       });
       documentos.set(id, d);
     }
     for (const d of documentos.values()) d.lista.sort((a, b) => a.docKey.localeCompare(b.docKey));
+    /**
+     * Resumen de caducidades de un conductor. El cron diario ya avisa y suspende
+     * (ver `checkDocumentExpiry`), pero el panel no recibía nada de esto, así que
+     * no podía enseñar ni un documento a punto de vencer ni uno ya vencido.
+     *
+     * `sinFecha` importa: hoy la mayoría de documentos no tiene `expiry_date` y el
+     * cron los ignora, así que son vencimientos que nadie está vigilando.
+     */
+    const AVISO_DIAS = 30;
+    const caducidadDocumentos = (d: Docs | undefined) => {
+      const hoy = new Date().toISOString().slice(0, 10);
+      const limite = new Date(Date.now() + AVISO_DIAS * 86400000).toISOString().slice(0, 10);
+      let vencidos = 0, porVencer = 0, sinFecha = 0;
+      let proxima: string | null = null;
+      for (const doc of d?.lista ?? []) {
+        const f = (doc as { expiryDate?: string | null }).expiryDate;
+        if (!f) { sinFecha += 1; continue; }
+        const dia = f.slice(0, 10);
+        if (dia < hoy) vencidos += 1;
+        else if (dia <= limite) porVencer += 1;
+        if (!proxima || dia < proxima) proxima = dia;
+      }
+      return { vencidos, porVencer, sinFecha, proxima };
+    };
+
     const estadoDocumentos = (d: Docs | undefined): 'sin_documentos' | 'rechazado' | 'pendiente' | 'aprobado' => {
       if (!d || d.total === 0) return 'sin_documentos';
       if (d.rechazados > 0) return 'rechazado';
@@ -349,6 +377,8 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
     const via = conteo.get(String(d.id));
     const doc = documentos.get(String(d.id));
     const estadoDocs = estadoDocumentos(doc);
+    const caducidad = caducidadDocumentos(doc);
+    const necesitaRevision = d.needs_review === true;
     const bgStatus = (d.background_check as Record<string, unknown> | undefined)?.status as string | undefined;
     const comision = Number(d.commission_rate ?? 10);
     const facturado = Math.round((via?.facturado ?? 0) * 100) / 100;
@@ -357,7 +387,24 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       name: [d.first_name, d.last_name].filter(Boolean).join(' ') || 'Unnamed Driver',
       phone: d.phone || '',
       email: d.email || '',
-      status: d.status_val || 'offline',
+      // El panel razona con active/suspended/inactive/pending; `status_val` sólo
+      // dice online/offline, así que ninguno de sus filtros casaba y todos los
+      // conductores salían como "Inactivo" con los contadores a cero.
+      //
+      // Se traduce aquí, no en el panel, porque el criterio de "suspendido" vive
+      // en el servidor: `needs_review` es la bandera que levanta el cron de
+      // caducidad de documentos al vencer uno.
+      status: necesitaRevision ? 'suspended'
+        : (d.verification_status && d.verification_status !== 'approved') ? 'pending'
+        : d.status_val === 'online' ? 'active'
+        : 'inactive',
+      /** Online de verdad, que es otra cosa que estar habilitado para trabajar. */
+      presence: d.status_val || 'offline',
+      needsReview: necesitaRevision,
+      documentsExpired:     caducidad.vencidos,
+      documentsExpiringSoon: caducidad.porVencer,
+      documentsWithoutExpiry: caducidad.sinFecha,
+      documentsNextExpiry:   caducidad.proxima,
       rating: d.rating || 5.0,
       ridesCompleted: via?.completados ?? 0,
       ridesCancelled: via?.cancelados ?? 0,
