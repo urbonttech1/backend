@@ -33,3 +33,5 @@ Thumbs.db
 
 *temp.md
 *firebase.json
+# Backups ad-hoc de .env (igual que .env.bak-maps)
+.env.bak-*
