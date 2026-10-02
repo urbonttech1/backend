@@ -16,6 +16,7 @@ const cfg = (parcial: Partial<SurgeConfig> = {}): SurgeConfig => ({
   manualReason: null,
   manualSetBy: null,
   manualSetAt: null,
+  manualSilent: false,
   ...parcial,
 });
 
@@ -142,5 +143,22 @@ describe('debeEscribir', () => {
     expect(debeEscribir(1.0, 1.15)).toBe(true);
     expect(debeEscribir(1.5, 1.0)).toBe(true);
     expect(debeEscribir(1.0, 1.05)).toBe(true);
+  });
+});
+
+describe('manualSilent — fijar sin avisar', () => {
+  it('por defecto se avisa', () => {
+    expect(parseSurgeConfig(null).manualSilent).toBe(false);
+    expect(parseSurgeConfig(JSON.stringify({ manualMultiplier: 1.5 })).manualSilent).toBe(false);
+  });
+
+  it('se recuerda cuando se guardó en silencio', () => {
+    expect(parseSurgeConfig(JSON.stringify({ manualMultiplier: 1.5, manualSilent: true })).manualSilent).toBe(true);
+  });
+
+  it('solo `true` cuenta: un valor raro no silencia por accidente', () => {
+    for (const v of ['true', 1, {}, null]) {
+      expect(parseSurgeConfig(JSON.stringify({ manualSilent: v })).manualSilent).toBe(false);
+    }
   });
 });

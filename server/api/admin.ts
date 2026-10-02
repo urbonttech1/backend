@@ -1520,13 +1520,15 @@ adminRouter.put("/surge/auto", async (req: Request, res: Response) => {
 });
 
 adminRouter.put("/surge/manual", async (req: Request, res: Response) => {
-  const { multiplier, reason } = (req.body ?? {}) as { multiplier?: unknown; reason?: unknown };
+  const { multiplier, reason, silent } = (req.body ?? {}) as { multiplier?: unknown; reason?: unknown; silent?: unknown };
+  const enSilencio = silent === true;
   try {
     const antes = await estadoSurgeCompleto();
     const cfg = await guardarManual(
       multiplier,
       typeof reason === 'string' ? reason : null,
       req.adminUser?.email || 'admin',
+      enSilencio,
     );
     if (!cfg) {
       return res.status(400).json({
@@ -1536,8 +1538,10 @@ adminRouter.put("/surge/manual", async (req: Request, res: Response) => {
       });
     }
     const despues = await estadoSurgeCompleto();
-    avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
-    await auditarSurge(req, 'surge.manual.set', `${cfg.manualMultiplier}x${cfg.manualReason ? ` (${cfg.manualReason})` : ''}`);
+    // «Fijar sin avisar»: el precio cambia igual, pero ni el pasajero ve el aviso
+    // en pantalla ni al conductor le llega el push.
+    if (!enSilencio) avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
+    await auditarSurge(req, 'surge.manual.set', `${cfg.manualMultiplier}x${cfg.manualReason ? ` (${cfg.manualReason})` : ''}${enSilencio ? ' · sin avisar' : ''}`);
     res.json(despues);
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin/surge] fijar manual');
@@ -1548,10 +1552,13 @@ adminRouter.put("/surge/manual", async (req: Request, res: Response) => {
 adminRouter.delete("/surge/manual", async (req: Request, res: Response) => {
   try {
     const antes = await estadoSurgeCompleto();
+    // Si se fijó en silencio, liberarlo tampoco anuncia nada: avisar del final de
+    // un recargo que nadie supo que empezó confunde más que callar.
+    const eraSilencioso = antes.manualSilent;
     await guardarManual(null, null, req.adminUser?.email || 'admin');
     const despues = await estadoSurgeCompleto();
-    avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
-    await auditarSurge(req, 'surge.manual.release', 'liberado');
+    if (!eraSilencioso) avisarCambioSurge(antes.effectiveMultiplier, despues.effectiveMultiplier);
+    await auditarSurge(req, 'surge.manual.release', eraSilencioso ? 'liberado (era silencioso)' : 'liberado');
     res.json(despues);
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin/surge] liberar manual');

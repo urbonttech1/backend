@@ -42,6 +42,12 @@ export interface SurgeConfig {
   manualReason: string | null;
   manualSetBy: string | null;
   manualSetAt: string | null;
+  /**
+   * Se fijó sin avisar: ni el aviso en pantalla del pasajero ni el push al
+   * conductor. Se recuerda para que liberarlo después tampoco anuncie el final
+   * de un recargo que nadie supo que empezó.
+   */
+  manualSilent: boolean;
 }
 
 // ─── Parte pura: sin base de datos, para poder testearla ─────────────────────
@@ -71,6 +77,7 @@ export function parseSurgeConfig(stored: string | null | undefined, fallbackMult
     manualReason: null,
     manualSetBy: null,
     manualSetAt: null,
+    manualSilent: false,
   };
   if (!stored) return base;
 
@@ -101,6 +108,7 @@ export function parseSurgeConfig(stored: string | null | undefined, fallbackMult
     manualReason: texto(raw.manualReason),
     manualSetBy: texto(raw.manualSetBy),
     manualSetAt: texto(raw.manualSetAt),
+    manualSilent: raw.manualSilent === true,
   };
 }
 
@@ -294,6 +302,7 @@ export async function guardarManual(
   multiplicador: unknown,
   reason: string | null,
   quien: string,
+  silent = false,
 ): Promise<SurgeConfig | null> {
   const cfg = await estadoSurge(true);
 
@@ -304,6 +313,7 @@ export async function guardarManual(
       manualReason: null,
       manualSetBy: null,
       manualSetAt: null,
+      manualSilent: false,
     });
     logger.info(`[Surge] Candado manual liberado por ${quien}`);
     return nuevo;
@@ -318,7 +328,8 @@ export async function guardarManual(
     manualReason: reason?.trim() || null,
     manualSetBy: quien,
     manualSetAt: new Date().toISOString(),
+    manualSilent: silent === true,
   });
-  logger.info(`[Surge] Candado manual fijado en ${valor}x por ${quien}${reason ? ` (${reason})` : ''}`);
+  logger.info(`[Surge] Candado manual fijado en ${valor}x por ${quien}${reason ? ` (${reason})` : ''}${silent ? ' — sin avisar' : ''}`);
   return nuevo;
 }
