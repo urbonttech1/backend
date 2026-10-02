@@ -133,7 +133,7 @@ router.get("/valet-history", requireSupabaseAuth, async (req: Request, res: Resp
     const valetId = req.supabaseUid;
     const { data, error } = await supabaseAdmin
       .from('rides')
-      .select('id, pickup, dropoff, vehicle_type, guest_name, scheduled_at, valet_booking_ref, created_at, pickup_pin, ride_status, driver_id, payment_method, notes, valet_commission_paid, passengers, luggage')
+      .select('id, pickup, dropoff, vehicle_type, guest_name, scheduled_at, valet_booking_ref, created_at, pickup_pin, ride_status, driver_id, payment_method, notes, valet_commission_paid, valet_surcharge, passengers, luggage')
       .eq('valet_user_id', valetId)
       .order('created_at', { ascending: false })
       .limit(50);
