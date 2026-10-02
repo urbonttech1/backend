@@ -84,6 +84,56 @@ export function reactivacionHtml(target: AccountEmailTarget): string {
   });
 }
 
+export function aprobacionValetHtml(target: AccountEmailTarget): string {
+  return emailShell({
+    eyebrow: 'Solicitud de valet',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo(`Tu solicitud para unirte a la red de valets de URBONT fue <strong>aprobada</strong>.
+        Ya puedes iniciar sesión en la app con tu correo y tu contraseña y empezar a despachar viajes.`)}
+      ${parrafo(`¿Te postulaste desde nuestro sitio web? Entonces aún no tienes contraseña: abre la app, entra a
+        <em>Valet</em> y toca <strong>«Forgot password?»</strong> para crearla con este mismo correo.`)}
+      <div style="margin:4px 0 18px;">${badge('Cuenta aprobada', brand.green)}</div>
+      ${parrafo(`Bienvenido. Si tienes dudas, escríbenos a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque el estado de tu solicitud cambió.',
+  });
+}
+
+export function rechazoValetHtml(target: AccountEmailTarget, reason?: string | null): string {
+  return emailShell({
+    eyebrow: 'Solicitud de valet',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo(`Revisamos tu solicitud para unirte a la red de valets de URBONT y, por ahora,
+        <strong>no pudimos aprobarla</strong>.`)}
+      ${reason ? panel(`<p style="margin:0;font-family:${FONT};font-size:14px;line-height:1.55;
+        color:${brand.navyDeep};">${reason}</p>`) : ''}
+      ${parrafo(`Si crees que se trata de un error, responde a este correo o escríbenos a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque el estado de tu solicitud cambió.',
+  });
+}
+
+export function documentoValetHtml(target: AccountEmailTarget, docLabel: string, reason?: string | null): string {
+  return emailShell({
+    eyebrow: 'Solicitud de valet',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo(`Revisamos tu documento <strong>${docLabel}</strong> y necesitamos que lo envíes de nuevo.`)}
+      ${reason ? panel(`<p style="margin:0;font-family:${FONT};font-size:14px;line-height:1.55;
+        color:${brand.navyDeep};">${reason}</p>`) : ''}
+      ${parrafo(`Abre la app de URBONT e inicia sesión con tu correo y contraseña: te pediremos subirlo otra vez
+        y tu solicitud seguirá en revisión.`)}
+      ${parrafo(`¿Dudas? Escríbenos a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque tu solicitud de valet tiene un documento por corregir.',
+  });
+}
+
 /** Qué pasó con el aviso, para que el panel pueda decírselo al admin. */
 export interface ResultadoAviso {
   /** true = el correo salió. */
@@ -126,4 +176,16 @@ export function enviarAvisoSuspension(
 
 export function enviarAvisoReactivacion(target: AccountEmailTarget): Promise<ResultadoAviso> {
   return avisar(target, 'Tu cuenta de URBONT vuelve a estar activa', reactivacionHtml(target));
+}
+
+export function enviarAvisoAprobacionValet(target: AccountEmailTarget): Promise<ResultadoAviso> {
+  return avisar(target, 'Tu solicitud de valet en URBONT fue aprobada', aprobacionValetHtml(target));
+}
+
+export function enviarAvisoRechazoValet(target: AccountEmailTarget, reason?: string | null): Promise<ResultadoAviso> {
+  return avisar(target, 'Sobre tu solicitud de valet en URBONT', rechazoValetHtml(target, reason));
+}
+
+export function enviarAvisoDocumentoValet(target: AccountEmailTarget, docLabel: string, reason?: string | null): Promise<ResultadoAviso> {
+  return avisar(target, 'Necesitamos que vuelvas a enviar un documento', documentoValetHtml(target, docLabel, reason));
 }

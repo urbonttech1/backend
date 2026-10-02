@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { VALET_DOC_KEYS, esRolValet, ESQUEMA_GLOBAL } from './docCatalog';
+import { VALET_DOC_KEYS, esRolValet, audienciaDeRol, catalogoSemillaValet, ESQUEMA_GLOBAL } from './docCatalog';
 
 describe('esRolValet', () => {
-  it('reconoce los dos roles que atienden desde un local', () => {
+  it('reconoce los roles que atienden desde un local', () => {
     expect(esRolValet('valet')).toBe(true);
     expect(esRolValet('concierge')).toBe(true);
+    expect(esRolValet('frontdesk')).toBe(true);
   });
 
   it('no confunde al conductor ni al pasajero', () => {
@@ -33,5 +34,21 @@ describe('VALET_DOC_KEYS', () => {
     for (const k of ['registration', 'insurance', 'inspection', 'limoPermit', 'airportPermit']) {
       expect(VALET_DOC_KEYS as readonly string[]).not.toContain(k);
     }
+  });
+});
+
+describe('catálogo propio del valet', () => {
+  it('la semilla trae la identidad con el nombre que ve el valet', () => {
+    const semilla = catalogoSemillaValet();
+    expect(semilla.map((d) => d.key)).toEqual(['license', 'photo']);
+    expect(semilla[0].label).toBe('Government-issued ID');
+    expect(semilla.every((d) => d.active)).toBe(true);
+  });
+
+  it('elige la audiencia por rol', () => {
+    expect(audienciaDeRol('valet')).toBe('valet');
+    expect(audienciaDeRol('frontdesk')).toBe('valet');
+    expect(audienciaDeRol('chauffeur')).toBe('driver');
+    expect(audienciaDeRol(null)).toBe('driver');
   });
 });

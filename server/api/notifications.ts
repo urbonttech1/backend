@@ -192,7 +192,7 @@ notificationsRouter.post(
         } else if (audience === 'drivers') {
           profileQuery = profileQuery.in('role', ['chauffeur', 'driver']);
         } else if (audience === 'valets') {
-          profileQuery = profileQuery.in('role', ['valet', 'concierge']);
+          profileQuery = profileQuery.in('role', ['valet', 'concierge', 'frontdesk']);
         }
         // 'all' — no role filter
 
@@ -624,7 +624,7 @@ notificationsRouter.get(
           const roleMap: Record<string, string[]> = {
             passengers: ['passenger'],
             drivers: ['chauffeur', 'driver'],
-            valets: ['valet', 'concierge'],
+            valets: ['valet', 'concierge', 'frontdesk'],
           };
           const { data: profiles } = await supabaseAdmin
             .from('profiles')

@@ -65,8 +65,25 @@ export const VALET_DOC_KEYS = ['license', 'photo'] as const;
 
 /** Roles que usan el esquema reducido del valet. */
 export function esRolValet(role: string | null | undefined): boolean {
-  return role === 'valet' || role === 'concierge';
+  return role === 'valet' || role === 'concierge' || role === 'frontdesk';
 }
+
+/**
+ * A quién se le pide cada lista. El valet tiene su propio catálogo
+ * (`valet_document_catalog`), administrable por separado en el panel, para que
+ * cambiar lo que se le pide a un conductor no toque lo del valet ni al revés.
+ */
+export type AudienciaCatalogo = 'driver' | 'valet';
+
+export function audienciaDeRol(role: string | null | undefined): AudienciaCatalogo {
+  return esRolValet(role) ? 'valet' : 'driver';
+}
+
+/** Semilla del catálogo del valet: un documento oficial y una foto. */
+export const VALET_DOC_SEED: Record<string, Omit<DocMeta, 'key'>> = {
+  license: { label: 'Government-issued ID', category: 'Personal Identity', hint: "Driver's license, state ID or passport (current and valid)", expires: true  },
+  photo:   { label: 'Profile Photo',        category: 'Personal Identity', hint: 'Recent photo, neutral background, good lighting (JPG or PNG)',  expires: false },
+};
 
 /** Todo lo que se admite subir, sin importar el esquema. */
 export const ACCEPTED_DOC_KEYS = [
@@ -207,6 +224,11 @@ export interface DocumentoCatalogo extends DocMeta {
   /** false: sigue aceptándose si ya está subido, pero no se le pide a nadie. */
   active: boolean;
   sortOrder: number;
+}
+
+/** La semilla del catálogo del valet, con la misma forma que la del conductor. */
+export function catalogoSemillaValet(): DocumentoCatalogo[] {
+  return VALET_DOC_KEYS.map((key, i) => ({ key, ...VALET_DOC_SEED[key], active: true, sortOrder: (i + 1) * 10 }));
 }
 
 /** La semilla: el catálogo del código, en el orden del esquema vigente. */

@@ -1,6 +1,6 @@
 import { pool } from './pool';
 import { logger } from '../lib/logger';
-import { catalogoSemilla } from '../services/docCatalog';
+import { catalogoSemilla, catalogoSemillaValet } from '../services/docCatalog';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -595,6 +595,29 @@ export async function runMigrations() {
       // siguiente arranque.
       await client.query(
         `INSERT INTO document_catalog (doc_key, label, category, hint, expires, active, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (doc_key) DO NOTHING`,
+        [d.key, d.label, d.category, d.hint, d.expires, d.active, d.sortOrder],
+      );
+    }
+
+    // Catálogo propio del valet: mismas columnas, tabla aparte, para que el panel
+    // lo administre en su pestaña sin tocar el del conductor.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS valet_document_catalog (
+        doc_key    VARCHAR(40) PRIMARY KEY,
+        label      TEXT NOT NULL,
+        category   TEXT NOT NULL,
+        hint       TEXT DEFAULT '',
+        expires    BOOLEAN NOT NULL DEFAULT false,
+        active     BOOLEAN NOT NULL DEFAULT true,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    for (const d of catalogoSemillaValet()) {
+      await client.query(
+        `INSERT INTO valet_document_catalog (doc_key, label, category, hint, expires, active, sort_order)
          VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (doc_key) DO NOTHING`,
         [d.key, d.label, d.category, d.hint, d.expires, d.active, d.sortOrder],
       );

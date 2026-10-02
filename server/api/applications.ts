@@ -284,6 +284,7 @@ applicationsRouter.post('/valet', strictRateLimiter, async (req: Request, res: R
         first_name:     firstName,
         last_name:      lastName,
         role:           'valet',
+        account_status: 'pending',
         operating_city: city || null,
         membership:     'free',
         status_val: 'offline',

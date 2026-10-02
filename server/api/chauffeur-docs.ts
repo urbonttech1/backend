@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { documentosVigentes } from '../services/docCatalogStore';
+import { documentosVigentes, catalogoCompleto } from '../services/docCatalogStore';
 import { esRolValet } from '../services/docCatalog';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
@@ -153,9 +153,10 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
   // Y cuando sí hay fecha nueva, los avisos vuelven a cero: un documento
   // renovado tiene que poder avisar otra vez a 30 y a 7 días.
   const { expiry_date, ...base } = record;
+  // Una re-subida deja el documento en revisión: el motivo del rechazo anterior ya no aplica.
   const payload: Record<string, unknown> = expiry_date
-    ? { ...base, expiry_date, notified_30d: false, notified_7d: false }
-    : { ...base };
+    ? { ...base, expiry_date, notified_30d: false, notified_7d: false, rejection_reason: null }
+    : { ...base, rejection_reason: null };
 
   // Attempt 1 — supabaseAdmin PostgREST (works when unique index exists)
   const { error: e1 } = await supabaseAdmin
@@ -192,6 +193,7 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
          file_name     = EXCLUDED.file_name,
          driver_name   = EXCLUDED.driver_name,
          status        = 'pending',
+         rejection_reason = NULL,
          updated_at    = EXCLUDED.updated_at,
          -- Una fecha nueva sustituye a la vieja; si la subida no trae fecha se
          -- conserva la que hubiera, para no borrar un vencimiento al re-subir.
@@ -267,9 +269,12 @@ chauffeurDocsRouter.get('/required-docs', async (req: Request, res: Response) =>
 chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request, res: Response) => {
   const uid  = req.supabaseUid;
   const role = req.supabaseRole;
+  const esValet = esRolValet(role);
 
   if (!uid)             return res.status(401).json({ error: 'Unauthorized.',                errorCode: 'UNAUTHORIZED'  });
-  if (role !== 'chauffeur' && role !== 'driver') return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
+  // El valet sube su identidad desde el registro de la app, con la sesión que
+  // devuelve el alta (sigue en revisión, pero el token ya vale para esto).
+  if (role !== 'chauffeur' && role !== 'driver' && !esValet) return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
 
   const { docKey, fileName, mimeType, base64, expiryDate } = req.body as {
     docKey?: string; fileName?: string; mimeType?: string; base64?: string; expiryDate?: string;
@@ -287,12 +292,17 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       field: faltaDoc,
     });
 
-  if (!ACCEPTED_DOC_KEYS.includes(docKey))
+  // El valet solo puede subir lo que está en su propio catálogo (incluido lo que
+  // el panel añada después); el conductor, lo que acepta el servidor.
+  const clavesAceptadas = esValet
+    ? (await catalogoCompleto('valet')).map((d) => d.key)
+    : ACCEPTED_DOC_KEYS;
+  if (!clavesAceptadas.includes(docKey))
     return res.status(400).json({
       error: `"${docKey}" is not a document we ask for. Please upload it in the matching slot.`,
       errorCode: 'INVALID_DOC_KEY',
       field: 'docKey',
-      acceptedDocKeys: ACCEPTED_DOC_KEYS,
+      acceptedDocKeys: clavesAceptadas,
     });
 
   if (!ALLOWED_MIME_TYPES.includes(mimeType.toLowerCase()))

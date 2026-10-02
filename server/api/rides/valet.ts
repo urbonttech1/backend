@@ -22,12 +22,43 @@ import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
+import { esRolValet } from '../../services/docCatalog';
+import { accesoValet } from '../../services/valetAccess';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
+
+/**
+ * Un valet suspendido desde el panel conserva su token hasta que caduque, así que
+ * el login solo no basta: sin esta revisión seguiría despachando viajes. Responde
+ * `account_suspended`, el mismo código que la app ya sabe pintar.
+ */
+async function bloquearSiSuspendido(req: Request, res: Response): Promise<boolean> {
+  // Solo un valet (o un admin) despacha: sin esto cualquier usuario con sesión, un
+  // pasajero incluido, podía crear viajes marcados como de valet.
+  if (!esRolValet(req.supabaseRole) && req.supabaseRole !== 'admin') {
+    res.status(403).json({ error: 'Valet account required.', errorCode: 'ACCESS_DENIED' });
+    return true;
+  }
+  const { data } = await supabaseAdmin.from('profiles')
+    .select('account_status, status_reason, email').eq('id', req.supabaseUid).maybeSingle();
+  const acceso = await accesoValet(data?.account_status as string | null, data?.email as string | null);
+  if (acceso === 'pending') {
+    res.status(403).json({ error: 'account_pending', errorCode: 'ACCOUNT_PENDING' });
+    return true;
+  }
+  if (acceso === 'ok') return false;
+  res.status(403).json({ error: 'account_suspended', errorCode: 'ACCOUNT_SUSPENDED', reason: data?.status_reason ?? undefined });
+  return true;
+}
 
 export function registerValetRoutes(router: Router): void {
 router.get("/valet-pending", requireSupabaseAuth, async (req: Request, res: Response) => {
   try {
+    // Es la cola que ve el conductor para aceptar viajes de valet: solo conductores
+    // (o admin). Antes cualquier sesión la leía, con teléfonos y el PIN de recogida.
+    if (!['chauffeur', 'driver', 'admin'].includes(String(req.supabaseRole))) {
+      return res.status(403).json({ error: 'Chauffeur account required.', errorCode: 'ACCESS_DENIED' });
+    }
     const { data, error } = await supabaseAdmin
       .from('rides')
       .select('id, pickup, dropoff, vehicle_type, guest_name, scheduled_at, valet_booking_ref, created_at, notes, passengers, luggage, valet_user_id, dispatched_by_valet, pickup_pin, passenger_id, fare, distance, ride_status')
@@ -85,7 +116,9 @@ router.get("/valet-pending", requireSupabaseAuth, async (req: Request, res: Resp
       })
     );
 
-    res.json(enriched);
+    // El conductor solo necesita saber SI el viaje lleva PIN, no cuál es: el PIN se lo
+    // dice el huésped al recogerlo. Mandarlo aquí lo regalaba a toda la cola.
+    res.json(enriched.map(r => ({ ...r, pickup_pin: r.pickup_pin ? '****' : null })));
   } catch (err: any) {
     logger.error(`[RIDES] valet-pending error:: ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch valet rides' });
@@ -95,6 +128,7 @@ router.get("/valet-pending", requireSupabaseAuth, async (req: Request, res: Resp
 // --- 3c. Get valet's own dispatched ride history — GET /valet-history ---
 router.get("/valet-history", requireSupabaseAuth, async (req: Request, res: Response) => {
   try {
+    if (await bloquearSiSuspendido(req, res)) return;
     const valetId = req.supabaseUid;
     const { data, error } = await supabaseAdmin
       .from('rides')
@@ -155,6 +189,7 @@ router.get("/valet-history", requireSupabaseAuth, async (req: Request, res: Resp
 
 router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Response) => {
   try {
+    if (await bloquearSiSuspendido(req, res)) return;
     const {
       guestName, pickup, destination, vehicleType,
       paymentMethod, scheduledAt, notes, skipPin,

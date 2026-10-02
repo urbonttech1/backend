@@ -5,11 +5,49 @@ import { pool } from '../../db/pool';
 import { sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
 import { esEmailDuplicado } from '../../lib/authErrors';
+import { catalogoCompleto } from '../../services/docCatalogStore';
+import { normalizarEstadoDoc } from '../../services/docCatalog';
+import { accesoValet } from '../../services/valetAccess';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('VALET');
 
 export const valetAuthRouter = Router();
+
+/**
+ * El alta desde la app crea el perfil en `pending`; esta fila es lo que el panel
+ * lista en Valets para aprobarlo. Si falla no se tumba el registro: el perfil
+ * pendiente ya basta para que el panel lo muestre.
+ */
+/**
+ * Documentos que el valet pendiente tiene que (re)subir: los que faltan o que el
+ * panel rechazó o pidió de nuevo. Sin esto, un valet en revisión no tendría cómo
+ * corregir un documento: el login lo rechaza y la app no tiene otra pantalla.
+ */
+async function documentosPorSubir(userId: string) {
+  const catalogo = (await catalogoCompleto('valet')).filter(d => d.active);
+  const { data } = await supabaseAdmin.from('driver_documents')
+    .select('doc_key, status, rejection_reason').eq('driver_id', userId);
+  const filas = new Map(((data ?? []) as Array<Record<string, any>>).map(d => [String(d.doc_key), d]));
+  return catalogo
+    .filter(d => {
+      const f = filas.get(d.key);
+      return !f || normalizarEstadoDoc(f.status) === 'rechazado' || (f.status === 'pending' && !!f.rejection_reason);
+    })
+    .map(d => ({ key: d.key, label: d.label, hint: d.hint, reason: filas.get(d.key)?.rejection_reason ?? null }));
+}
+
+async function registrarSolicitudValet(d: { email: string; firstName?: string; lastName?: string; phone?: string; city?: string }) {
+  if (!d.email) return;
+  const now = new Date().toISOString();
+  const { error } = await supabaseAdmin.from('valet_applications').upsert({
+    email: d.email, first_name: d.firstName || null, last_name: d.lastName || null,
+    phone: d.phone || null, city: d.city || null, status: 'pending', created_at: now, updated_at: now,
+    // Si ya hay una solicitud (p. ej. la de la web, ya aprobada) no se pisa: un registro
+    // nunca debe devolver a «pendiente» lo que el panel ya decidió.
+  }, { onConflict: 'email', ignoreDuplicates: true });
+  if (error) log.warn(`[Valet] no se pudo guardar la solicitud de ${d.email}: ${error.message}`);
+}
 
 const DEMO_VALET_EMAIL    = 'valet@urbont.com';
 const DEMO_VALET_PASSWORD = process.env.DEMO_VALET_PASSWORD || '';
@@ -175,10 +213,31 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
     const userId = data.user.id;
     const { data: profile } = await supabaseAdmin
       .from('profiles')
-      .select('id, phone, role, first_name, last_name')
+      .select('id, phone, role, first_name, last_name, account_status')
       .eq('id', userId)
       .maybeSingle();
     const role = (profile?.role as string) || '';
+
+    // Cruza el estado del perfil con el de la solicitud: ver services/valetAccess.ts.
+    const acceso = await accesoValet(profile?.account_status as string | null, data.user.email);
+    if (acceso === 'suspended' || acceso === 'rejected') {
+      return res.status(403).json({
+        error: acceso === 'rejected' ? "Your application wasn't approved. Contact Urbont support." : 'This account is suspended. Contact Urbont support.',
+        errorCode: 'ACCOUNT_SUSPENDED',
+      });
+    }
+    if (acceso === 'pending') {
+      const porSubir = await documentosPorSubir(userId);
+      return res.status(403).json({
+        error: "Your account is under review. We'll email you as soon as it's approved.",
+        errorCode: 'ACCOUNT_PENDING',
+        // Solo si hay algo que corregir se entrega un token, y sirve para subir documentos.
+        ...(porSubir.length > 0 ? {
+          documentsRequested: porSubir,
+          uploadToken: issueToken({ id: userId, phone: (profile?.phone as string) || email, role }),
+        } : {}),
+      });
+    }
 
     if (!['valet', 'frontdesk', 'concierge', 'admin'].includes(role)) {
       return res.status(403).json({ error: 'This account is not registered as a Valet or Frontdesk partner.', errorCode: 'ACCESS_DENIED', field: 'email' });
@@ -255,6 +314,8 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
       operating_city: city || businessLocation || null,
       role: assignedRole,
       status_val: 'active',
+      // Entra en revisión: no puede iniciar sesión ni despachar hasta que el panel lo apruebe.
+      account_status: 'pending',
       avatar_url: '/default-avatar.svg',
       created_at: now,
       updated_at: now,
@@ -272,9 +333,12 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
       });
     }
 
+    await registrarSolicitudValet({ email, firstName, lastName, phone, city: city || businessLocation });
+
     const token = issueToken({ id: userId, phone: phone || email, role: assignedRole });
     return res.status(201).json({
       success: true,
+      pending: true,
       session: { access_token: token, refresh_token: token },
       user: { id: userId, email, firstName: firstName || '', lastName: lastName || '', role: assignedRole },
     });
@@ -315,7 +379,7 @@ valetAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: Requ
 
     const { data: profile2 } = await supabaseAdmin
       .from('profiles')
-      .select('id, phone, role, first_name, last_name')
+      .select('id, phone, role, first_name, last_name, account_status')
       .eq('id', userId)
       .maybeSingle();
 
@@ -332,6 +396,27 @@ valetAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: Requ
           : 'This Google account is not linked to a Valet partner account.',
         errorCode: 'ACCESS_DENIED',
         detail: isPassenger ? 'PASSENGER_ACCOUNT_CONFLICT' : 'ROLE_MISMATCH',
+      });
+    }
+
+    const accesoG = await accesoValet(profile2.account_status as string | null, email);
+    if (accesoG === 'suspended' || accesoG === 'rejected') {
+      return res.status(403).json({
+        error: accesoG === 'rejected' ? "Your application wasn't approved. Contact Urbont support." : 'This account is suspended. Contact Urbont support.',
+        errorCode: 'ACCOUNT_SUSPENDED',
+      });
+    }
+    if (accesoG === 'pending') {
+      // Igual que en el login con correo: si hay documentos por corregir, se entrega un
+      // token que solo sirve para volver a subirlos.
+      const porSubir = await documentosPorSubir(userId);
+      return res.status(403).json({
+        error: "Your account is under review. We'll email you as soon as it's approved.",
+        errorCode: 'ACCOUNT_PENDING',
+        ...(porSubir.length > 0 ? {
+          documentsRequested: porSubir,
+          uploadToken: issueToken({ id: userId, phone: (profile2.phone as string) || email || userId, role }),
+        } : {}),
       });
     }
 
@@ -385,7 +470,7 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
     // Guard: refuse if user already has a passenger profile (prevent account hijacking)
     const { data: existing } = await supabaseAdmin
       .from('profiles')
-      .select('id, role')
+      .select('id, role, account_status')
       .eq('id', userId)
       .maybeSingle();
 
@@ -410,7 +495,9 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
       role: assignedRole,
       status_val: 'active',
       avatar_url: '/default-avatar.svg',
-      ...(existing ? {} : { created_at: now }),
+      // Solo el alta nueva entra en revisión; completar el perfil de un valet ya
+      // aprobado no debe devolverlo a pendiente.
+      ...(existing ? {} : { created_at: now, account_status: 'pending' }),
       updated_at: now,
     }, { onConflict: 'id', ignoreDuplicates: false });
 
@@ -423,11 +510,15 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
       });
     }
 
+    const pending = !existing || existing.account_status === 'pending';
+    if (!existing) await registrarSolicitudValet({ email: email || '', firstName, lastName, phone, city: city || businessLocation });
+
     const token = issueToken({ id: userId, phone: phone || email || userId, role: assignedRole });
 
     log.info(`[Valet] complete-profile succeeded for ${email} (userId: ${userId})`);
     return res.status(200).json({
       success: true,
+      pending,
       session: { access_token: token, refresh_token: token },
       user: { id: userId, email: email || '', firstName: firstName || '', lastName: lastName || '', role: assignedRole },
     });

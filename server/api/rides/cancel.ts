@@ -4,6 +4,7 @@ import { supabaseAdmin } from "../../db/client";
 import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
+import { notifyRidePassenger } from "../../services/valetNotifications";
 import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
@@ -127,7 +128,7 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
         driverId: driverIdStr,
       });
       if (fila.passenger_id) {
-        notifyUser(fila.passenger_id, {
+        notifyRidePassenger(req.params.id, fila.passenger_id, {
           title: 'Your chauffeur changed',
           body: "Your reserved chauffeur can no longer make it. We're offering your ride to other chauffeurs — you won't be charged extra.",
           data: { type: 'ride_scheduled', ride_id: req.params.id, screen: 'ride_tracking' },
@@ -186,7 +187,7 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
       });
 
       // Push notification to passenger
-      notifyUser(passengerIdStr, {
+      notifyRidePassenger(req.params.id, passengerIdStr, {
         title: 'Finding you a new chauffeur',
         body: 'Your driver had to cancel. We\'re searching for another chauffeur right now.',
         data: { type: 'driver_cancelled_reassigning', ride_id: req.params.id, screen: 'ride_tracking' },
@@ -337,7 +338,7 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
     // ── Push notification → la otra parte ─────────────────────────────────────
     if (conductorAbandona) {
       if (ridePassengerId) {
-        notifyUser(ridePassengerId, {
+        notifyRidePassenger(req.params.id, ridePassengerId, {
           title: 'Ride Cancelled',
           body: 'Your driver had to end this ride.',
           data: { type: 'ride_cancelled_by_driver', ride_id: req.params.id, screen: 'ride_tracking' },
@@ -597,7 +598,7 @@ router.post('/:id/no-show', requireSupabaseAuth, async (req: Request, res: Respo
     }
 
     // Notify passenger
-    notifyUser(String(r.passenger_id), {
+    notifyRidePassenger(req.params.id, String(r.passenger_id), {
       title: 'Ride Cancelled — No-Show',
       body:  noShowCharged
         ? `Your driver waited but could not find you. A $${cargoAplicado.toFixed(2)} no-show fee was applied.`

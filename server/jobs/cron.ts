@@ -11,7 +11,9 @@ import { reasignacionesVencidas, MINUTOS_PARA_REEMPLAZO, type ViajeEnReasignacio
 import { getStripe } from '../api/rides/helpers';
 import { devolverCobroDelViaje } from '../services/rideRefund';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
+import { pagarComisionesValetPendientes } from '../services/valetPayout';
 import { notifyUser, sendMulticast } from '../services/fcm';
+import { notifyRidePassenger } from '../services/valetNotifications';
 import { procesarNota, MAX_INTENTOS } from '../services/voiceTranscription';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
 import { decidirAuto, guardarAuto } from '../services/surgeConfig';
@@ -109,7 +111,7 @@ async function cancelExpiredSearchingRides() {
       // Se cobró al reservar: sin chofer no hubo viaje, se devuelve entero.
       await devolverCobroDelViaje(ride.payment_intent_id, ride.id);
       if (ride.passenger_id) {
-        notifyUser(String(ride.passenger_id), passengerNotif.rideCancelledNoDriver(ride.id)).catch(() => {});
+        notifyRidePassenger(ride.id, String(ride.passenger_id), passengerNotif.rideCancelledNoDriver(ride.id)).catch(() => {});
       }
     }
 
@@ -180,7 +182,7 @@ async function cancelarReasignacionesVencidas() {
 
       const passengerId = String(cancelado.passenger_id || '');
       if (passengerId) {
-        notifyUser(passengerId, passengerNotif.rideCancelledNoDriver(viaje.id)).catch(() => {});
+        notifyRidePassenger(viaje.id, passengerId, passengerNotif.rideCancelledNoDriver(viaje.id)).catch(() => {});
       }
       broadcastRideStatus(viaje.id, 'cancelled', {
         reason: 'no_driver_found',
@@ -215,6 +217,17 @@ async function pagarChoferesPendientes() {
     }
   } catch (err: any) {
     log.error({ err: err?.message }, '[CRON] pagarChoferesPendientes');
+  }
+
+  // Misma red de seguridad para la comisión de los valets: la que se quedó sin pagar
+  // porque aún no tenían la cuenta de Stripe conectada.
+  try {
+    const v = await pagarComisionesValetPendientes({ stripe });
+    if (v.viajesPagados > 0) {
+      log.info(`[CRON] Comisiones de valet atrasadas: ${v.viajesPagados}/${v.viajesRevisados} viajes, $${(v.centavosPagados / 100).toFixed(2)}.`);
+    }
+  } catch (err: any) {
+    log.error({ err: err?.message }, '[CRON] pagarComisionesValetPendientes');
   }
 }
 
@@ -402,7 +415,7 @@ async function dispatchScheduledRides() {
       for (const ride of (overdueRides ?? []) as Array<{ id: string; passenger_id: string | null; payment_intent_id: string | null }>) {
         await devolverCobroDelViaje(ride.payment_intent_id, ride.id);
         if (ride.passenger_id) {
-          notifyUser(String(ride.passenger_id), passengerNotif.rideCancelledNoDriver(ride.id)).catch(() => {});
+          notifyRidePassenger(ride.id, String(ride.passenger_id), passengerNotif.rideCancelledNoDriver(ride.id)).catch(() => {});
         }
       }
     }

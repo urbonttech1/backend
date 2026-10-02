@@ -161,6 +161,13 @@ integrationsRouter.post(
                     log.info(`[STRIPE_WEBHOOK] Valet commission $${valetSurchargeCents/100} â ${valetAccountId} (transfer ${transfer.id})`);
                   } else {
                     log.warn(`[STRIPE_WEBHOOK] Valet ${valetUserId} has no stripe_account_id; commission not transferred`);
+                    // Sin esto el valet no se enteraba de que su comisión se quedaba sin pagar.
+                    const cuerpoPago = `You earned $${(valetSurchargeCents / 100).toFixed(2)} on a trip, but we can't send it until you set up payouts in the app.`;
+                    notifyUser(valetUserId, {
+                      title: 'Connect your bank account',
+                      body: cuerpoPago,
+                      data: { type: 'valet_payout_setup', ride_id: String(rideId), screen: 'valet-dashboard', title: 'Connect your bank account', body: cuerpoPago },
+                    }).catch(() => {});
                   }
                 }
               } catch (transferErr: unknown) {

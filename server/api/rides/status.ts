@@ -6,6 +6,7 @@ import { sendRideReceipt } from "../../services/email";
 import { isEmailConfigured } from "../../services/mailer";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
 import { driverNotif } from "../../services/notificationTemplates";
+import { notifyRidePassenger } from "../../services/valetNotifications";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
   calculateFareFromRules,
@@ -277,7 +278,7 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       });
       const passengerId = String(r.passenger_id || '');
       if (passengerId) {
-        notifyUser(passengerId, {
+        notifyRidePassenger(req.params.id, passengerId, {
           title: 'Your scheduled ride has started',
           body: 'Your chauffeur is on the way to the pickup.',
           data: { type: 'ride_scheduled_started', ride_id: req.params.id, screen: 'ride_tracking' },
@@ -624,19 +625,19 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
     const rideId = req.params.id;
 
     if (finalStatus === 'confirmed' && passengerId) {
-      notifyUser(passengerId, {
+      notifyRidePassenger(rideId, passengerId, {
         title: 'Driver on the way!',
         body: 'Your chauffeur has accepted your ride and is heading to you.',
         data: { type: 'ride_confirmed', ride_id: rideId, screen: 'ride_tracking' },
       }).catch(() => {});
     } else if ((finalStatus === 'driver_arrived' || finalStatus === 'arrived') && passengerId) {
-      notifyUser(passengerId, {
+      notifyRidePassenger(rideId, passengerId, {
         title: 'Your driver has arrived!',
         body: 'Your chauffeur is at the pickup location. Please proceed to the vehicle.',
         data: { type: 'driver_arrived', ride_id: rideId, screen: 'ride_tracking' },
       }).catch(() => {});
     } else if (finalStatus === 'in_progress' && passengerId) {
-      notifyUser(passengerId, {
+      notifyRidePassenger(rideId, passengerId, {
         title: 'Ride started',
         body: 'Your ride is now in progress. Sit back and enjoy the trip!',
         data: { type: 'ride_started', ride_id: rideId, screen: 'ride_tracking' },
@@ -656,7 +657,7 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
         logger.info(`[T013] Trusted contact SMS sent to ${trustedName || trustedPhone} for ride ${rideId}`);
       }).catch(() => {});
     } else if (finalStatus === 'completed' && passengerId) {
-      notifyUser(passengerId, {
+      notifyRidePassenger(rideId, passengerId, {
         title: 'You have arrived!',
         body: 'Thank you for riding with URBONT. Please rate your experience.',
         data: { type: 'ride_completed', ride_id: rideId, screen: 'ride_summary' },

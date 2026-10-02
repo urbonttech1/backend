@@ -13,19 +13,26 @@
  */
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
-import { catalogoSemilla, esRolValet, VALET_DOC_KEYS, type DocumentoCatalogo } from './docCatalog';
+import { catalogoSemilla, catalogoSemillaValet, audienciaDeRol, type AudienciaCatalogo, type DocumentoCatalogo } from './docCatalog';
 
 const log = pino({ level: 'info' });
 
 export const TABLA_CATALOGO = 'document_catalog';
+export const TABLA_CATALOGO_VALET = 'valet_document_catalog';
+
+/** Cada audiencia tiene su tabla: conductores y valets se administran por separado. */
+export function tablaCatalogo(audiencia: AudienciaCatalogo): string {
+  return audiencia === 'valet' ? TABLA_CATALOGO_VALET : TABLA_CATALOGO;
+}
 
 /** Caché corta: el catálogo se pide en cada pantalla de documentos. */
 const TTL_MS = 60_000;
-let cache: { at: number; docs: DocumentoCatalogo[] } | null = null;
+const cache: Partial<Record<AudienciaCatalogo, { at: number; docs: DocumentoCatalogo[] }>> = {};
 
 /** Tras escribir desde el panel, para que el cambio se vea sin esperar el TTL. */
-export function invalidarCatalogo(): void {
-  cache = null;
+export function invalidarCatalogo(audiencia?: AudienciaCatalogo): void {
+  if (audiencia) delete cache[audiencia];
+  else { delete cache.driver; delete cache.valet; }
 }
 
 type Fila = {
@@ -44,23 +51,25 @@ const deFila = (f: Fila): DocumentoCatalogo => ({
 });
 
 /** Todo el catálogo, activos e inactivos, en orden. Nunca lanza. */
-export async function catalogoCompleto(): Promise<DocumentoCatalogo[]> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.docs;
+export async function catalogoCompleto(audiencia: AudienciaCatalogo = 'driver'): Promise<DocumentoCatalogo[]> {
+  const guardado = cache[audiencia];
+  if (guardado && Date.now() - guardado.at < TTL_MS) return guardado.docs;
 
   try {
     const { data, error } = await supabaseAdmin
-      .from(TABLA_CATALOGO)
+      .from(tablaCatalogo(audiencia))
       .select('doc_key, label, category, hint, expires, active, sort_order')
       .order('sort_order', { ascending: true });
     if (error) throw error;
     const docs = (data ?? []) as Fila[];
     if (docs.length === 0) throw new Error('catálogo vacío');
-    cache = { at: Date.now(), docs: docs.map(deFila) };
-    return cache.docs;
+    const lista = docs.map(deFila);
+    cache[audiencia] = { at: Date.now(), docs: lista };
+    return lista;
   } catch (err: unknown) {
     // Sin tabla o sin base: se sigue con el catálogo del código.
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'document_catalog no disponible — se usa la semilla');
-    return catalogoSemilla();
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, `${tablaCatalogo(audiencia)} no disponible — se usa la semilla`);
+    return audiencia === 'valet' ? catalogoSemillaValet() : catalogoSemilla();
   }
 }
 
@@ -72,13 +81,10 @@ export async function esquemaVigente(role?: string | null): Promise<readonly str
 /**
  * Metadatos de los activos, tal como los sirve `GET /required-docs`.
  *
- * El valet recibe un subconjunto: no conduce, así que los papeles del vehículo
- * y los permisos de transporte no le aplican. Se filtra sobre el catálogo
- * activo —no sobre una lista aparte— para que desactivar un documento desde el
- * panel siga surtiendo efecto en ambos roles.
+ * El valet no conduce, así que tiene su propio catálogo —`valet_document_catalog`—
+ * en vez de un recorte del del conductor: desactivar o editar un documento en
+ * una pestaña del panel no afecta a la otra.
  */
 export async function documentosVigentes(role?: string | null): Promise<DocumentoCatalogo[]> {
-  const activos = (await catalogoCompleto()).filter((d) => d.active);
-  if (!esRolValet(role)) return activos;
-  return activos.filter((d) => (VALET_DOC_KEYS as readonly string[]).includes(d.key));
+  return (await catalogoCompleto(audienciaDeRol(role))).filter((d) => d.active);
 }

@@ -63,7 +63,7 @@ export async function estadoConnectAlDia(opts: {
  * viaje no guardó su PaymentIntent o Stripe no lo reconoce. No lanza: quedarse
  * sin `source_transaction` es peor que nada, pero mejor que no intentarlo.
  */
-async function cargoDelViaje(stripe: Stripe, paymentIntentId: string | null): Promise<string | null> {
+export async function cargoDelViaje(stripe: Stripe, paymentIntentId: string | null): Promise<string | null> {
   if (!paymentIntentId) return null;
   try {
     const pi = await stripe.paymentIntents.retrieve(paymentIntentId);

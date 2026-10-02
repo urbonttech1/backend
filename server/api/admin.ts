@@ -7,7 +7,10 @@ import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis, refreshTranslationCheck } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
-import { catalogoCompleto, invalidarCatalogo } from '../services/docCatalogStore';
+import { catalogoCompleto, invalidarCatalogo, tablaCatalogo } from '../services/docCatalogStore';
+import type { AudienciaCatalogo } from '../services/docCatalog';
+import { notifyUser } from '../services/fcm';
+import { pagarComisionesValetPendientes } from '../services/valetPayout';
 import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
 import { ensureComisionFresh, guardarComision, comoPorcentaje as comoPorcentajeComision, COMISION_MAXIMA } from '../services/commissionConfig';
 import { cargarConfigTraduccion, guardarConfigTraduccion, estadoConfigTraduccion } from '../services/translationConfig';
@@ -24,7 +27,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
-import { enviarAvisoSuspension, enviarAvisoReactivacion } from '../services/accountEmails';
+import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
 import { DEFAULT_FARE_CLASSES, type FareClass, getPricingPolicy } from '../config/pricing';
@@ -569,36 +572,40 @@ adminRouter.post("/payouts/run", async (req: Request, res: Response) => {
   }
 });
 
-adminRouter.post("/drivers/:id/stripe-status", async (req: Request, res: Response) => {
-  const driverId = req.params.id;
-  try {
-    const { data: perfil } = await supabaseAdmin
-      .from('profiles').select('stripe_account_id').eq('id', driverId).maybeSingle();
-    const accountId = (perfil as { stripe_account_id?: string } | null)?.stripe_account_id;
-    if (!accountId) {
-      return res.json({
+/**
+ * Consulta a Stripe el estado de la cuenta conectada de un perfil (conductor o
+ * valet) y lo guarda. El criterio es el mismo que usa el pago real: manda la
+ * capacidad `transfers`, que es lo que Stripe exige para transferir.
+ */
+async function consultarStripeDe(perfilId: string, quien: string) {
+  const { data: perfil } = await supabaseAdmin
+    .from('profiles').select('stripe_account_id').eq('id', perfilId).maybeSingle();
+  const accountId = (perfil as { stripe_account_id?: string } | null)?.stripe_account_id;
+  if (!accountId) {
+    return {
+      status: 200, body: {
         success: true, status: 'not_connected', accountId: null, canReceivePayouts: false,
-        reason: 'El conductor no ha iniciado el alta de Stripe.',
-      });
-    }
+        reason: `${quien} no ha iniciado el alta de Stripe.`,
+      },
+    };
+  }
 
-    const stripe = getStripeAdmin();
-    if (!stripe) return res.status(500).json({ error: 'Stripe no está configurado.' });
+  const stripe = getStripeAdmin();
+  if (!stripe) return { status: 500, body: { error: 'Stripe no está configurado.' } };
 
-    const cuenta = await stripe.accounts.retrieve(accountId);
-    // El mismo criterio que usa el pago real: manda la capacidad `transfers`,
-    // que es lo que Stripe exige para transferir. Con `payouts_enabled &&
-    // details_submitted` esta pantalla podía dar por activo a un conductor al
-    // que después no se le podía transferir, y al revés.
-    const status = estadoDeCuenta(cuenta as CuentaConnect);
-    const listo = status === 'active';
-    const pendiente = cuenta.requirements?.currently_due ?? [];
+  const cuenta = await stripe.accounts.retrieve(accountId);
+  // Con `payouts_enabled && details_submitted` esta pantalla podía dar por activo a
+  // alguien al que después no se le podía transferir, y al revés.
+  const status = estadoDeCuenta(cuenta as CuentaConnect);
+  const listo = status === 'active';
+  const pendiente = cuenta.requirements?.currently_due ?? [];
 
-    await supabaseAdmin.from('profiles')
-      .update({ stripe_connect_status: status, updated_at: new Date().toISOString() })
-      .eq('id', driverId);
+  await supabaseAdmin.from('profiles')
+    .update({ stripe_connect_status: status, updated_at: new Date().toISOString() })
+    .eq('id', perfilId);
 
-    return res.json({
+  return {
+    status: 200, body: {
       success: true,
       status,
       accountId,
@@ -609,9 +616,49 @@ adminRouter.post("/drivers/:id/stripe-status", async (req: Request, res: Respons
       reason: listo ? null : pendiente.length
         ? `Le faltan datos en Stripe: ${pendiente.slice(0, 4).join(', ')}`
         : 'El alta está a medias.',
-    });
+    },
+  };
+}
+
+adminRouter.post("/drivers/:id/stripe-status", async (req: Request, res: Response) => {
+  const driverId = req.params.id;
+  try {
+    const r = await consultarStripeDe(driverId, 'El conductor');
+    return res.status(r.status).json(r.body);
   } catch (err: unknown) {
     logger.error({ err: err instanceof Error ? err.message : String(err), driverId }, '[ADMIN] estado de Stripe');
+    return res.status(500).json({ error: 'No se pudo consultar el estado en Stripe.' });
+  }
+});
+
+// Paga ya lo que se le debe al valet (viajes con tarjeta cuya comisión no se transfirió).
+adminRouter.post("/valets/:id/pay-commissions", async (req: Request, res: Response) => {
+  const stripe = getStripeAdmin();
+  if (!stripe) return res.status(500).json({ error: 'Stripe no está configurado.' });
+  try {
+    const efectivo = req.body?.includeCash === true;
+    const r = await pagarComisionesValetPendientes({ stripe, valetId: req.params.id, efectivo });
+    logger.info(`[ADMIN] Comisiones de valet ${req.params.id}: ${r.viajesPagados}/${r.viajesRevisados} viajes, $${(r.centavosPagados / 100).toFixed(2)}`);
+    const message = r.valetsSinConnect > 0
+      ? 'El valet aún no tiene su cuenta de Stripe lista: no se pudo pagar.'
+      : r.viajesRevisados === 0
+        ? 'No hay comisiones pendientes de pago.'
+        : r.viajesPagados === r.viajesRevisados
+          ? `Se pagaron $${(r.centavosPagados / 100).toFixed(2)} (${r.viajesPagados} viajes).`
+          : `Se pagaron ${r.viajesPagados} de ${r.viajesRevisados} viajes; el resto se reintentará.`;
+    return res.json({ success: true, ...r, message });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] pagar comisiones de valet');
+    return res.status(500).json({ error: 'No se pudieron pagar las comisiones.' });
+  }
+});
+
+adminRouter.post("/valets/:id/stripe-status", async (req: Request, res: Response) => {
+  try {
+    const r = await consultarStripeDe(req.params.id, 'El valet');
+    return res.status(r.status).json(r.body);
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err), valetId: req.params.id }, '[ADMIN] estado de Stripe del valet');
     return res.status(500).json({ error: 'No se pudo consultar el estado en Stripe.' });
   }
 });
@@ -734,6 +781,285 @@ adminRouter.patch("/drivers/:id", async (req: Request, res: Response) => {
 });
 
 // ─── Passengers ──────────────────────────────────────────────────────────────
+
+// ─── Valets ───────────────────────────────────────────────────────────────────
+// Los valets no son conductores: no tienen vehículo ni documentos, pero sí una
+// solicitud (`valet_applications`, por email), una propiedad y una comisión por
+// cada viaje que despachan. Se listan aparte para que las solicitudes nuevas
+// tengan dónde revisarse.
+
+const VALET_ROLES = ['valet', 'frontdesk', 'concierge'];
+
+adminRouter.get("/valets", async (_req: Request, res: Response) => {
+  try {
+    const [profilesRes, appsRes, ridesRes] = await Promise.all([
+      supabaseAdmin.from('profiles')
+        .select('id, email, phone, first_name, last_name, role, business_name, operating_city, account_status, status_reason, created_at, rating, stripe_account_id, stripe_connect_status')
+        .in('role', VALET_ROLES),
+      supabaseAdmin.from('valet_applications').select('*'),
+      supabaseAdmin.from('rides')
+        .select('valet_user_id, ride_status, valet_surcharge, valet_commission_paid, payment_method, created_at')
+        .eq('dispatched_by_valet', true),
+    ]);
+    if (profilesRes.error) throw profilesRes.error;
+
+    // Documentos subidos por los valets, contra lo que pide su catálogo activo.
+    const perfilIds = ((profilesRes.data ?? []) as Array<Record<string, any>>).map(p => String(p.id));
+    const catalogoValet = await catalogoCompleto('valet');
+    const requeridos = catalogoValet.filter(d => d.active);
+    const etiqueta = new Map(catalogoValet.map(d => [d.key, d.label]));
+    const docsPorValet = new Map<string, Array<Record<string, any>>>();
+    if (perfilIds.length > 0) {
+      const { data: docRows } = await supabaseAdmin.from('driver_documents')
+        .select('id, driver_id, doc_key, status, storage_url, file_name, created_at, updated_at, rejection_reason')
+        .in('driver_id', perfilIds);
+      for (const d of (docRows ?? []) as Array<Record<string, any>>) {
+        const lista = docsPorValet.get(String(d.driver_id)) ?? [];
+        lista.push(d);
+        docsPorValet.set(String(d.driver_id), lista);
+      }
+    }
+    // La tabla de solicitudes se crea al primer envío: si aún no existe no es un fallo.
+    const apps = (appsRes.error ? [] : (appsRes.data ?? [])) as Array<Record<string, any>>;
+    const appByEmail = new Map(apps.map(a => [String(a.email).toLowerCase(), a]));
+
+    const stats = new Map<string, { dispatched: number; completed: number; cancelled: number; commission: number; commissionPending: number; commissionCash: number; lastRideAt: string | null }>();
+    for (const r of (ridesRes.data ?? []) as Array<Record<string, any>>) {
+      const id = String(r.valet_user_id ?? '');
+      if (!id) continue;
+      const s = stats.get(id) ?? { dispatched: 0, completed: 0, cancelled: 0, commission: 0, commissionPending: 0, commissionCash: 0, lastRideAt: null };
+      s.dispatched++;
+      if (r.created_at && (!s.lastRideAt || r.created_at > s.lastRideAt)) s.lastRideAt = r.created_at;
+      if (r.ride_status === 'completed') {
+        s.completed++;
+        const c = Number(r.valet_surcharge) || 0;
+        s.commission += c;
+        // El efectivo se separa: la plataforma lo adelanta y solo se paga a petición.
+        if (!r.valet_commission_paid) {
+          if (String(r.payment_method ?? '').toLowerCase() === 'cash') s.commissionCash += c;
+          else s.commissionPending += c;
+        }
+      }
+      if (r.ride_status === 'cancelled') s.cancelled++;
+      stats.set(id, s);
+    }
+
+    const seen = new Set<string>();
+    const valets = ((profilesRes.data ?? []) as Array<Record<string, any>>).map(p => {
+      const email = String(p.email ?? '').toLowerCase();
+      const app = appByEmail.get(email);
+      seen.add(email);
+      const accountStatus = p.account_status || 'active';
+      const appStatus = app?.status ?? null;
+      const status = appStatus === 'rejected' ? 'rejected'
+        : accountStatus === 'suspended' ? 'suspended'
+        : (appStatus === 'pending' || accountStatus === 'pending') ? 'pending'
+        : 'active';
+      const s = stats.get(p.id) ?? { dispatched: 0, completed: 0, cancelled: 0, commission: 0, commissionPending: 0, commissionCash: 0, lastRideAt: null };
+      const documents = (docsPorValet.get(String(p.id)) ?? []).map(d => ({
+        id: d.id, key: d.doc_key, label: etiqueta.get(String(d.doc_key)) ?? String(d.doc_key),
+        state: normalizarEstadoDoc(d.status), url: d.storage_url ?? null, fileName: d.file_name ?? null,
+        uploadedAt: d.updated_at ?? d.created_at, rejectionReason: d.rejection_reason ?? null,
+      }));
+      const aprobados = new Set(documents.filter(d => d.state === 'aprobado').map(d => d.key));
+      const documentsSummary = {
+        required: requeridos.length,
+        approved: requeridos.filter(d => aprobados.has(d.key)).length,
+        missing: requeridos.filter(d => !documents.some(x => x.key === d.key)).map(d => d.label),
+      };
+      return {
+        documents, documentsSummary,
+        id: p.id,
+        name: [p.first_name, p.last_name].filter(Boolean).join(' ') || p.email || 'Sin nombre',
+        email: p.email ?? '',
+        phone: p.phone ?? app?.phone ?? '',
+        role: p.role,
+        property: p.business_name ?? '',
+        city: p.operating_city ?? app?.city ?? '',
+        status,
+        suspensionReason: p.status_reason ?? null,
+        createdAt: p.created_at,
+        hasProfile: true,
+        application: app ? {
+          status: app.status, venueType: app.venue_type, experienceLevel: app.experience_level,
+          schedule: app.schedule, languages: app.languages, notes: app.notes,
+        } : null,
+        ridesDispatched: s.dispatched, ridesCompleted: s.completed, ridesCancelled: s.cancelled,
+        commissionTotal: +s.commission.toFixed(2), commissionPending: +s.commissionPending.toFixed(2),
+        commissionCash: +s.commissionCash.toFixed(2),
+        rating: p.rating != null && Number(p.rating) > 0 ? Number(p.rating) : null,
+        lastRideAt: s.lastRideAt,
+        stripeStatus: p.stripe_account_id ? (p.stripe_connect_status || 'pending') : 'not_connected',
+        canReceivePayouts: p.stripe_connect_status === 'active',
+      };
+    });
+
+    // Solicitudes cuyo perfil no se llegó a crear (falló el alta de Auth): sin ellas
+    // se perdería una solicitud que sí llegó.
+    for (const a of apps) {
+      const email = String(a.email).toLowerCase();
+      if (seen.has(email)) continue;
+      valets.push({
+        id: `app:${email}`,
+        name: [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email,
+        email: a.email, phone: a.phone ?? '', role: 'valet', property: '', city: a.city ?? '',
+        status: a.status === 'rejected' ? 'rejected' : 'pending',
+        suspensionReason: null, createdAt: a.created_at, hasProfile: false,
+        documents: [], documentsSummary: { required: 0, approved: 0, missing: [] as string[] },
+        application: { status: a.status, venueType: a.venue_type, experienceLevel: a.experience_level, schedule: a.schedule, languages: a.languages, notes: a.notes },
+        ridesDispatched: 0, ridesCompleted: 0, ridesCancelled: 0, commissionTotal: 0, commissionPending: 0,
+        commissionCash: 0, rating: null, lastRideAt: null, stripeStatus: 'not_connected', canReceivePayouts: false,
+      });
+    }
+
+    valets.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')));
+    res.json({ valets });
+  } catch (err: any) {
+    logger.error(`[admin/valets] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load valets' });
+  }
+});
+
+// Viajes que ha despachado un valet, del más reciente al más antiguo.
+adminRouter.get("/valets/:id/rides", async (req: Request, res: Response) => {
+  try {
+    const { data, error } = await supabaseAdmin.from('rides')
+      .select('id, valet_booking_ref, ride_status, guest_name, pickup, dropoff, fare, valet_surcharge, payment_method, created_at, scheduled_at, rating, valet_commission_paid, driver:profiles!rides_driver_id_fkey(first_name, last_name)')
+      .eq('valet_user_id', req.params.id)
+      .order('created_at', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+
+    const direccion = (v: unknown) => {
+      if (typeof v === 'string') return v;
+      return (v as { address?: string } | null)?.address ?? '—';
+    };
+    const rides = ((data ?? []) as unknown as Array<Record<string, any>>).map(r => ({
+      id: r.id,
+      ref: r.valet_booking_ref ?? null,
+      status: r.ride_status,
+      guest: r.guest_name ?? null,
+      origin: direccion(r.pickup),
+      destination: direccion(r.dropoff),
+      fare: r.fare != null ? Number(r.fare) : null,
+      commission: r.valet_surcharge != null ? Number(r.valet_surcharge) : null,
+      commissionPaid: !!r.valet_commission_paid,
+      rating: r.rating != null ? Number(r.rating) : null,
+      paymentMethod: r.payment_method ?? null,
+      driver: r.driver ? [r.driver.first_name, r.driver.last_name].filter(Boolean).join(' ') || null : null,
+      createdAt: r.created_at,
+      scheduledAt: r.scheduled_at ?? null,
+    }));
+    res.json({ rides });
+  } catch (err: any) {
+    logger.error(`[admin/valets/rides] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load valet rides' });
+  }
+});
+
+/** Cambia la solicitud (por email) y, si hay perfil, su account_status. */
+async function resolverValet(
+  id: string,
+  opts: { application?: 'approved' | 'rejected'; account?: 'active' | 'suspended'; reason?: string | null },
+): Promise<{ found: boolean; email: string | null; name: string }> {
+  const now = new Date().toISOString();
+  let email: string | null = null;
+  let name = '';
+
+  if (id.startsWith('app:')) {
+    email = id.slice(4);
+    const { data: a } = await supabaseAdmin.from('valet_applications').select('first_name, last_name').ilike('email', email).maybeSingle();
+    name = [a?.first_name, a?.last_name].filter(Boolean).join(' ');
+  } else {
+    const upd = opts.account
+      ? await supabaseAdmin.from('profiles')
+          .update({
+            account_status: opts.account,
+            status_reason: opts.account === 'suspended' ? (opts.reason || 'Suspended by admin') : null,
+            ...(opts.account === 'suspended' ? { status_val: 'offline' } : {}),
+            updated_at: now,
+          })
+          .eq('id', id).in('role', VALET_ROLES).select('email, first_name, last_name').maybeSingle()
+      : await supabaseAdmin.from('profiles').select('email, first_name, last_name').eq('id', id).in('role', VALET_ROLES).maybeSingle();
+    if (upd.error) throw upd.error;
+    if (!upd.data) return { found: false, email: null, name: '' };
+    email = upd.data.email as string;
+    name = [upd.data.first_name, upd.data.last_name].filter(Boolean).join(' ');
+  }
+
+  if (opts.application && email) {
+    const { error } = await supabaseAdmin.from('valet_applications')
+      .update({ status: opts.application, ...(opts.reason ? { notes: opts.reason } : {}), updated_at: now })
+      .ilike('email', email);
+    if (error) logger.warn(`[admin/valets] no se pudo actualizar la solicitud de ${email}: ${error.message}`);
+  }
+  return { found: true, email, name };
+}
+
+const PUSH_CUENTA_VALET: Record<'approve' | 'reject' | 'suspend' | 'reactivate', { title: string; body: string }> = {
+  approve:    { title: 'Account approved', body: 'Your valet account is approved. You can start dispatching trips.' },
+  reject:     { title: 'Application not approved', body: "We couldn't approve your valet application." },
+  suspend:    { title: 'Account suspended', body: 'Your valet account has been suspended.' },
+  reactivate: { title: 'Account reactivated', body: 'Your valet account is active again.' },
+};
+
+/** Etiquetas de los documentos requeridos del valet que aún no están aprobados. */
+async function documentosSinAprobar(valetId: string): Promise<string[]> {
+  const requeridos = (await catalogoCompleto('valet')).filter(d => d.active);
+  const { data } = await supabaseAdmin.from('driver_documents').select('doc_key, status').eq('driver_id', valetId);
+  const aprobados = new Set(((data ?? []) as Array<Record<string, any>>)
+    .filter(d => normalizarEstadoDoc(d.status) === 'aprobado').map(d => String(d.doc_key)));
+  return requeridos.filter(d => !aprobados.has(d.key)).map(d => d.label);
+}
+
+for (const [accion, opts] of [
+  ['approve',    { application: 'approved', account: 'active' }],
+  ['reject',     { application: 'rejected', account: 'suspended' }],
+  ['suspend',    { account: 'suspended' }],
+  ['reactivate', { application: 'approved', account: 'active' }],
+] as const) {
+  adminRouter.post(`/valets/:id/${accion}`, async (req: Request, res: Response) => {
+    try {
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() || null : null;
+
+      // Aprobar sin los documentos aprobados exige confirmación explícita (`force`).
+      if (accion === 'approve' && req.body?.force !== true && !String(req.params.id).startsWith('app:')) {
+        const pendientes = await documentosSinAprobar(String(req.params.id));
+        if (pendientes.length > 0) {
+          return res.status(409).json({
+            error: `Faltan documentos aprobados: ${pendientes.join(', ')}.`,
+            errorCode: 'DOCS_INCOMPLETE',
+            missing: pendientes,
+          });
+        }
+      }
+      const { found, email, name } = await resolverValet(String(req.params.id), { ...opts, reason });
+      if (!found) return res.status(404).json({ error: 'Valet not found' });
+
+      // Cada decisión llega por correo; sin esto el valet esperaba sin saber nada.
+      const target = { email, name };
+      const notification = accion === 'approve' ? await enviarAvisoAprobacionValet(target)
+        : accion === 'reject' ? await enviarAvisoRechazoValet(target, reason)
+        : accion === 'suspend' ? await enviarAvisoSuspension(target, { reason })
+        : await enviarAvisoReactivacion(target);
+
+      // Además del correo, un push si el valet ya tiene la app con sesión.
+      if (!String(req.params.id).startsWith('app:')) {
+        const push = PUSH_CUENTA_VALET[accion];
+        const cuerpo = (accion === 'reject' || accion === 'suspend') && reason ? `${push.body} Reason: ${reason}` : push.body;
+        notifyUser(String(req.params.id), {
+          title: push.title,
+          body: cuerpo,
+          data: { type: 'valet_account_update', event: accion, screen: 'valet-dashboard', title: push.title, body: cuerpo },
+        }).catch(() => {});
+      }
+      res.json({ success: true, valetId: req.params.id, action: accion, notification, timestamp: new Date().toISOString() });
+    } catch (err: any) {
+      logger.error(`[admin/valets/${accion}] ${errMsg(err)}`);
+      res.status(500).json({ error: `Failed to ${accion} valet` });
+    }
+  });
+}
 
 adminRouter.get("/passengers", async (req: Request, res: Response) => {
   try {
@@ -909,7 +1235,7 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
     if (driverIds.length > 0) {
       const { data: rows } = await supabaseAdmin
         .from('profiles')
-        .select('id, first_name, last_name, email, phone')
+        .select('id, first_name, last_name, email, phone, role')
         .in('id', driverIds);
       for (const prof of (rows ?? []) as Record<string, unknown>[]) {
         perfiles.set(String(prof.id), prof as PerfilConductor);
@@ -924,6 +1250,8 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
       driverName: nombreDeConductor({ perfil, copia: d.driver_name as string, id: d.driver_id as string }),
       driverEmail: perfil?.email ?? null,
       driverPhone: perfil?.phone ?? null,
+      // Los valets también suben documentos: el panel los separa de los conductores.
+      driverRole: VALET_ROLES.includes(String((perfil as Record<string, unknown> | undefined)?.role ?? '')) ? 'valet' : 'driver',
       type: d.doc_key || d.document_type || 'document',
       fileName: d.file_name || 'document',
       status: d.status || 'pending',
@@ -938,6 +1266,30 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
     return res.json({ documents: [] });
   }
 });
+
+/**
+ * Si el dueño del documento es un valet, le llega un correo con el motivo y la
+ * instrucción de volver a subirlo desde la app. Los conductores ya tienen su
+ * propia pantalla de documentos, así que a ellos no se les escribe.
+ */
+async function avisarDocumentoValet(ownerId: string, docKey: string, reason?: string | null) {
+  const { data: perfil } = await supabaseAdmin.from('profiles')
+    .select('email, first_name, last_name, role').eq('id', ownerId).maybeSingle();
+  if (!perfil || !VALET_ROLES.includes(String(perfil.role))) return null;
+  const meta = (await catalogoCompleto('valet')).find(d => d.key === docKey);
+  const etiqueta = meta?.label ?? docKey;
+  const cuerpoDoc = `Please upload your ${etiqueta} again.${reason ? ` Reason: ${reason}` : ''}`;
+  notifyUser(ownerId, {
+    title: 'Document needs attention',
+    body: cuerpoDoc,
+    data: { type: 'valet_account_update', event: 'document', screen: 'valet-dashboard', title: 'Document needs attention', body: cuerpoDoc },
+  }).catch(() => {});
+  return enviarAvisoDocumentoValet(
+    { email: perfil.email, name: [perfil.first_name, perfil.last_name].filter(Boolean).join(' ') },
+    etiqueta,
+    reason || null,
+  );
+}
 
 adminRouter.post("/documents/:id/approve", async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -963,7 +1315,9 @@ adminRouter.post("/documents/:id/approve", async (req: Request, res: Response) =
 
 adminRouter.post("/documents/:id/reject", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { notes } = req.body as { notes?: string };
+  // El panel manda `reason`; antes solo se leía `notes` y el motivo se perdía.
+  const { notes: notas, reason } = req.body as { notes?: string; reason?: string };
+  const notes = notas || reason;
   try {
     const { data: doc, error: docError } = await supabaseAdmin
       .from('driver_documents').update({ status: 'rejected', updated_at: new Date().toISOString() })
@@ -973,8 +1327,10 @@ adminRouter.post("/documents/:id/reject", async (req: Request, res: Response) =>
     await recalcularVerificacion(driverId);
     if (notes) {
       await supabaseAdmin.from('profiles').update({ rejection_reason: notes, updated_at: new Date().toISOString() }).eq('id', driverId);
+      await supabaseAdmin.from('driver_documents').update({ rejection_reason: notes }).eq('id', id);
     }
-    return res.json({ success: true, document: { id, status: 'rejected', driverName: nombreDeConductor({ copia: (doc as Record<string, unknown>).driver_name as string, id: (doc as Record<string, unknown>).driver_id as string }), type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
+    const notification = await avisarDocumentoValet(driverId, String((doc as Record<string, unknown>).doc_key), notes);
+    return res.json({ success: true, notification, document: { id, status: 'rejected', driverName: nombreDeConductor({ copia: (doc as Record<string, unknown>).driver_name as string, id: (doc as Record<string, unknown>).driver_id as string }), type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(), imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
   } catch {
     return res.status(500).json({ error: 'Failed to reject document.' });
   }
@@ -983,6 +1339,7 @@ adminRouter.post("/documents/:id/reject", async (req: Request, res: Response) =>
 adminRouter.post("/documents/:id/request-reupload", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { reason } = req.body as { reason?: string };
+  let notification: unknown = null;
   try {
     const { data: doc } = await supabaseAdmin.from('driver_documents').update({ status: 'pending', updated_at: new Date().toISOString() }).eq('id', id).select().single();
     if (doc) {
@@ -990,9 +1347,11 @@ adminRouter.post("/documents/:id/request-reupload", async (req: Request, res: Re
       await recalcularVerificacion(driverId);
       if (reason) {
         await supabaseAdmin.from('profiles').update({ rejection_reason: reason, updated_at: new Date().toISOString() }).eq('id', driverId);
+        await supabaseAdmin.from('driver_documents').update({ rejection_reason: reason }).eq('id', id);
       }
+      notification = await avisarDocumentoValet(driverId, String((doc as Record<string, unknown>).doc_key), reason);
     }
-    return res.json({ success: true, document: { id, status: 'pending' } });
+    return res.json({ success: true, notification, document: { id, status: 'pending' } });
   } catch {
     return res.status(500).json({ error: 'Failed to request re-upload.' });
   }
@@ -1722,9 +2081,12 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
 // GET /api/admin/document-catalog — el catálogo completo, activos e inactivos
 // Ojo: /documents ya es la cola de verificación (línea ~658). Express responde
 // con la primera ruta que coincide, así que el catálogo vive en su propia ruta.
-adminRouter.get('/document-catalog', async (_req: Request, res: Response) => {
+// `?audience=valet` trae el catálogo del valet; sin él, el del conductor.
+const audienciaDe = (req: Request): AudienciaCatalogo => (req.query.audience === 'valet' ? 'valet' : 'driver');
+
+adminRouter.get('/document-catalog', async (req: Request, res: Response) => {
   try {
-    const docs = await catalogoCompleto();
+    const docs = await catalogoCompleto(audienciaDe(req));
     res.json({
       documents: docs,
       activeCount: docs.filter((d) => d.active).length,
@@ -1751,12 +2113,13 @@ adminRouter.patch('/document-catalog/:key', async (req: Request, res: Response) 
   if (doc.sortOrder !== undefined) fila.sort_order = doc.sortOrder;
 
   try {
+    const audiencia = audienciaDe(req);
     const { data, error } = await supabaseAdmin
-      .from('document_catalog').update(fila).eq('doc_key', req.params.key).select('doc_key').maybeSingle();
+      .from(tablaCatalogo(audiencia)).update(fila).eq('doc_key', req.params.key).select('doc_key').maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: 'Documento no encontrado.', errorCode: 'DOC_NOT_FOUND' });
 
-    invalidarCatalogo();
+    invalidarCatalogo(audiencia);
     res.json({ success: true, key: req.params.key, ...doc });
   } catch (err: unknown) {
     logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] actualizar documento');
@@ -1772,8 +2135,9 @@ adminRouter.post('/document-catalog', async (req: Request, res: Response) => {
   const { doc } = normalizado;
   try {
     // Al final de la lista, salvo que el panel diga otra cosa.
-    const ultimo = (await catalogoCompleto()).reduce((max, d) => Math.max(max, d.sortOrder), 0);
-    const { error } = await supabaseAdmin.from('document_catalog').insert({
+    const audiencia = audienciaDe(req);
+    const ultimo = (await catalogoCompleto(audiencia)).reduce((max, d) => Math.max(max, d.sortOrder), 0);
+    const { error } = await supabaseAdmin.from(tablaCatalogo(audiencia)).insert({
       doc_key:    doc.key,
       label:      doc.label,
       category:   doc.category,
@@ -1787,7 +2151,7 @@ adminRouter.post('/document-catalog', async (req: Request, res: Response) => {
     }
     if (error) throw error;
 
-    invalidarCatalogo();
+    invalidarCatalogo(audiencia);
     res.status(201).json({ success: true, ...doc });
   } catch (err: unknown) {
     logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] crear documento');
