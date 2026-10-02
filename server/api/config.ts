@@ -7,6 +7,7 @@ import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZone
 import { telefonoEmergencias } from "../services/driverIncident";
 import { claveDeNavegador, mapIdPublicado } from '../services/mapsKeys';
 import { surgeVigente, estadoSurge, resolverSurge, guardarManual } from '../services/surgeConfig';
+import { ensureReglasValetFresh } from '../services/valetCommissionConfig';
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -141,7 +142,7 @@ configRouter.get("/", async (req: Request, res: Response) => {
       googleMapsMapId,
       // Espera gratis, topes, no-show y cancelación: la app y el panel los leen
       // de aquí en vez de llevarlos escritos en su código.
-      pricingPolicy:    getPricingPolicy(),
+      pricingPolicy:    await ensureReglasValetFresh().then(() => getPricingPolicy()),
       // Teléfonos de despacho y emergencias; ver `soporte()`.
       support,
     });

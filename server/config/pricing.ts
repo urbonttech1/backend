@@ -9,6 +9,8 @@
  * cancelación— son reglas de negocio y viven aquí.
  */
 
+import { getReglasValet } from '../services/valetCommission';
+
 // ── Plataforma ───────────────────────────────────────────────────────────────
 /**
  * Lo que se queda Urbont de cada viaje. Sale de DENTRO del precio: el pasajero
@@ -492,6 +494,8 @@ export function getPricingPolicy() {
     onDemandCancellationFee: 0,
     bookingFeeAppliesTo: 'scheduled',
     valetExempt: true,
+    /** La comisión del valet que edita el panel: la app la lee de aquí para mostrarla. */
+    valetCommission: { minimumUsd: getReglasValet().minimo, thresholdUsd: getReglasValet().umbral, percent: Math.round(getReglasValet().porcentaje * 1e6) / 1e4 },
     longPickupFee: LONG_PICKUP_FEE,
     longPickupThresholdMinutes: LONG_PICKUP_THRESHOLD_MINS,
   };

@@ -11,6 +11,8 @@ import { catalogoCompleto, invalidarCatalogo, tablaCatalogo } from '../services/
 import type { AudienciaCatalogo } from '../services/docCatalog';
 import { notifyUser } from '../services/fcm';
 import { pagarComisionesValetPendientes } from '../services/valetPayout';
+import { ensureReglasValetFresh, guardarReglasValet, paraPanel as reglasValetParaPanel } from '../services/valetCommissionConfig';
+import { REGLAS_VALET_POR_DEFECTO, LIMITES_VALET } from '../services/valetCommission';
 import { tasaImpuestoRespaldo, guardarTasa, comoPorcentaje, TASA_MAXIMA } from '../services/taxConfig';
 import { ensureComisionFresh, guardarComision, comoPorcentaje as comoPorcentajeComision, COMISION_MAXIMA } from '../services/commissionConfig';
 import { cargarConfigTraduccion, guardarConfigTraduccion, estadoConfigTraduccion } from '../services/translationConfig';
@@ -1372,7 +1374,12 @@ adminRouter.get("/fares", async (_req: Request, res: Response) => {
   // Las políticas (espera, no-show, cancelación) viajan con las tarifas para que
   // la pantalla las muestre sin una segunda petición. Son de sólo lectura: se
   // cambian en código.
-  res.json({ fares, pricingPolicy: getPricingPolicy(), taxFallbackRatePercent, platformCommissionPercent });
+  await ensureReglasValetFresh();
+  res.json({
+    fares, pricingPolicy: getPricingPolicy(), taxFallbackRatePercent, platformCommissionPercent,
+    // La comisión del valet, editable desde la misma pantalla.
+    valetCommission: { ...reglasValetParaPanel(), defaults: reglasValetParaPanel(REGLAS_VALET_POR_DEFECTO), limits: LIMITES_VALET },
+  });
 });
 
 // PUT /api/admin/fares/commission — la comisión de Urbont
@@ -1396,6 +1403,20 @@ adminRouter.put("/fares/commission", async (req: Request, res: Response) => {
   if (tasa === undefined) return res.status(500).json({ error: 'No se pudo guardar la comisión.' });
 
   return res.json({ success: true, platformCommissionPercent: comoPorcentajeComision(tasa) });
+});
+
+// PUT /api/admin/fares/valet-commission — la comisión que se le suma al huésped y se paga al valet
+// Solo cambia los despachos nuevos: cada viaje conserva la comisión con la que se creó.
+adminRouter.put("/fares/valet-commission", async (req: Request, res: Response) => {
+  const quien = (req as Request & { adminEmail?: string }).adminEmail || 'admin';
+  try {
+    const r = await guardarReglasValet((req.body ?? {}) as Record<string, unknown>, quien);
+    if ('errorCode' in r) return res.status(400).json(r);
+    return res.json({ success: true, valetCommission: reglasValetParaPanel(r) });
+  } catch (err: unknown) {
+    logger.error({ err: err instanceof Error ? err.message : String(err) }, '[ADMIN] guardar comisión del valet');
+    return res.status(500).json({ error: 'No se pudo guardar la comisión del valet.' });
+  }
 });
 
 // PUT /api/admin/fares/tax — tasa de respaldo del impuesto

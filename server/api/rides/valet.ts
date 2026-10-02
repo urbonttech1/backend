@@ -17,6 +17,7 @@ import {
 import { ensureFaresFresh } from "../../services/fareConfig";
 import { getEffectiveSurge } from "../config";
 import { comisionValet } from "../../services/valetCommission";
+import { ensureReglasValetFresh } from "../../services/valetCommissionConfig";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -236,7 +237,9 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
     const tarifaServidor = valetFareBreakdown && valetFareBreakdown.total > 0 ? valetFareBreakdown.total : 0;
     const baseFare       = tarifaServidor > 0 ? tarifaServidor : (precioTablero > 0 ? precioTablero : 0);
 
-    // $10 hasta $100 de servicio, 10 % por encima (services/valetCommission.ts).
+    // La regla (por defecto $10 hasta $100 de servicio y 10 % por encima) la edita el
+    // panel: services/valetCommissionConfig.ts.
+    await ensureReglasValetFresh();
     const valetSurcharge  = comisionValet(baseFare);
     const totalFare       = baseFare > 0 ? +(baseFare + valetSurcharge).toFixed(2) : null;
 

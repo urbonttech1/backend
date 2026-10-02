@@ -40,3 +40,35 @@ describe('comisionValet — la tabla acordada con el cliente', () => {
     expect(comisionValet('250')).toBe(25);
   });
 });
+
+import { normalizarReglasValet, REGLAS_VALET_POR_DEFECTO, setReglasValet, getReglasValet } from './valetCommission';
+
+describe('comisión del valet configurable', () => {
+  const reglas = { minimo: 15, umbral: 80, porcentaje: 0.2 };
+
+  it('usa las reglas que se le pasen', () => {
+    expect(comisionValet(50, reglas)).toBe(15);
+    expect(comisionValet(80, reglas)).toBe(15);
+    expect(comisionValet(100, reglas)).toBe(20);
+  });
+
+  it('las reglas vigentes cambian el resultado por defecto y se pueden restaurar', () => {
+    setReglasValet(reglas);
+    expect(comisionValet(50)).toBe(15);
+    setReglasValet(REGLAS_VALET_POR_DEFECTO);
+    expect(getReglasValet()).toEqual(REGLAS_VALET_POR_DEFECTO);
+    expect(comisionValet(50)).toBe(10);
+  });
+
+  it('convierte lo que manda el panel: USD, USD y porcentaje', () => {
+    expect(normalizarReglasValet({ minimumUsd: 12, thresholdUsd: '90', percent: '12,5' }))
+      .toEqual({ reglas: { minimo: 12, umbral: 90, porcentaje: 0.125 } });
+  });
+
+  it('rechaza valores fuera de rango o que no son números', () => {
+    expect(normalizarReglasValet({ minimumUsd: -1, thresholdUsd: 100, percent: 10 })).toMatchObject({ field: 'minimumUsd' });
+    expect(normalizarReglasValet({ minimumUsd: 10, thresholdUsd: 0, percent: 10 })).toMatchObject({ field: 'thresholdUsd' });
+    expect(normalizarReglasValet({ minimumUsd: 10, thresholdUsd: 100, percent: 99 })).toMatchObject({ field: 'percent' });
+    expect(normalizarReglasValet({ minimumUsd: 'abc', thresholdUsd: 100, percent: 10 })).toMatchObject({ field: 'minimumUsd' });
+  });
+});
