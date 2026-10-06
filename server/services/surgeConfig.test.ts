@@ -5,6 +5,7 @@ import {
   resolverSurge,
   decidirAuto,
   debeEscribir,
+  esSilencioso,
   type SurgeConfig,
 } from './surgeConfig';
 
@@ -160,5 +161,23 @@ describe('manualSilent — fijar sin avisar', () => {
     for (const v of ['true', 1, {}, null]) {
       expect(parseSurgeConfig(JSON.stringify({ manualSilent: v })).manualSilent).toBe(false);
     }
+  });
+});
+
+describe('esSilencioso — ocultar el multiplicador al pasajero', () => {
+  it('oculta sólo con candado manual fijado sin avisar', () => {
+    expect(esSilencioso(cfg({ manualMultiplier: 1.5, manualSilent: true }))).toBe(true);
+  });
+
+  it('un candado normal se muestra', () => {
+    expect(esSilencioso(cfg({ manualMultiplier: 1.5 }))).toBe(false);
+  });
+
+  it('sin candado no oculta nada, aunque quede el flag de antes', () => {
+    expect(esSilencioso(cfg({ manualSilent: true }))).toBe(false);
+  });
+
+  it('ocultar no cambia lo que se cobra', () => {
+    expect(resolverSurge(cfg({ manualMultiplier: 1.5, manualSilent: true }), 1.0).value).toBe(1.5);
   });
 });

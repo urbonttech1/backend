@@ -132,6 +132,14 @@ export function resolverSurge(cfg: SurgeConfig, timeSurge: number): { value: num
     : { value: cfg.autoMultiplier, origin: 'auto' };
 }
 
+/**
+ * Candado fijado sin avisar: se cobra igual, pero el pasajero no debe ver el
+ * multiplicador en ninguna parte — sólo el total, que ya lo lleva dentro.
+ */
+export function esSilencioso(cfg: SurgeConfig): boolean {
+  return cfg.manualMultiplier !== null && cfg.manualSilent;
+}
+
 /** La escalera del cron, tal cual estaba en `autoSurge`. */
 export function decidirAuto(drivers: number, rides: number): number {
   const ratio = drivers > 0 ? rides / drivers : rides;
@@ -186,6 +194,15 @@ export async function surgeVigente(now: Date = new Date()): Promise<number> {
   } catch (err) {
     logger.warn(`[Surge] No se pudo leer la configuración, se usa sólo la franja horaria: ${(err as Error).message}`);
     return timeSurge;
+  }
+}
+
+/** Nunca lanza: ante un fallo de lectura se comporta como si no fuera silencioso. */
+export async function surgeSilencioso(): Promise<boolean> {
+  try {
+    return esSilencioso(await estadoSurge());
+  } catch {
+    return false;
   }
 }
 

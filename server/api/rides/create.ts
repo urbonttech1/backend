@@ -14,6 +14,7 @@ import {
   normalizePaymentMethod,
 } from "../../config/pricing";
 import { getEffectiveSurge } from "../config";
+import { surgeSilencioso } from "../../services/surgeConfig";
 import { ensureFaresFresh } from "../../services/fareConfig";
 import { resolveZone, ensureZonesFresh } from "../../services/serviceZones";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
@@ -35,6 +36,8 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
   try {
     await ensureFaresFresh();
     const surgeMultiplier = await getEffectiveSurge();
+    // Sin avisar: el total lleva el recargo, pero el multiplicador no se publica.
+    const oculto = await surgeSilencioso();
 
     // Chofer a disposición: se cotiza por bloque de horas, no por distancia.
     // Sin esta rama la app no tenía forma de mostrar un precio por horas sin
@@ -50,7 +53,7 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
         bookingType: req.query.scheduled === 'true' ? 'scheduled' : undefined,
       });
       if (!hourly) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
-      return res.json(hourly);
+      return res.json(oculto ? { ...hourly, surge_multiplier: 1.0 } : hourly);
     }
 
     const distanceKm      = parseFloat(req.query.distanceKm as string);
@@ -64,7 +67,7 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
     // lo manda; antes el servidor lo ignoraba en esta ruta.
     const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier });
     if (!breakdown) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
-    return res.json(breakdown);
+    return res.json(oculto ? { ...breakdown, surge_multiplier: 1.0 } : breakdown);
   } catch (err: any) {
     return res.status(500).json({ error: err?.message || 'Fare calculation failed' });
   }
@@ -158,7 +161,8 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
     const surgeMultiplier = await getEffectiveSurge();
     const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier })
       ?? { total: 0, distanceMiles, durationMinutes, surge_multiplier: surgeMultiplier };
-    res.json({ ...breakdown, distanceMiles, durationMinutes });
+    const oculto = await surgeSilencioso();
+    res.json({ ...breakdown, ...(oculto ? { surge_multiplier: 1.0 } : {}), distanceMiles, durationMinutes });
   } catch (err: any) {
     logger.error(`[RIDES] estimate error: ${err.message}`);
     res.status(500).json({ error: 'Failed to calculate fare estimate.' });
@@ -372,7 +376,12 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     await ensureFaresFresh();
     const serverSurge = await getEffectiveSurge();
     const clientSurge = typeof bodySurge === 'number' && bodySurge >= 1 ? bodySurge : null;
-    const surgeMultiplier = clientSurge !== null ? Math.min(serverSurge, clientSurge) : serverSurge;
+    // Fijado sin avisar, la app recibió 1.0 y lo devuelve, pero el total que
+    // mostró ya llevaba el recargo. Manda el del servidor: un candado manual no
+    // depende del reloj del teléfono, que es lo que el mínimo protege.
+    const surgeMultiplier = await surgeSilencioso()
+      ? serverSurge
+      : clientSurge !== null ? Math.min(serverSurge, clientSurge) : serverSurge;
 
     const requestedBookingType =
       (req.body as { booking_type?: string; bookingType?: string }).booking_type ||

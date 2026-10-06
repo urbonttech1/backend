@@ -6,7 +6,7 @@ import { getTimeSurge, getFareClasses, getPricingPolicy, VEHICLE_ALIAS } from ".
 import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
 import { telefonoEmergencias } from "../services/driverIncident";
 import { claveDeNavegador, mapIdPublicado } from '../services/mapsKeys';
-import { surgeVigente, estadoSurge, resolverSurge, guardarManual } from '../services/surgeConfig';
+import { surgeVigente, estadoSurge, resolverSurge, guardarManual, esSilencioso } from '../services/surgeConfig';
 import { ensureReglasValetFresh } from '../services/valetCommissionConfig';
 
 const log = createContextLogger('CONFIG');
@@ -118,23 +118,25 @@ configRouter.get("/", async (req: Request, res: Response) => {
   // El recargo que se va a cobrar de verdad. `surge_multiplier` es el que ha
   // decidido la plataforma sin contar la franja horaria: lo escribe sólo
   // `services/surgeConfig`, que resuelve entre el candado manual y el automático.
-  const surgeEfectivo = await getEffectiveSurge();
-  const origenSurge = await estadoSurge()
-    .then(e => resolverSurge(e, getTimeSurge()).origin)
-    .catch(() => null);
+  const estado = await estadoSurge().catch(() => null);
+  // Fijado sin avisar: la app no recibe ningún multiplicador, sólo totales.
+  const oculto = estado ? esSilencioso(estado) : false;
+  const surgeEfectivo = oculto ? 1.0 : await getEffectiveSurge();
+  const origenSurge = estado && !oculto ? resolverSurge(estado, getTimeSurge()).origin : null;
   try {
     const { rows } = await pool.query<{ key: string; value: string }>(
       'SELECT key, value FROM app_config'
     );
     const cfg: Record<string, string> = {};
     for (const row of rows) cfg[row.key] = row.value;
+    const surgeAdmin = oculto ? 1.0 : parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier));
     res.json({
       maintenance_mode: cfg['maintenance_mode'] === 'true',
       min_version:      cfg['min_version'] ?? DEFAULTS.min_version,
-      surge_multiplier: parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier)),
-      multiplier:       parseFloat(cfg['surge_multiplier'] ?? String(DEFAULTS.surge_multiplier)),
-      surgeReason:      cfg['surge_reason'] || null,
-      time_surge_multiplier:      getTimeSurge(),
+      surge_multiplier: surgeAdmin,
+      multiplier:       surgeAdmin,
+      surgeReason:      oculto ? null : cfg['surge_reason'] || null,
+      time_surge_multiplier:      oculto ? 1.0 : getTimeSurge(),
       effective_surge_multiplier: surgeEfectivo,
       surge_origin:               origenSurge,
       stripePublishableKey,
@@ -267,6 +269,16 @@ configRouter.get("/surge", async (_req: Request, res: Response) => {
     // la franja horaria. El que se cobra es `effective_surge_multiplier`.
     // `surge_origin` dice de dónde sale, para no tener que adivinarlo.
     const estado = await estadoSurge().catch(() => null);
+    if (estado && esSilencioso(estado)) {
+      return res.json({
+        surge_multiplier: 1.0,
+        surge_reason:     null,
+        time_surge_multiplier:      1.0,
+        effective_surge_multiplier: 1.0,
+        surge_origin:       null,
+        surge_auto_enabled: estado.autoEnabled,
+      });
+    }
     res.json({
       surge_multiplier: parseFloat(cfg['surge_multiplier'] ?? '1.0'),
       surge_reason:     cfg['surge_reason'] || null,
