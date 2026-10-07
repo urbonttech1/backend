@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { createContextLogger } from "../lib/logger";
 import { getSearchBias, ensureZonesFresh } from "../services/serviceZones";
 import { claveDeServidor } from '../services/mapsKeys';
+import { organizarAccesos, type LugarGoogle } from '../services/placeAccess';
 
 export const geocodeRouter = Router();
 
@@ -76,15 +77,17 @@ const TTL = {
   SUGGEST:    5  * 60 * 1000,          // 5 min  — autocomplete is stable but not permanent
   REVERSE:    24 * 60 * 60 * 1000,     // 24 h   — an address at a lat/lng rarely changes
   PLACE:      7  * 24 * 60 * 60 * 1000,// 7 days — place_id is permanent
+  ACCESS:     7  * 24 * 60 * 60 * 1000,// 7 days — doors of a place change rarely
   FORWARD:    24 * 60 * 60 * 1000,     // 24 h   — same address text → same coords
   DIRECTIONS: 3  * 60 * 1000,          // 3 min  — traffic changes, keep short
 };
-const MAX = { SUGGEST: 2000, REVERSE: 5000, PLACE: 10000, FORWARD: 2000, DIRECTIONS: 1000 };
+const MAX = { SUGGEST: 2000, REVERSE: 5000, PLACE: 10000, ACCESS: 5000, FORWARD: 2000, DIRECTIONS: 1000 };
 
 const cache = {
   suggest:    makeBucket(),
   reverse:    makeBucket(),
   place:      makeBucket(),
+  access:     makeBucket(),
   forward:    makeBucket(),
   directions: makeBucket(),
 };
@@ -365,6 +368,45 @@ geocodeRouter.get('/place', async (req: Request, res: Response) => {
     cacheSet(cache.place, place_id, result, TTL.PLACE, MAX.PLACE);
     res.json(result);
   } catch {
+    res.json(null);
+  }
+});
+
+// GET /api/geocode/access?place_id=...&lang=...
+// Puertas y puntos de parada de cualquier lugar. La respuesta ya viene
+// separada en entradas, puntos de navegación y la lista que se le pregunta
+// al pasajero. Si Google no tiene puertas, `choices` llega vacío y el viaje
+// sigue al punto único del lugar.
+geocodeRouter.get('/access', async (req: Request, res: Response) => {
+  const { place_id, lang } = req.query as Record<string, string>;
+  if (!place_id || !/^[A-Za-z0-9_-]+$/.test(place_id)) { res.json(null); return; }
+  if (!GOOGLE_KEY) { res.json(null); return; }
+
+  const language = (lang && /^[a-z]{2}$/.test(lang)) ? lang : 'en';
+  const cacheKey = `${place_id}|${language}`;
+  const cached = cacheGet(cache.access, cacheKey);
+  if (cached !== undefined) { res.json(cached); return; }
+
+  const url = `https://places.googleapis.com/v1/places/${encodeURIComponent(place_id)}?languageCode=${language}`;
+  try {
+    const r = await fetch(url, {
+      headers: {
+        'X-Goog-Api-Key': GOOGLE_KEY,
+        'X-Goog-FieldMask': 'id,displayName,location,entrances,navigationPoints',
+      },
+    });
+    if (!r.ok) {
+      log.info(`[GEOCODE/access] Places API ${r.status} for ${place_id}`);
+      res.json(null);
+      return;
+    }
+    const data = await r.json() as LugarGoogle;
+    const acceso = organizarAccesos(data);
+    if (!acceso.placeId) acceso.placeId = place_id;
+    cacheSet(cache.access, cacheKey, acceso, TTL.ACCESS, MAX.ACCESS);
+    res.json(acceso);
+  } catch (err) {
+    log.error(`[GEOCODE/access] ${err}`);
     res.json(null);
   }
 });
