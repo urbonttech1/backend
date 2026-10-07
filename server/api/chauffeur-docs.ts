@@ -55,6 +55,7 @@ async function ensureDriverDocumentsSchema(): Promise<void> {
         driver_name   VARCHAR(255),
         expiry_date   DATE,
         notified_30d  BOOLEAN DEFAULT false,
+        notified_15d  BOOLEAN DEFAULT false,
         notified_7d   BOOLEAN DEFAULT false,
         created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
         updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW()
@@ -72,6 +73,7 @@ async function ensureDriverDocumentsSchema(): Promise<void> {
       `ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS expiry_date   DATE`,
       `ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS notified_30d  BOOLEAN DEFAULT false`,
       `ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS notified_7d   BOOLEAN DEFAULT false`,
+      `ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS notified_15d  BOOLEAN DEFAULT false`,
     ];
     for (const sql of addCols) {
       try { await pool.query(sql); } catch { /* column already exists */ }
@@ -155,7 +157,7 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
   const { expiry_date, ...base } = record;
   // Una re-subida deja el documento en revisión: el motivo del rechazo anterior ya no aplica.
   const payload: Record<string, unknown> = expiry_date
-    ? { ...base, expiry_date, notified_30d: false, notified_7d: false, rejection_reason: null }
+    ? { ...base, expiry_date, notified_30d: false, notified_15d: false, notified_7d: false, rejection_reason: null }
     : { ...base, rejection_reason: null };
 
   // Attempt 1 — supabaseAdmin PostgREST (works when unique index exists)
@@ -183,8 +185,8 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
     await pool.query(
       `INSERT INTO driver_documents
          (driver_id, doc_key, document_type, storage_url, image_url, file_name, driver_name,
-          status, updated_at, expiry_date, notified_30d, notified_7d)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false)
+          status, updated_at, expiry_date, notified_30d, notified_15d, notified_7d)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false,false)
        ON CONFLICT (driver_id, doc_key)
        DO UPDATE SET
          document_type = EXCLUDED.document_type,
@@ -201,6 +203,7 @@ async function upsertDocRecord(record: DocRecord): Promise<{ error: string | nul
          -- Documento renovado, avisos a cero: si no, un documento que ya avisó a
          -- 30 y 7 días no volvería a avisar nunca tras renovarse.
          notified_30d  = false,
+         notified_15d  = false,
          notified_7d   = false`,
       [
         record.driver_id, record.doc_key, record.document_type,

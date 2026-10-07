@@ -17,6 +17,9 @@ import { notifyRidePassenger } from '../services/valetNotifications';
 import { procesarNota, MAX_INTENTOS } from '../services/voiceTranscription';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
 import { decidirAuto, guardarAuto } from '../services/surgeConfig';
+import { enviarAvisoVencimientoDocumento, type FaseVencimiento } from '../services/accountEmails';
+import { catalogoCompleto } from '../services/docCatalogStore';
+import { audienciaDeRol, docMeta } from '../services/docCatalog';
 
 async function anonymizeOldRides() {
   log.info('[CRON] Starting daily PII anonymization job...');
@@ -1043,17 +1046,37 @@ export async function startCronJobs() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Document Expiry — alert at 30d/7d, auto-suspend at 0d
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** El correo que acompaña al push. Nunca lanza: un fallo de correo no frena el cron. */
+async function avisarVencimientoPorCorreo(driverId: string, docKey: string, expiry: string, fase: FaseVencimiento) {
+  try {
+    const { data: perfil } = await supabaseAdmin.from('profiles')
+      .select('email, first_name, last_name, role').eq('id', driverId).maybeSingle();
+    if (!perfil?.email) return;
+    const catalogo = await catalogoCompleto(audienciaDeRol(perfil.role as string | null)).catch(() => []);
+    const etiqueta = catalogo.find(d => d.key === docKey)?.label ?? docMeta(docKey).label;
+    const r = await enviarAvisoVencimientoDocumento(
+      { email: perfil.email as string, name: [perfil.first_name, perfil.last_name].filter(Boolean).join(' ') },
+      etiqueta, expiry, fase,
+    );
+    if (!r.sent) log.warn(`[CRON] Correo de vencimiento (${fase}) no enviado a ${driverId}: ${r.message}`);
+  } catch (err) {
+    log.warn({ err }, `[CRON] Correo de vencimiento (${fase}) falló para ${driverId}`);
+  }
+}
+
 async function checkDocumentExpiry() {
   log.info('[CRON] Running document expiry check...');
   try {
     const now       = new Date();
     const in30days  = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const in15days  = new Date(now.getTime() + 15 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const in7days   = new Date(now.getTime() +  7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const today     = now.toISOString().slice(0, 10);
 
     const { data: docs } = await supabaseAdmin
       .from('driver_documents')
-      .select('id, driver_id, document_type, expiry_date, notified_30d, notified_7d')
+      .select('id, driver_id, document_type, expiry_date, notified_30d, notified_15d, notified_7d')
       .not('expiry_date', 'is', null)
       .lte('expiry_date', in30days);
 
@@ -1068,6 +1091,7 @@ async function checkDocumentExpiry() {
       const docType    = ((doc as Record<string,unknown>).document_type as string) || 'document';
       const docId      = (doc as Record<string,unknown>).id as string;
       const n30        = (doc as Record<string,unknown>).notified_30d as boolean;
+      const n15        = (doc as Record<string,unknown>).notified_15d as boolean;
       const n7         = (doc as Record<string,unknown>).notified_7d  as boolean;
 
       if (expiry <= today) {
@@ -1083,6 +1107,8 @@ async function checkDocumentExpiry() {
           body:  `Your ${docType} has expired. Your account has been temporarily suspended. Please upload a valid document to resume driving.`,
           data:  { type: 'document_expired', doc_id: docId, screen: 'driver_documents' },
         }).catch(() => {});
+        // El push se repite cada día mientras siga vencido; el correo, sólo el día que vence.
+        if (expiry === today) avisarVencimientoPorCorreo(driverId, docType, expiry, 'vencido');
 
         log.info(`[CRON] Driver ${driverId} suspended — ${docType} expired on ${expiry}`);
 
@@ -1102,8 +1128,28 @@ async function checkDocumentExpiry() {
           body:  `Your ${docType} expires on ${expiry}. Upload a renewal now to avoid suspension.`,
           data:  { type: 'document_expiring_7d', doc_id: docId, screen: 'driver_documents' },
         }).catch(() => {});
+        avisarVencimientoPorCorreo(driverId, docType, expiry, '7d');
 
         log.info(`[CRON] Driver ${driverId} notified — ${docType} expires ${expiry} (7d warning)`);
+
+      } else if (expiry <= in15days && !n15) {
+        const { data: claimed } = await supabaseAdmin
+          .from('driver_documents')
+          .update({ notified_15d: true, updated_at: now.toISOString() })
+          .eq('id', docId)
+          .eq('notified_15d', false)
+          .select('id');
+
+        if (!claimed || claimed.length === 0) continue;
+
+        notifyUser(driverId, {
+          title: '⚠️ Document Expiring in 15 Days',
+          body:  `Your ${docType} expires on ${expiry}. Upload a renewal soon to avoid suspension.`,
+          data:  { type: 'document_expiring_15d', doc_id: docId, screen: 'driver_documents' },
+        }).catch(() => {});
+        avisarVencimientoPorCorreo(driverId, docType, expiry, '15d');
+
+        log.info(`[CRON] Driver ${driverId} notified — ${docType} expires ${expiry} (15d warning)`);
 
       } else if (expiry <= in30days && !n30) {
         // Atomic claim first before sending push
@@ -1121,6 +1167,7 @@ async function checkDocumentExpiry() {
           body:  `Your ${docType} expires on ${expiry}. Please renew it soon to continue driving.`,
           data:  { type: 'document_expiring_30d', doc_id: docId, screen: 'driver_documents' },
         }).catch(() => {});
+        avisarVencimientoPorCorreo(driverId, docType, expiry, '30d');
 
         log.info(`[CRON] Driver ${driverId} notified — ${docType} expires ${expiry} (30d warning)`);
       }

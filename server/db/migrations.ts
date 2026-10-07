@@ -90,6 +90,7 @@ export async function runMigrations() {
         driver_name    VARCHAR(255),
         expiry_date    DATE,
         notified_30d   BOOLEAN DEFAULT false,
+        notified_15d   BOOLEAN DEFAULT false,
         notified_7d    BOOLEAN DEFAULT false,
         rejection_reason TEXT,
         created_at     TIMESTAMPTZ DEFAULT NOW(),
@@ -235,6 +236,7 @@ export async function runMigrations() {
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS rejection_reason TEXT`);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS notified_30d   BOOLEAN DEFAULT false`);
     await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS notified_7d    BOOLEAN DEFAULT false`);
+    await safeAlter(`ALTER TABLE driver_documents ADD COLUMN IF NOT EXISTS notified_15d   BOOLEAN DEFAULT false`);
 
     await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS flight_number TEXT`);
     await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS airline TEXT`);

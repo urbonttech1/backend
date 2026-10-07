@@ -134,6 +134,46 @@ export function documentoValetHtml(target: AccountEmailTarget, docLabel: string,
   });
 }
 
+export type FaseVencimiento = '30d' | '15d' | '7d' | 'vencido';
+
+/** `YYYY-MM-DD` sin pasar por la zona del servidor, que podría restarle un día. */
+function fechaDeVencimiento(ymd: string): string {
+  return new Date(`${ymd.slice(0, 10)}T12:00:00Z`).toLocaleDateString('es-US', {
+    day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
+  });
+}
+
+export function vencimientoDocumentoHtml(
+  target: AccountEmailTarget,
+  docLabel: string,
+  expiryDate: string,
+  fase: FaseVencimiento,
+): string {
+  const fecha = `<strong>${fechaDeVencimiento(expiryDate)}</strong>`;
+  const cuerpo = fase === 'vencido'
+    ? `${parrafo(`Tu documento <strong>${docLabel}</strong> venció el ${fecha}.`)}
+       ${parrafo(`Por seguridad, tu cuenta quedó <strong>suspendida temporalmente</strong> y no podrás
+         recibir viajes hasta que subas un documento vigente.`)}
+       <div style="margin:4px 0 18px;">${badge('Documento vencido', brand.red)}</div>`
+    : `${parrafo(`Tu documento <strong>${docLabel}</strong> vence el ${fecha}${
+         fase === '7d' ? ', en menos de una semana' : fase === '15d' ? ', en unas dos semanas' : ''}.`)}
+       ${parrafo(fase === '7d' || fase === '15d'
+         ? 'Si no lo renuevas antes de esa fecha, tu cuenta se suspenderá y no podrás recibir viajes.'
+         : 'Renuévalo con tiempo para seguir conduciendo sin interrupciones.')}`;
+
+  return emailShell({
+    eyebrow: 'Documentos',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${cuerpo}
+      ${parrafo(`Abre la app de URBONT, entra a <em>Perfil → Documentos</em> y sube la versión vigente.`)}
+      ${parrafo(`¿Dudas? Escríbenos a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque uno de tus documentos está por vencer o venció.',
+  });
+}
+
 /** Qué pasó con el aviso, para que el panel pueda decírselo al admin. */
 export interface ResultadoAviso {
   /** true = el correo salió. */
@@ -188,4 +228,20 @@ export function enviarAvisoRechazoValet(target: AccountEmailTarget, reason?: str
 
 export function enviarAvisoDocumentoValet(target: AccountEmailTarget, docLabel: string, reason?: string | null): Promise<ResultadoAviso> {
   return avisar(target, 'Necesitamos que vuelvas a enviar un documento', documentoValetHtml(target, docLabel, reason));
+}
+
+const ASUNTO_VENCIMIENTO: Record<FaseVencimiento, (doc: string) => string> = {
+  '30d':     doc => `Tu ${doc} vence en 30 días`,
+  '15d':     doc => `Tu ${doc} vence en 15 días`,
+  '7d':      doc => `Tu ${doc} vence en 7 días`,
+  'vencido': doc => `Tu ${doc} venció — cuenta suspendida`,
+};
+
+export function enviarAvisoVencimientoDocumento(
+  target: AccountEmailTarget,
+  docLabel: string,
+  expiryDate: string,
+  fase: FaseVencimiento,
+): Promise<ResultadoAviso> {
+  return avisar(target, ASUNTO_VENCIMIENTO[fase](docLabel), vencimientoDocumentoHtml(target, docLabel, expiryDate, fase));
 }
