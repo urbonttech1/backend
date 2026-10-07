@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import Stripe from "stripe";
-import { requireAdminJWT } from "./admin-auth";
+import { requireAdminJWT, requireAdminRole } from "./admin-auth";
 import { supabaseAdmin } from "../db/client";
 import { pool as pgPool } from "../db/pool";
 import { logger } from '../lib/logger';
@@ -29,7 +29,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
-import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet } from '../services/accountEmails';
+import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena } from '../services/accountEmails';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
 import { DEFAULT_FARE_CLASSES, type FareClass, getPricingPolicy } from '../config/pricing';
@@ -1214,6 +1214,37 @@ adminRouter.post("/passengers/:id/reactivate", async (req: Request, res: Respons
   } catch (err: any) {
     logger.error(`[admin/passengers/reactivate] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to reactivate passenger' });
+  }
+});
+
+// ─── Contraseña de conductores y valets ─────────────────────────────────────
+// Sólo el owner, y sólo cuentas de la app que entran con contraseña. Al usuario
+// le llega un correo: un cambio que no pidió tiene que poder detectarlo.
+adminRouter.post("/users/:id/password", requireAdminRole('owner'), async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { password } = (req.body ?? {}) as { password?: unknown };
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres.', errorCode: 'WEAK_PASSWORD', field: 'password' });
+  }
+  try {
+    const { data: perfil } = await supabaseAdmin.from('profiles')
+      .select('email, first_name, last_name, role').eq('id', id).maybeSingle();
+    const rol = String(perfil?.role ?? '');
+    if (!perfil || !['chauffeur', 'driver', ...VALET_ROLES].includes(rol)) {
+      return res.status(404).json({ error: 'Conductor o valet no encontrado.' });
+    }
+    const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password });
+    if (error) {
+      logger.warn({ err: error.message, id }, '[admin] cambio de contraseña rechazado');
+      return res.status(400).json({ error: error.message });
+    }
+    const nombre = [perfil.first_name, perfil.last_name].filter(Boolean).join(' ');
+    await auditar(req, 'user.password.set', `${nombre || id} (${rol})`);
+    const aviso = await enviarAvisoCambioContrasena({ email: perfil.email as string | null, name: nombre });
+    return res.json({ success: true, notification: aviso });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] cambiar contraseña');
+    return res.status(500).json({ error: 'No se pudo cambiar la contraseña.' });
   }
 });
 
@@ -3067,6 +3098,144 @@ adminRouter.put("/config/:key", async (req: Request, res: Response) => {
     res.json({ success: true, key: req.params.key, value });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to update config' });
+  }
+});
+
+// ─── Cuentas de prueba ────────────────────────────────────────────────────────
+// Para revisores (Apple, Google) y QA: cuentas reales que entran con correo y
+// contraseña. La lista vive en app_config para poder mostrarlas y borrarlas sin
+// recorrer todos los usuarios de Auth.
+
+interface CuentaPrueba {
+  id: string;
+  email: string;
+  name: string;
+  role: 'driver' | 'valet';
+  createdAt: string;
+  createdBy: string;
+}
+
+const CLAVE_CUENTAS_PRUEBA = 'test_accounts';
+
+async function leerCuentasPrueba(): Promise<CuentaPrueba[]> {
+  const { rows } = await pgPool.query<{ value: string }>(`SELECT value FROM app_config WHERE key = $1`, [CLAVE_CUENTAS_PRUEBA]);
+  try {
+    const lista = JSON.parse(rows[0]?.value ?? '[]');
+    return Array.isArray(lista) ? lista as CuentaPrueba[] : [];
+  } catch {
+    return [];
+  }
+}
+
+async function guardarCuentasPrueba(lista: CuentaPrueba[]): Promise<void> {
+  await pgPool.query(
+    `INSERT INTO app_config (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
+    [CLAVE_CUENTAS_PRUEBA, JSON.stringify(lista)],
+  );
+}
+
+async function auditar(req: Request, action: string, target: string) {
+  try {
+    await pgPool.query(
+      `INSERT INTO audit_logs (admin_name, action, target, ip) VALUES ($1, $2, $3, $4)`,
+      [req.adminUser?.name || req.adminUser?.email || 'desconocido', action, target, req.ip ?? null],
+    );
+  } catch (e) {
+    logger.warn({ err: errMsg(e) }, `[admin] no se pudo registrar ${action} en audit_logs`);
+  }
+}
+
+adminRouter.get('/test-accounts', requireAdminRole('owner'), async (_req: Request, res: Response) => {
+  try {
+    res.json({ accounts: await leerCuentasPrueba() });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/test-accounts] lectura');
+    res.status(500).json({ error: 'No se pudieron leer las cuentas de prueba.' });
+  }
+});
+
+adminRouter.post('/test-accounts', requireAdminRole('owner'), async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { role?: unknown; firstName?: unknown; lastName?: unknown; email?: unknown; password?: unknown };
+  const role = body.role === 'valet' ? 'valet' : body.role === 'driver' ? 'driver' : null;
+  const firstName = typeof body.firstName === 'string' ? body.firstName.trim() : '';
+  const lastName = typeof body.lastName === 'string' ? body.lastName.trim() : '';
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+
+  if (!role) return res.status(400).json({ error: 'El rol debe ser chofer o valet.', field: 'role' });
+  if (!firstName) return res.status(400).json({ error: 'El nombre es obligatorio.', field: 'firstName' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Correo no válido.', field: 'email' });
+  if (password.length < 8) return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres.', field: 'password' });
+
+  try {
+    const { data: creado, error: errAuth } = await supabaseAdmin.auth.admin.createUser({
+      email, password, email_confirm: true,
+      user_metadata: { first_name: firstName, last_name: lastName, test_account: true },
+    });
+    if (errAuth || !creado?.user?.id) {
+      const yaExiste = /already|registered|exists/i.test(errAuth?.message ?? '');
+      return res.status(yaExiste ? 409 : 400).json({
+        error: yaExiste ? 'Ya existe un usuario con ese correo.' : (errAuth?.message || 'No se pudo crear el usuario.'),
+        field: yaExiste ? 'email' : undefined,
+      });
+    }
+    const id = creado.user.id;
+
+    const perfil: Record<string, unknown> = {
+      id, email, first_name: firstName, last_name: lastName || null,
+      operating_city: 'Miami', account_status: 'active', updated_at: new Date().toISOString(),
+    };
+    if (role === 'driver') {
+      Object.assign(perfil, {
+        role: 'chauffeur',
+        verification_status: 'approved',
+        vehicle: { make: 'Mercedes-Benz', model: 'E-Class', year: '2024', color: 'Black', plate: 'TEST001', category: 'sedan', vehicleStatus: 'approved' },
+      });
+    } else {
+      Object.assign(perfil, { role: 'valet', business_name: 'Urbont Test Venue' });
+    }
+
+    const { error: errPerfil } = await supabaseAdmin.from('profiles').upsert(perfil, { onConflict: 'id' });
+    if (errPerfil) {
+      // Sin perfil la cuenta no sirve: se deshace para no dejar un usuario a medias.
+      await supabaseAdmin.auth.admin.deleteUser(id).catch(() => {});
+      throw new Error(errPerfil.message);
+    }
+
+    const cuenta: CuentaPrueba = {
+      id, email, role,
+      name: [firstName, lastName].filter(Boolean).join(' '),
+      createdAt: new Date().toISOString(),
+      createdBy: req.adminUser?.email || 'admin',
+    };
+    await guardarCuentasPrueba([cuenta, ...(await leerCuentasPrueba()).filter(c => c.id !== id)]);
+    await auditar(req, 'test_account.create', `${email} (${role})`);
+    res.status(201).json({ account: cuenta });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/test-accounts] crear');
+    res.status(500).json({ error: 'No se pudo crear la cuenta de prueba.' });
+  }
+});
+
+adminRouter.delete('/test-accounts/:id', requireAdminRole('owner'), async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const lista = await leerCuentasPrueba();
+    const cuenta = lista.find(c => c.id === id);
+    // Sólo se borra lo que se creó aquí: este endpoint no debe poder borrar a un usuario real.
+    if (!cuenta) return res.status(404).json({ error: 'No es una cuenta de prueba.' });
+
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(id);
+    if (error && !/not.?found/i.test(error.message)) throw new Error(error.message);
+    // El perfil puede seguir si tiene viajes asociados; sin usuario de Auth ya no puede entrar.
+    await supabaseAdmin.from('profiles').delete().eq('id', id).then(() => {}, () => {});
+
+    await guardarCuentasPrueba(lista.filter(c => c.id !== id));
+    await auditar(req, 'test_account.delete', `${cuenta.email} (${cuenta.role})`);
+    res.json({ success: true });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin/test-accounts] eliminar');
+    res.status(500).json({ error: 'No se pudo eliminar la cuenta de prueba.' });
   }
 });
 

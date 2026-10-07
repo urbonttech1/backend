@@ -134,6 +134,20 @@ export function documentoValetHtml(target: AccountEmailTarget, docLabel: string,
   });
 }
 
+export function cambioContrasenaHtml(target: AccountEmailTarget): string {
+  return emailShell({
+    eyebrow: 'Seguridad de la cuenta',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo(`El equipo de URBONT <strong>cambió la contraseña</strong> de tu cuenta.
+        Usa la nueva contraseña que te compartimos para iniciar sesión en la app.`)}
+      ${parrafo(`Si no pediste este cambio, escríbenos de inmediato a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque la contraseña de tu cuenta cambió.',
+  });
+}
+
 export type FaseVencimiento = '30d' | '15d' | '7d' | 'vencido';
 
 /** `YYYY-MM-DD` sin pasar por la zona del servidor, que podría restarle un día. */
@@ -228,6 +242,10 @@ export function enviarAvisoRechazoValet(target: AccountEmailTarget, reason?: str
 
 export function enviarAvisoDocumentoValet(target: AccountEmailTarget, docLabel: string, reason?: string | null): Promise<ResultadoAviso> {
   return avisar(target, 'Necesitamos que vuelvas a enviar un documento', documentoValetHtml(target, docLabel, reason));
+}
+
+export function enviarAvisoCambioContrasena(target: AccountEmailTarget): Promise<ResultadoAviso> {
+  return avisar(target, 'La contraseña de tu cuenta de URBONT cambió', cambioContrasenaHtml(target));
 }
 
 const ASUNTO_VENCIMIENTO: Record<FaseVencimiento, (doc: string) => string> = {
