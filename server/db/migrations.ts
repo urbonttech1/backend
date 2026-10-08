@@ -322,6 +322,7 @@ export async function runMigrations() {
     await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS user_phone   VARCHAR(20)`);
     await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS user_type    VARCHAR(30) DEFAULT 'passenger'`);
     await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS category     VARCHAR(100)`);
+    await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS user_email   VARCHAR(255)`);
     await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS priority     VARCHAR(20) DEFAULT 'normal'`);
     await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS assigned_to  VARCHAR(255)`);
     await safeAlter(`ALTER TABLE support_tickets ADD COLUMN IF NOT EXISTS messages     JSONB DEFAULT '[]'::jsonb`);

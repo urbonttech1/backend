@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
+import rateLimit from 'express-rate-limit';
 import { requireSupabaseAuth } from '../middleware';
 import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
-import { normalizarTicket, ETIQUETA_CATEGORIA } from '../services/supportTicket';
+import { normalizarTicket, normalizarPqrs, ETIQUETA_CATEGORIA, type PqrsNormalizada } from '../services/supportTicket';
 import { sendEmail, isEmailConfigured } from '../services/mailer';
 import { emailShell, section, row, badge, brand, FONT } from '../services/emailLayout';
 
@@ -129,6 +130,94 @@ async function registrarIncidenteSOS(d: {
     log.error({ err: errMsg(err), userId: d.userId }, 'SOS: incident failed');
   }
 }
+
+// ─── PQRS desde la web ───────────────────────────────────────────────────────
+// Público, sin sesión: límite por IP y un campo trampa (`website`) que una
+// persona no ve y un bot rellena.
+
+const pqrsLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again later.', errorCode: 'RATE_LIMITED' },
+});
+
+/** Número corto para que el remitente cite su solicitud. */
+function radicado(id: string): string {
+  return `PQRS-${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+}
+
+async function confirmarPqrs(p: PqrsNormalizada, numero: string): Promise<void> {
+  if (!isEmailConfigured()) return;
+  const tipo = ETIQUETA_CATEGORIA[p.category].replace('PQRS · ', '');
+  const html = emailShell({
+    eyebrow: 'PQRS',
+    subtitle: numero,
+    content: section(`
+      <p style="margin:0 0 14px;font-family:${FONT};font-size:14px;line-height:1.6;color:${brand.navyDeep};">Hola ${escaparHtml(p.name)},</p>
+      <p style="margin:0 0 14px;font-family:${FONT};font-size:14px;line-height:1.6;color:${brand.navyDeep};">
+        Recibimos tu <strong>${tipo.toLowerCase()}</strong> con el número <strong>${numero}</strong>.
+        Nuestro equipo la revisará y te responderá a este correo.</p>
+      <div style="margin:4px 0 18px;padding:14px 16px;background:${brand.panel};border-radius:12px;border:1px solid ${brand.line};
+        font-family:${FONT};font-size:13px;line-height:1.55;color:${brand.navyDeep};white-space:pre-wrap;">${escaparHtml(p.description)}</div>
+      <p style="margin:0;font-family:${FONT};font-size:13px;color:${brand.slate};">Conserva este número para cualquier seguimiento.</p>
+    `),
+    footerNote: 'Este mensaje se envió porque registraste una PQRS en urbont.com.',
+  });
+  await sendEmail({ to: p.email, subject: `Recibimos tu ${tipo.toLowerCase()} — ${numero}`, html, category: 'support_ticket' });
+}
+
+function escaparHtml(t: string): string {
+  return t.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+}
+
+supportRouter.post('/pqrs', pqrsLimiter, async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  if (typeof body.website === 'string' && body.website.trim()) {
+    // Bot: se le responde como si hubiera salido bien, sin guardar nada.
+    return res.status(201).json({ success: true, ticketId: null, number: null });
+  }
+  const r = normalizarPqrs(body);
+  if ('errorCode' in r) return res.status(400).json({ error: r.error, errorCode: r.errorCode, field: r.field });
+  const p = r.pqrs;
+
+  try {
+    const ahora = new Date().toISOString();
+    const fila: Record<string, unknown> = {
+      user_id: null, category: p.category, subject: p.subject, description: p.description,
+      priority: p.priority, status: 'open', user_type: 'web',
+      user_name: p.name, user_phone: p.phone, user_email: p.email,
+      created_at: ahora, updated_at: ahora,
+    };
+    const insertar = (datos: Record<string, unknown>) =>
+      supabaseAdmin.from('support_tickets').insert(datos).select('id').single();
+
+    let resp = await insertar(fila);
+    // Si PostgREST aún no ve `user_email`, el correo va en la descripción: el
+    // equipo tiene que poder responder igual.
+    if (resp.error && /user_email/.test(resp.error.message)) {
+      const { user_email: _omit, ...sinEmail } = fila;
+      resp = await insertar({ ...sinEmail, description: `${p.description}\n\n— Contacto: ${p.email}` });
+    }
+    if (resp.error || !resp.data) throw resp.error ?? new Error('insert returned no row');
+
+    const id = (resp.data as { id: string }).id;
+    const numero = radicado(id);
+
+    sendAdminEmail({
+      id, category: p.category, subject: `${numero} · ${escaparHtml(p.subject)}`,
+      description: `${p.description}\n\nContacto: ${p.name} · ${p.email}${p.phone ? ` · ${p.phone}` : ''}`,
+      priority: p.priority, userName: escaparHtml(p.name), userPhone: p.phone || 'N/A',
+    }).catch(err => log.warn({ err: err.message }, 'PQRS admin email failed'));
+    confirmarPqrs(p, numero).catch(err => log.warn({ err: errMsg(err) }, 'PQRS confirmation email failed'));
+
+    res.status(201).json({ success: true, ticketId: id, number: numero });
+  } catch (err: unknown) {
+    log.error({ err: errMsg(err) }, 'create PQRS error');
+    res.status(500).json({ error: 'We could not submit your request. Please try again.', errorCode: 'PQRS_NOT_SAVED' });
+  }
+});
 
 // POST /api/support/tickets — submit a new ticket
 //

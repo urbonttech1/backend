@@ -2443,6 +2443,7 @@ adminRouter.get("/support", async (_req: Request, res: Response) => {
         rideId: r.ride_id,
         userName: r.displayName,
         userPhone: r.user_phone,
+        userEmail: r.user_email ?? null,
         userType: r.user_type || 'passenger',
         category: r.category || 'other',
         subject: r.subject,

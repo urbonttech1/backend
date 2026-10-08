@@ -14,6 +14,7 @@
 export const CATEGORIAS = [
   'lost_item', 'driver_issue', 'billing', 'app_issue', 'safety',
   'roadside_assistance', 'support_chat', 'other',
+  'pqrs_peticion', 'pqrs_queja', 'pqrs_reclamo', 'pqrs_sugerencia',
 ] as const;
 
 export type Categoria = typeof CATEGORIAS[number];
@@ -46,6 +47,10 @@ export const ETIQUETA_CATEGORIA: Record<Categoria, string> = {
   roadside_assistance: 'Roadside Assistance',
   support_chat:        'Support Chat',
   other:               'Other',
+  pqrs_peticion:       'PQRS · Petición',
+  pqrs_queja:          'PQRS · Queja',
+  pqrs_reclamo:        'PQRS · Reclamo',
+  pqrs_sugerencia:     'PQRS · Sugerencia',
 };
 
 const PRIORIDADES = new Set<string>(['low', 'normal', 'high', 'urgent']);
@@ -113,6 +118,62 @@ export function normalizarTicket(body: Record<string, unknown>): ResultadoTicket
       rideId,
       priority,
       esSOS: category === 'safety' && priority === 'urgent',
+    },
+  };
+}
+
+// ─── PQRS desde la web ───────────────────────────────────────────────────────
+// Lo envía cualquiera, sin sesión: por eso se piden los datos de contacto y se
+// valida todo aquí.
+
+export const TIPOS_PQRS = ['peticion', 'queja', 'reclamo', 'sugerencia'] as const;
+export type TipoPqrs = typeof TIPOS_PQRS[number];
+
+/** Un reclamo pide algo concreto (reembolso, corrección): va antes en la cola. */
+const PRIORIDAD_PQRS: Record<TipoPqrs, Prioridad> = {
+  peticion: 'normal', queja: 'normal', reclamo: 'high', sugerencia: 'low',
+};
+
+export interface PqrsNormalizada {
+  category: Categoria;
+  tipo: TipoPqrs;
+  name: string;
+  email: string;
+  phone: string | null;
+  subject: string;
+  description: string;
+  priority: Prioridad;
+}
+
+export type ResultadoPqrs =
+  | { ok: true; pqrs: PqrsNormalizada }
+  | { ok: false; error: string; errorCode: string; field: string };
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export function normalizarPqrs(body: Record<string, unknown>): ResultadoPqrs {
+  const tipo = texto(body.type).toLowerCase() as TipoPqrs;
+  const name = texto(body.name).slice(0, 255);
+  const email = texto(body.email).toLowerCase().slice(0, 255);
+  const phone = texto(body.phone).replace(/[^\d+]/g, '').slice(0, 20) || null;
+  const description = texto(body.description).slice(0, 5000);
+  const subject = texto(body.subject).slice(0, 150);
+
+  const error = (msg: string, errorCode: string, field: string): ResultadoPqrs =>
+    ({ ok: false, error: msg, errorCode, field });
+
+  if (!TIPOS_PQRS.includes(tipo)) return error('Choose the type of request.', 'INVALID_TYPE', 'type');
+  if (name.length < 2) return error('Enter your name.', 'INVALID_NAME', 'name');
+  if (!EMAIL.test(email)) return error('Enter a valid email.', 'INVALID_EMAIL', 'email');
+  if (description.length < 10) return error('Describe your request (at least 10 characters).', 'INVALID_DESCRIPTION', 'description');
+
+  const category = `pqrs_${tipo}` as Categoria;
+  return {
+    ok: true,
+    pqrs: {
+      category, tipo, name, email, phone, description,
+      subject: subject || ETIQUETA_CATEGORIA[category],
+      priority: PRIORIDAD_PQRS[tipo],
     },
   };
 }

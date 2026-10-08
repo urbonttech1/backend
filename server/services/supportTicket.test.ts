@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizarTicket } from './supportTicket';
+import { normalizarTicket, normalizarPqrs } from './supportTicket';
 
 const RIDE = '07b47866-11aa-4ea6-8f21-dea545924727';
 
@@ -91,5 +91,28 @@ describe('normalizarTicket — errores con código', () => {
 
   it('id de viaje inválido', () => {
     expect(normalizarTicket({ message: 'x', ride_id: 'N/A' })).toMatchObject({ ok: false, errorCode: 'INVALID_RIDE_ID', field: 'rideId' });
+  });
+});
+
+describe('normalizarPqrs', () => {
+  const base = { type: 'reclamo', name: 'Ana Pérez', email: 'Ana@Mail.com', description: 'Me cobraron dos veces el viaje.' };
+
+  it('acepta una PQRS válida y la lleva a su categoría', () => {
+    const r = normalizarPqrs(base);
+    expect(r).toMatchObject({ ok: true, pqrs: { category: 'pqrs_reclamo', email: 'ana@mail.com', priority: 'high', subject: 'PQRS · Reclamo' } });
+  });
+
+  it('rechaza un tipo desconocido', () => {
+    expect(normalizarPqrs({ ...base, type: 'spam' })).toMatchObject({ ok: false, field: 'type' });
+  });
+
+  it('exige correo válido y descripción', () => {
+    expect(normalizarPqrs({ ...base, email: 'no-es-correo' })).toMatchObject({ ok: false, field: 'email' });
+    expect(normalizarPqrs({ ...base, description: 'corto' })).toMatchObject({ ok: false, field: 'description' });
+  });
+
+  it('limpia el teléfono', () => {
+    const r = normalizarPqrs({ ...base, phone: '+1 (786) 555-0101' });
+    expect(r.ok && r.pqrs.phone).toBe('+17865550101');
   });
 });
