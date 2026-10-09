@@ -1431,6 +1431,38 @@ export async function runMigrations() {
     // esquema `tiger` (ver la nota de service_zones). Queda pendiente de reubicar
     // la extensión; el repliegue actual funciona, sólo que sin índice.
 
+    // Cargo de limpieza: uno por viaje. El cobro no se suma a la tarifa;
+    // sale después, cuando el panel aprueba.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cleaning_charges (
+        id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        ride_id               UUID NOT NULL UNIQUE,
+        driver_id             UUID NOT NULL,
+        passenger_id          UUID NOT NULL,
+        reason                VARCHAR(20) NOT NULL CHECK (reason IN ('beach_sand', 'vomit')),
+        amount_usd            NUMERIC(10,2) NOT NULL,
+        status                VARCHAR(30) NOT NULL,
+        ride_completed_at     TIMESTAMPTZ NOT NULL,
+        submitted_at          TIMESTAMPTZ,
+        receipt_due_at        TIMESTAMPTZ,
+        company_name          TEXT,
+        company_website       TEXT,
+        receipt_path          TEXT,
+        receipt_mime          TEXT,
+        photos                JSONB NOT NULL DEFAULT '[]',
+        rejection_reason      TEXT,
+        reviewed_at           TIMESTAMPTZ,
+        reviewed_by           TEXT,
+        payment_intent_id     TEXT,
+        transfer_id           TEXT,
+        charge_error          TEXT,
+        created_at            TIMESTAMPTZ DEFAULT NOW(),
+        updated_at            TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await safeAlter(`CREATE INDEX IF NOT EXISTS cleaning_charges_driver_status_idx ON cleaning_charges (driver_id, status)`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cleaning_policy_accepted_at TIMESTAMPTZ`);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);
