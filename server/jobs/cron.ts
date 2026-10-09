@@ -20,6 +20,7 @@ import { decidirAuto, guardarAuto } from '../services/surgeConfig';
 import { enviarAvisoVencimientoDocumento, type FaseVencimiento } from '../services/accountEmails';
 import { catalogoCompleto } from '../services/docCatalogStore';
 import { audienciaDeRol, docMeta } from '../services/docCatalog';
+import { revisarParadasEnSilencio } from '../services/rideCheckRun';
 
 async function anonymizeOldRides() {
   log.info('[CRON] Starting daily PII anonymization job...');
@@ -972,6 +973,7 @@ export async function startCronJobs() {
   // Cada minuto: el plazo para encontrar reemplazo es de minutos, no de horas.
   cron.schedule('* * * * *', () => {
     cancelarReasignacionesVencidas();
+    revisarParadasEnSilencio().catch((err: unknown) => log.warn({ err: (err as Error)?.message }, '[CRON] ride check failed'));
   });
   log.info(`[CRON] Reassignment timeout check scheduled every minute (${MINUTOS_PARA_REEMPLAZO} min).`);
 

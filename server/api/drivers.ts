@@ -3,6 +3,7 @@ import { requireSupabaseAuth } from "../middleware";
 import { supabaseAdmin } from "../db/client";
 import { pool } from "../db/pool";
 import { guardarUbicacion } from "../services/driverLocation";
+import { revisarPing } from "../services/rideCheckRun";
 import { validate, validateQuery, schemas } from "../middleware/validation";
 import { createContextLogger } from "../lib/logger";
 import {
@@ -85,10 +86,18 @@ driverRouter.post(
       return res.status(403).json({ error: 'Only drivers can update location' });
     }
 
-    const { lat, lng, heading, speed } = req.body;
+    const { lat, lng, heading, speed, harshBrake } = req.body;
 
     try {
       await guardarUbicacion({ driverId: driver_id, lat, lng, heading, speed });
+      const speedMps = typeof speed === 'number' && Number.isFinite(speed) ? speed : null;
+      void revisarPing({
+        driverId: String(driver_id),
+        lat,
+        lng,
+        speedMps,
+        harshBrake: harshBrake === true,
+      }).catch((err: unknown) => log.warn({ err: (err as Error)?.message, driver_id }, 'ride check skipped'));
 
       res.json({ success: true });
     } catch (err: any) {
