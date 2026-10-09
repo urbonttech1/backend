@@ -21,8 +21,10 @@ describe('cargo de limpieza — plazos e importes', () => {
     expect(MOTIVOS.vomit.needsReceipt).toBe(true);
   });
 
-  it('la ventana de fotos dura 10 minutos desde el cierre del viaje', () => {
-    const dentro = new Date(CIERRE.getTime() + 9 * 60 * 1000);
+  it('la ventana de fotos dura 2 horas desde el cierre del viaje', () => {
+    const enCasa = new Date(CIERRE.getTime() + 30 * 60 * 1000);
+    const dentro = new Date(CIERRE.getTime() + VENTANA_MS - 60 * 1000);
+    expect(ventanaAbierta(CIERRE, enCasa)).toBe(true);
     const justo = new Date(CIERRE.getTime() + VENTANA_MS);
     const fuera = new Date(CIERRE.getTime() + VENTANA_MS + 1);
     expect(ventanaAbierta(CIERRE, dentro)).toBe(true);

@@ -12,6 +12,7 @@ import {
   FOTOS_MAX,
   FOTOS_MIN,
   esMotivo,
+  VENTANA_MS,
   segundosRestantes,
   ventanaAbierta,
   venceRecibo,
@@ -27,7 +28,7 @@ import { cobrarLimpieza } from '../services/cleaningChargePayment';
 /**
  * Cargo de limpieza después del viaje.
  *
- * El chofer abre el caso con fotos dentro de los 10 minutos. La arena pasa a
+ * El chofer abre el caso con fotos dentro de las 2 horas. La arena pasa a
  * revisión. El vómito espera el recibo (72 h). Nada se cobra hasta que un
  * admin aprueba.
  *
@@ -194,7 +195,7 @@ cleaningRouter.get('/open', requireSupabaseAuth, async (req: Request, res: Respo
       return res.json({ rideId: cargo.ride_id, charge: vista(cargo) });
     }
 
-    const desde = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const desde = new Date(Date.now() - VENTANA_MS).toISOString();
     const { data: viajes, error: viajesErr } = await supabaseAdmin
       .from('rides')
       .select('id, completed_at')

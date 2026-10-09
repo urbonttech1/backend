@@ -3,13 +3,13 @@
  * el cobro las usan, y aquí se pueden probar solas.
  *
  * El viaje ya se cobró al terminarlo. Esto es otro cargo, en dólares, y no sale
- * de la tarjeta hasta que Urbont lo aprueba. Las fotos tienen que llegar en los
- * 10 minutos siguientes a completed_at. El recibo de la limpieza profesional no
- * existe en ese plazo, así que el caso de vómito queda abierto y el recibo
- * entra después, dentro de las 72 horas.
+ * de la tarjeta hasta que Urbont lo aprueba. Las fotos pueden llegar hasta 2
+ * horas después de completed_at: el chofer a veces no ve la suciedad hasta
+ * que llega a casa. El recibo de la limpieza profesional entra después,
+ * dentro de las 72 horas.
  */
 
-export const VENTANA_MS = 10 * 60 * 1000;
+export const VENTANA_MS = 2 * 60 * 60 * 1000;
 export const RECIBO_MS = 72 * 60 * 60 * 1000;
 
 export const FOTO_TIPOS = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
