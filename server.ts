@@ -19,6 +19,7 @@ import { referralRouter } from "./server/api/referrals";
 import { securityRouter } from "./server/api/security";
 import { rideRouter } from "./server/api/rides";
 import { integrationsRouter } from "./server/api/integrations";
+import { terminalRouter } from "./server/api/terminal";
 import { adminRouter } from "./server/api/admin";
 import { adminAuthRouter } from "./server/api/admin-auth";
 import { userRouter } from "./server/api/users";
@@ -517,6 +518,7 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
   app.use("/api/referrals", referralRouter);
   app.use("/api/rides", rideRouter);
   app.use("/api/integrations", integrationsRouter);
+  app.use("/api/terminal", terminalRouter);
   app.use("/api/admin/auth", adminAuthRouter);
   app.use("/api/admin", adminRouter);
   app.use("/api/users", userRouter);

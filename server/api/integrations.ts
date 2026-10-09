@@ -10,6 +10,7 @@ import { tasaImpuestoRespaldo } from '../services/taxConfig';
 import { codigoPostalDe, codigoPostalDelViaje } from '../services/taxLocation';
 import { notifyUser } from '../services/fcm';
 import { passengerNotif } from '../services/notificationTemplates';
+import { pagarChoferPorViaje } from '../services/ridePayout';
 
 const log = createContextLogger('INTEGRATIONS');
 
@@ -93,6 +94,42 @@ integrationsRouter.post(
           const pi = event.data.object as Stripe.PaymentIntent;
           const rideId = pi.metadata?.ride_id;
           const flowType = pi.metadata?.type;
+
+          // Tap to Pay: el chofer cobró en persona. Se registra el pago sin tocar
+          // `ride_status`, que lo controla el chofer. Si el viaje ya terminó, se le
+          // paga aquí; si no, lo hará la finalización, que ve el PaymentIntent
+          // cobrado. La transferencia es idempotente por viaje y cobro.
+          if (rideId && flowType === 'tap_to_pay') {
+            // Dos cobros aprobados del mismo viaje (dos intentos a la vez, o el
+            // pasajero ya había pagado por otra vía): se devuelve el sobrante.
+            const { data: previo } = await supabaseAdmin
+              .from('rides').select('payment_status, payment_intent_id').eq('id', rideId).maybeSingle();
+            const otroCobro = previo?.payment_intent_id && previo.payment_intent_id !== pi.id;
+            if (otroCobro && previo?.payment_status === 'paid') {
+              await stripe.refunds.create(
+                { payment_intent: pi.id, reason: 'duplicate', metadata: { ride_id: rideId, type: 'tap_to_pay_duplicate' } },
+                { idempotencyKey: `tap_to_pay_duplicate_${pi.id}` },
+              );
+              log.warn(`[STRIPE_WEBHOOK] Tap to Pay duplicado en el viaje ${rideId}: ${pi.id} devuelto (ya pagado con ${previo.payment_intent_id})`);
+              break;
+            }
+
+            const taxCents = Number(pi.metadata?.tax_amount_cents ?? 0) || 0;
+            const { data: filas } = await supabaseAdmin.from('rides').update({
+              payment_intent_id: pi.id,
+              payment_status:    'paid',
+              payment_method:    'card',
+              tax_amount:        taxCents / 100,
+              total_with_tax:    (pi.amount_received || pi.amount) / 100,
+              updated_at:        new Date().toISOString(),
+            }).eq('id', rideId).select('ride_status, driver_id');
+            const viaje = (filas ?? [])[0] as { ride_status?: string; driver_id?: string } | undefined;
+            if (viaje?.ride_status === 'completed' && viaje.driver_id) {
+              await pagarChoferPorViaje({ stripe, pi, rideId, driverId: viaje.driver_id, concepto: 'completed ride (Tap to Pay)' });
+            }
+            log.info(`[STRIPE_WEBHOOK] Tap to Pay: viaje ${rideId} cobrado en persona ($${pi.amount / 100})`);
+            break;
+          }
 
           if (rideId) {
             // For valet_card_checkout, do NOT advance ride_status via webhook.
@@ -182,6 +219,22 @@ integrationsRouter.post(
         case 'payment_intent.payment_failed': {
           const pi = event.data.object as Stripe.PaymentIntent;
           const rideId = pi.metadata?.ride_id;
+          // Tap to Pay: lo cobra el chofer, así que el aviso es para él. Apple
+          // exige avisar aunque haya cerrado la app antes de ver el resultado.
+          if (rideId && pi.metadata?.type === 'tap_to_pay') {
+            const choferId = pi.metadata?.driver_id;
+            if (choferId) {
+              const cuerpo = `The card payment of $${(pi.amount / 100).toFixed(2)} was not approved. Ask the passenger for another card or payment method.`;
+              notifyUser(choferId, {
+                title: 'Payment not approved',
+                body: cuerpo,
+                data: { type: 'tap_to_pay_failed', ride_id: rideId, screen: 'driver_home', title: 'Payment not approved', body: cuerpo },
+              }).catch(() => {});
+            }
+            log.warn(`[STRIPE_WEBHOOK] Tap to Pay rechazado en el viaje ${rideId}: ${pi.last_payment_error?.message ?? 'sin motivo'}`);
+            break;
+          }
+
           if (rideId) {
             const failReason = pi.last_payment_error?.message ?? 'Unknown payment error';
             log.warn(`[STRIPE_WEBHOOK] Payment failed for ride ${rideId}: ${failReason}`);
@@ -424,7 +477,7 @@ integrationsRouter.post("/stripe/create-payment-intent", optionalSupabaseAuth, v
 // ââ Stripe Tax calculation helper âââââââââââââââââââââââââââââââââââââââââââââ
 // Calculates applicable US tax for a given amount using Stripe Tax API.
 // Falls back gracefully if Stripe Tax is not enabled on the account.
-async function calculateStripeTax(
+export async function calculateStripeTax(
   stripe: Stripe,
   amountCents: number,
   reference: string,
