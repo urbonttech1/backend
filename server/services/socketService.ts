@@ -687,6 +687,13 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
   return io;
 }
 
+export function broadcastSafetyCheck(rideId: string, driverId: string, payload: { checkId: string; kind: string; title: string; body: string }) {
+  if (!io) return;
+  const mensaje = { rideId, ...payload };
+  io.to(`ride:${rideId}`).emit('ride:safety_check', mensaje);
+  if (driverId) io.to(`driver:${driverId}`).emit('ride:safety_check', mensaje);
+}
+
 export function broadcastRideStatus(rideId: string, status: string, extra: Record<string, unknown> = {}) {
   if (!io) return;
   const payload = { rideId, status, ...extra };

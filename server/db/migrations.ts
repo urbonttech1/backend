@@ -1431,6 +1431,35 @@ export async function runMigrations() {
     // esquema `tiger` (ver la nota de service_zones). Queda pendiente de reubicar
     // la extensión; el repliegue actual funciona, sólo que sin índice.
 
+    // RideCheck: un estado de movimiento por viaje y un solo aviso abierto.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ride_safety_state (
+        ride_id          UUID PRIMARY KEY,
+        stopped_since    TIMESTAMPTZ,
+        last_lat         DOUBLE PRECISION,
+        last_lng         DOUBLE PRECISION,
+        last_speed_mps   DOUBLE PRECISION,
+        last_ping_at     TIMESTAMPTZ,
+        last_alert_at    TIMESTAMPTZ,
+        last_alert_kind  VARCHAR(20),
+        updated_at       TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS ride_safety_checks (
+        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        ride_id       UUID NOT NULL,
+        driver_id     UUID,
+        passenger_id  UUID,
+        kind          VARCHAR(20) NOT NULL,
+        status        VARCHAR(20) NOT NULL,
+        lat           DOUBLE PRECISION,
+        lng           DOUBLE PRECISION,
+        resolved_by   VARCHAR(20),
+        created_at    TIMESTAMPTZ DEFAULT NOW(),
+        resolved_at   TIMESTAMPTZ
+      );
+    `);
+    await safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS ride_safety_checks_one_open ON ride_safety_checks (ride_id) WHERE status = 'open'`);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

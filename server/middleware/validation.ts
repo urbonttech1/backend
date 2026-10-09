@@ -67,6 +67,7 @@ export const schemas = {
     // known value instead of overwriting it with a fake 0.
     heading: z.coerce.number().min(0).max(360).nullable().optional(),
     speed: z.coerce.number().min(0).nullable().optional(),
+    harshBrake: z.boolean().optional(),
   }),
 
   driverStatus: z.object({

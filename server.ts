@@ -30,6 +30,7 @@ import { valetAuthRouter } from "./server/api/auth/valet";
 import { feedbackRouter } from "./server/api/feedback";
 import { driverRouter } from "./server/api/drivers";
 import { driverIncidentsRouter } from "./server/api/driver-incidents";
+import { safetyRouter } from "./server/api/safety";
 import { notificationsRouter } from "./server/api/notifications";
 import { supportRouter } from "./server/api/support";
 import { configRouter } from "./server/api/config";
@@ -516,6 +517,7 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
   app.use("/api/security", securityRouter);
   app.use("/api/referrals", referralRouter);
   app.use("/api/rides", rideRouter);
+  app.use("/api/safety", safetyRouter);
   app.use("/api/integrations", integrationsRouter);
   app.use("/api/admin/auth", adminAuthRouter);
   app.use("/api/admin", adminRouter);
