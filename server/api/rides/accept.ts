@@ -16,6 +16,7 @@ import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory, 
 import { claimFailed, claimScheduledRide } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
+import { notifyRidePassenger } from "../../services/valetNotifications";
 import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg, haversineKm } from './helpers';
@@ -289,6 +290,16 @@ router.post("/:id/verify-pin", requireSupabaseAuth, async (req: Request, res: Re
       driverId: resolvedDriverId,
       passengerId: r.passenger_id,
     });
+
+    // El PIN lo usa el chofer al recoger al huésped: el valet (que figura como
+    // pasajero) se entera de que ya está en el auto aunque tenga la app cerrada.
+    if (r.passenger_id) {
+      notifyRidePassenger(rideId, String(r.passenger_id), {
+        title: 'Passenger on board',
+        body: 'The pickup code was confirmed. The trip is underway.',
+        data: { type: 'pickup_pin_verified', ride_id: rideId, screen: 'ride_tracking' },
+      }).catch(() => {});
+    }
 
     // ── Valet commission ($10) via Stripe Transfer ────────────────────────────
     // For CARD rides: the $10 surcharge is already included in the passenger fare.

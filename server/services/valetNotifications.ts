@@ -23,6 +23,7 @@ const TEXTOS: Record<string, { title: string; body: (quien: string) => string }>
   ride_scheduled_started:       { title: 'Driver on the way',        body: q => `The driver for ${q} started the scheduled trip.` },
   driver_arrived:               { title: 'Driver has arrived',       body: q => `The driver for ${q} is at the pickup location.` },
   ride_started:                 { title: 'Trip started',             body: q => `${q} is now on the way.` },
+  pickup_pin_verified:          { title: 'Passenger on board',       body: q => `The pickup code was confirmed — ${q} is in the car.` },
   ride_completed:               { title: 'Trip completed',           body: q => `The trip for ${q} was completed.` },
   driver_cancelled_reassigning: { title: 'Looking for a new driver', body: q => `The driver for ${q} cancelled. We're searching for another one.` },
   ride_cancelled_by_driver:     { title: 'Trip cancelled',           body: q => `The driver ended the trip for ${q}.` },
