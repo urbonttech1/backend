@@ -30,6 +30,7 @@ import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena } from '../services/accountEmails';
+import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
 import { DEFAULT_FARE_CLASSES, type FareClass, getPricingPolicy } from '../config/pricing';
@@ -797,7 +798,8 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
     const [profilesRes, appsRes, ridesRes] = await Promise.all([
       supabaseAdmin.from('profiles')
         .select('id, email, phone, first_name, last_name, role, business_name, operating_city, account_status, status_reason, created_at, rating, stripe_account_id, stripe_connect_status')
-        .in('role', VALET_ROLES),
+        .in('role', VALET_ROLES)
+        .or('account_status.is.null,account_status.neq.deleted'),
       supabaseAdmin.from('valet_applications').select('*'),
       supabaseAdmin.from('rides')
         .select('valet_user_id, ride_status, valet_surcharge, valet_commission_paid, payment_method, created_at')
@@ -1070,6 +1072,8 @@ adminRouter.get("/passengers", async (req: Request, res: Response) => {
       .from('profiles')
       .select('*')
       .eq('role', 'passenger')
+      // Las cuentas borradas siguen en la tabla (los viajes las referencian).
+      .or('account_status.is.null,account_status.neq.deleted')
       .order('created_at', { ascending: false })
       .limit(limit);
     if (error) throw error;
@@ -1214,6 +1218,46 @@ adminRouter.post("/passengers/:id/reactivate", async (req: Request, res: Respons
   } catch (err: any) {
     logger.error(`[admin/passengers/reactivate] ${errMsg(err)}`);
     res.status(500).json({ error: 'Failed to reactivate passenger' });
+  }
+});
+
+// ─── Borrar pasajeros y valets ───────────────────────────────────────────────
+// Solo el owner. `?mode=hard` elimina la cuenta y sus viajes; sin él, borrado
+// lógico que conserva los viajes. Ver services/accountDeletion.
+
+adminRouter.delete("/passengers/:id", requireAdminRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const definitivo = req.query.mode === 'hard';
+    const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'passenger') : await borrarCuenta(req.params.id, 'passenger');
+    if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
+    await auditar(req, definitivo ? 'passenger.delete.hard' : 'passenger.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
+    res.json({ success: true });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] borrar pasajero');
+    res.status(500).json({ error: 'No se pudo borrar el pasajero.' });
+  }
+});
+
+adminRouter.delete("/valets/:id", requireAdminRole('owner'), async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    // Solicitud sin cuenta: el panel la lista con id `app:<email>`.
+    if (id.startsWith('app:')) {
+      const email = id.slice(4);
+      const { data, error } = await supabaseAdmin.from('valet_applications').delete().ilike('email', email).select('email');
+      if (error) throw error;
+      if (!data?.length) return res.status(404).json({ error: 'Solicitud no encontrada.', errorCode: 'NOT_FOUND' });
+      await auditar(req, 'valet_application.delete', email);
+      return res.json({ success: true });
+    }
+    const definitivo = req.query.mode === 'hard';
+    const r = definitivo ? await borrarCuentaDefinitiva(id, 'valet') : await borrarCuenta(id, 'valet');
+    if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
+    await auditar(req, definitivo ? 'valet.delete.hard' : 'valet.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
+    res.json({ success: true });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] borrar valet');
+    res.status(500).json({ error: 'No se pudo borrar el valet.' });
   }
 });
 
