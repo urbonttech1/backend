@@ -8,6 +8,7 @@ import { esEmailDuplicado } from '../../lib/authErrors';
 import { catalogoCompleto } from '../../services/docCatalogStore';
 import { normalizarEstadoDoc } from '../../services/docCatalog';
 import { accesoValet } from '../../services/valetAccess';
+import { perfilEnBlanco } from '../../services/blankProfile';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('VALET');
@@ -383,7 +384,7 @@ valetAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: Requ
       .eq('id', userId)
       .maybeSingle();
 
-    if (!profile2) {
+    if (!profile2 || await perfilEnBlanco(profile2)) {
       return res.json({ needsRegistration: true, email, userId });
     }
 
@@ -470,11 +471,14 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
     // Guard: refuse if user already has a passenger profile (prevent account hijacking)
     const { data: existing } = await supabaseAdmin
       .from('profiles')
-      .select('id, role, account_status')
+      .select('id, role, account_status, first_name, last_name, phone')
       .eq('id', userId)
       .maybeSingle();
 
-    if (existing && existing.role === 'passenger') {
+    // El perfil vacío que crea el trigger al entrar con Google cuenta como alta nueva.
+    const nuevo = !existing || await perfilEnBlanco(existing);
+
+    if (existing && !nuevo && existing.role === 'passenger') {
       return res.status(403).json({
         error: 'This Google account is already registered as a passenger. Use a different account to register as a Valet partner.',
         errorCode: 'ACCESS_DENIED',
@@ -497,7 +501,7 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
       avatar_url: '/default-avatar.svg',
       // Solo el alta nueva entra en revisión; completar el perfil de un valet ya
       // aprobado no debe devolverlo a pendiente.
-      ...(existing ? {} : { created_at: now, account_status: 'pending' }),
+      ...(nuevo ? { created_at: now, account_status: 'pending' } : {}),
       updated_at: now,
     }, { onConflict: 'id', ignoreDuplicates: false });
 
@@ -510,8 +514,8 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
       });
     }
 
-    const pending = !existing || existing.account_status === 'pending';
-    if (!existing) await registrarSolicitudValet({ email: email || '', firstName, lastName, phone, city: city || businessLocation });
+    const pending = nuevo || existing?.account_status === 'pending';
+    if (nuevo) await registrarSolicitudValet({ email: email || '', firstName, lastName, phone, city: city || businessLocation });
 
     const token = issueToken({ id: userId, phone: phone || email || userId, role: assignedRole });
 

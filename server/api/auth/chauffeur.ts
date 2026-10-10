@@ -5,6 +5,7 @@ import { pool } from '../../db/pool';
 import { sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
 import { esEmailDuplicado, esFalloDeServicio } from '../../lib/authErrors';
+import { perfilEnBlanco } from '../../services/blankProfile';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('CHAUFFEUR');
@@ -576,7 +577,7 @@ chauffeurAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: 
       .eq('id', userId)
       .maybeSingle();
 
-    if (!profile2) {
+    if (!profile2 || await perfilEnBlanco(profile2)) {
       return res.json({ needsRegistration: true, email, userId });
     }
 
@@ -643,14 +644,16 @@ chauffeurAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (
     // don't get reset to 'pending_documents' on every sign-in.
     const { data: existing } = await supabaseAdmin
       .from('profiles')
-      .select('id, role, email, verification_status')
+      .select('id, role, email, verification_status, first_name, last_name, phone')
       .eq('id', userId)
       .maybeSingle();
+    // El perfil vacío que crea el trigger al entrar con Google no es un pasajero.
+    const enBlanco = !!existing && await perfilEnBlanco(existing);
 
     // Antes sólo se frenaba a los pasajeros. Un valet pasaba de largo, se le
     // guardaban los datos de conductor, conservaba su rol de valet y descubría
     // el problema en el login, con un mensaje que le mandaba a la app que no es.
-    if (existing && existing.role && existing.role !== 'chauffeur' && existing.role !== 'driver' && existing.role !== 'admin') {
+    if (existing && !enBlanco && existing.role && existing.role !== 'chauffeur' && existing.role !== 'driver' && existing.role !== 'admin') {
       return res.status(403).json({
         error: `This account is registered as ${NOMBRE_ROL[existing.role as string] ?? 'another kind of user'}. Use a different email to register as a chauffeur.`,
         errorCode: 'ACCESS_DENIED',
