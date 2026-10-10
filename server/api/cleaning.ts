@@ -475,12 +475,31 @@ cleaningAdminRouter.get('/', async (_req: Request, res: Response) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('cleaning_charges')
-      .select('id, ride_id, driver_id, passenger_id, reason, amount_usd, status, submitted_at, receipt_due_at, company_name, created_at')
-      .in('status', ['pending_review', 'awaiting_receipt', 'charge_failed'])
-      .order('submitted_at', { ascending: true })
-      .limit(100);
+      .select('id, ride_id, driver_id, passenger_id, reason, amount_usd, status, submitted_at, receipt_due_at, company_name, created_at, reviewed_at, reviewed_by, rejection_reason')
+      // Los resueltos también: el panel los muestra abajo como historial.
+      // 'collecting' es el chofer todavía subiendo fotos.
+      .neq('status', 'collecting')
+      .order('submitted_at', { ascending: false })
+      .limit(200);
     if (error) throw error;
-    return res.json({ charges: data ?? [] });
+    // Nombres para que el panel no muestre solo ids.
+    const filas = (data ?? []) as Record<string, unknown>[];
+    const ids = [...new Set(filas.flatMap(f => [f.driver_id, f.passenger_id]).filter(Boolean).map(String))];
+    const nombres = new Map<string, string>();
+    if (ids.length) {
+      const { data: perfiles } = await supabaseAdmin.from('profiles').select('id, first_name, last_name').in('id', ids);
+      for (const p of (perfiles ?? []) as { id: string; first_name?: string | null; last_name?: string | null }[]) {
+        nombres.set(p.id, [p.first_name, p.last_name].filter(Boolean).join(' '));
+      }
+    }
+    return res.json({
+      charges: filas.map(f => ({
+        ...f,
+        driver_name: nombres.get(String(f.driver_id)) || null,
+        passenger_name: nombres.get(String(f.passenger_id)) || null,
+        label: MOTIVOS[String(f.reason) as MotivoLimpieza]?.label ?? f.reason,
+      })),
+    });
   } catch (err: unknown) {
     log.error({ err: errMsg(err) }, 'admin list failed');
     return res.status(500).json({ error: 'Could not list cleaning charges.' });
