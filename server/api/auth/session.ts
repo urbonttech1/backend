@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { logger } from '../../lib/logger';
 import { verifyToken, verifyTokenIgnoreExpiry, issueToken, supabaseAdmin, supabasePublic } from '../../db/client';
 import { getAccountStatus } from '../../services/accountSecurity';
+import { isSessionCurrent, sessionFromSupabaseToken, startSession, SESSION_REPLACED } from '../../services/singleSession';
+import { requireSupabaseAuth } from '../../middleware';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -18,6 +20,9 @@ sessionRouter.get('/me', async (req: Request, res: Response) => {
   const session = verifyToken(token);
   if (!session) {
     return res.status(401).json({ error: 'Invalid or expired token.' });
+  }
+  if (!(await isSessionCurrent(session.user_id, session.role, session))) {
+    return res.status(401).json(SESSION_REPLACED);
   }
 
   try {
@@ -56,6 +61,11 @@ sessionRouter.post('/refresh', async (req: Request, res: Response) => {
   // 1. Try custom JWT first (OTP/phone/chauffeur/valet server-issued tokens)
   const session = verifyTokenIgnoreExpiry(refresh_token);
   if (session) {
+    // Renovar no es iniciar sesión: el token nuevo sigue en la misma sesión, y
+    // una sesión cerrada desde otro dispositivo no se puede revivir así.
+    if (!(await isSessionCurrent(session.user_id, session.role, session))) {
+      return res.status(401).json(SESSION_REPLACED);
+    }
     try {
       const { data: user } = await supabaseAdmin
         .from('profiles')
@@ -69,7 +79,7 @@ sessionRouter.post('/refresh', async (req: Request, res: Response) => {
         id: user.id as string,
         phone: (user.phone as string) || '',
         role: (user.role as string) || 'passenger',
-      });
+      }, session.sid && session.loginAt !== null ? { sid: session.sid, loginAt: session.loginAt } : undefined);
 
       return res.json({ access_token: newToken, refresh_token: newToken, user_id: user.id });
     } catch (err) {
@@ -86,17 +96,22 @@ sessionRouter.post('/refresh', async (req: Request, res: Response) => {
     }
 
     const userId = refreshData.user.id;
+    // La sesión de Google sigue siendo la misma al pasar a nuestro token.
+    const sbSession = sessionFromSupabaseToken(refreshData.session.access_token);
     const { data: profile } = await supabaseAdmin
       .from('profiles')
       .select('id, phone, role')
       .eq('id', userId)
       .maybeSingle();
+    if (!(await isSessionCurrent(userId, (profile?.role as string) || 'passenger', sbSession))) {
+      return res.status(401).json(SESSION_REPLACED);
+    }
 
     const newToken = issueToken({
       id: userId,
       phone: (profile?.phone as string) || refreshData.user.email || '',
       role: (profile?.role as string) || 'passenger',
-    });
+    }, sbSession.sid && sbSession.loginAt !== null ? { sid: sbSession.sid, loginAt: sbSession.loginAt } : undefined);
 
     return res.json({
       access_token: newToken,
@@ -194,7 +209,7 @@ sessionRouter.post('/oauth-web', async (req: Request, res: Response) => {
 
     const role  = (profile?.role as string) || 'passenger';
     const phone = (profile?.phone as string) || email || userId;
-    const token = issueToken({ id: userId, phone, role });
+    const token = await startSession({ id: userId, phone, role });
 
     const firstName = profile?.first_name as string | null;
     const lastName  = profile?.last_name  as string | null;
@@ -218,6 +233,15 @@ sessionRouter.post('/oauth-web', async (req: Request, res: Response) => {
     logger.error({ err: errMsg(err) }, '[Auth/oauth-web] Failed');
     return res.status(500).json({ error: 'Authentication failed. Please try again.' });
   }
+});
+
+// ─── GET /api/auth/session ────────────────────────────────────────────────────
+// La app la llama cuando el socket avisa de un inicio de sesión nuevo: si este
+// dispositivo ya no tiene la sesión vigente, el middleware responde
+// `session_replaced` y la app vuelve al login.
+sessionRouter.get('/session', requireSupabaseAuth, (_req: Request, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  return res.json({ ok: true });
 });
 
 // ─── POST /api/auth/logout ────────────────────────────────────────────────────

@@ -62,6 +62,10 @@ export interface UrbontSession {
   user_id: string;
   phone: string;
   role: string;
+  /** Sesión a la que pertenece el token (ver services/singleSession). Null en los anteriores. */
+  sid: string | null;
+  /** Hora del inicio de sesión, en ms. Se conserva al renovar el token. */
+  loginAt: number | null;
 }
 
 // ─── Get or create user by phone ──────────────────────────────────────────────
@@ -223,22 +227,38 @@ export async function getOrCreateSupabaseUser(phone: string): Promise<{ id: stri
   return { id: userId, phone, role: 'passenger' };
 }
 
-export function issueToken(user: { id: string; phone: string; role: string }): string {
+/**
+ * Firma un token. Los inicios de sesión no la llaman directo sino a través de
+ * `startSession()` (services/singleSession), que genera y registra la sesión;
+ * aquí sólo se pasa `session` al renovar un token, para conservar la que ya tenía.
+ */
+export function issueToken(
+  user: { id: string; phone: string; role: string },
+  session?: { sid: string; loginAt: number },
+): string {
   return jwt.sign(
-    { sub: user.id, phone: user.phone, role: user.role },
+    {
+      sub: user.id, phone: user.phone, role: user.role,
+      ...(session ? { sid: session.sid, lat: session.loginAt } : {}),
+    },
     jwtSecret,
     { expiresIn: '30d' }
   );
 }
 
+function sessionFromClaims(decoded: jwt.JwtPayload): UrbontSession {
+  return {
+    user_id: decoded.sub as string,
+    phone: decoded.phone as string,
+    role: (decoded.role as string) || 'passenger',
+    sid: typeof decoded.sid === 'string' ? decoded.sid : null,
+    loginAt: typeof decoded.lat === 'number' ? decoded.lat : null,
+  };
+}
+
 export function verifyToken(token: string): UrbontSession | null {
   try {
-    const decoded = jwt.verify(token, jwtSecret) as jwt.JwtPayload;
-    return {
-      user_id: decoded.sub as string,
-      phone: decoded.phone as string,
-      role: (decoded.role as string) || 'passenger',
-    };
+    return sessionFromClaims(jwt.verify(token, jwtSecret) as jwt.JwtPayload);
   } catch {
     return null;
   }
@@ -246,21 +266,20 @@ export function verifyToken(token: string): UrbontSession | null {
 
 export function verifyTokenIgnoreExpiry(token: string): UrbontSession | null {
   try {
-    const decoded = jwt.verify(token, jwtSecret, { ignoreExpiration: true }) as jwt.JwtPayload;
-    return {
-      user_id: decoded.sub as string,
-      phone: decoded.phone as string,
-      role: (decoded.role as string) || 'passenger',
-    };
+    return sessionFromClaims(jwt.verify(token, jwtSecret, { ignoreExpiration: true }) as jwt.JwtPayload);
   } catch {
     return null;
   }
 }
 
-export async function verifySupabaseToken(token: string): Promise<{ id: string; email?: string; phone?: string; role?: string } | null> {
+export async function verifySupabaseToken(token: string): Promise<{
+  id: string; email?: string; phone?: string; role?: string;
+  /** A qué sesión pertenece el token; lo compara `isSessionCurrent()`. */
+  session: { sid: string | null; loginAt: number | null };
+} | null> {
   // 1. Try our custom JWT first (phone/OTP login)
   const session = verifyToken(token);
-  if (session) return { id: session.user_id, phone: session.phone, role: session.role };
+  if (session) return { id: session.user_id, phone: session.phone, role: session.role, session: { sid: session.sid, loginAt: session.loginAt } };
 
   // 2. Fallback: try Supabase's own auth (Google OAuth / Supabase session tokens)
   try {
@@ -288,6 +307,7 @@ export async function verifySupabaseToken(token: string): Promise<{ id: string; 
           email: data.user.email || '',
           phone: data.user.phone || '',
           role: role || 'passenger',
+          session: (await import('../services/singleSession')).sessionFromSupabaseToken(token),
         };
       }
     }
@@ -310,7 +330,9 @@ export async function createSupabaseSession(userId: string, fallbackPhone?: stri
   }
 
   // FIX: if profile is missing, still issue a valid token using fallback data
-  const token = issueToken({
+  // Import diferido: singleSession importa este módulo.
+  const { startSession } = await import('../services/singleSession');
+  const token = await startSession({
     id: userId,
     phone: (profile?.phone as string) || fallbackPhone || '',
     role: (profile?.role as string) || fallbackRole || 'passenger',

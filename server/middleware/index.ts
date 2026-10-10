@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import { logger } from '../lib/logger';
 import crypto from "crypto";
 import { verifySupabaseToken } from "../db/client";
+import { isSessionCurrent, SESSION_REPLACED } from "../services/singleSession";
 
 declare global {
   namespace Express {
@@ -180,6 +181,10 @@ export async function requireSupabaseAuth(req: Request, res: Response, next: Nex
     if (!user) {
       return res.status(401).json({ error: "Unauthorized: Invalid or expired session." });
     }
+    // Se inició sesión con esta cuenta en otro dispositivo después que en este.
+    if (!(await isSessionCurrent(user.id, user.role || 'passenger', user.session))) {
+      return res.status(401).json(SESSION_REPLACED);
+    }
     req.supabaseUid = user.id;
     req.supabaseRole = user.role || 'passenger';
     return next();
@@ -196,7 +201,8 @@ export async function optionalSupabaseAuth(req: Request, res: Response, next: Ne
   if (token) {
     try {
       const user = await verifySupabaseToken(token);
-      if (user) {
+      // Una sesión reemplazada sigue como anónima, igual que un token inválido.
+      if (user && await isSessionCurrent(user.id, user.role || 'passenger', user.session)) {
         req.supabaseUid = user.id;
         req.supabaseRole = user.role || 'passenger';
       }

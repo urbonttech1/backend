@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
-import { supabaseAdmin, supabasePublic, issueToken, KNOWN_SUPABASE_URL, KNOWN_ANON_KEY } from '../../db/client';
+import { supabaseAdmin, supabasePublic, KNOWN_SUPABASE_URL, KNOWN_ANON_KEY } from '../../db/client';
+import { startSession } from '../../services/singleSession';
 import { pool } from '../../db/pool';
 import { sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
@@ -193,7 +194,7 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
       if (demoResult) {
         log.info(`[Valet/login] Demo fallback login succeeded for ${email}`);
         clearFail(email);
-        const token = issueToken({ id: demoResult.userId, phone: (demoResult.profile?.phone as string) || email, role: demoResult.role });
+        const token = await startSession({ id: demoResult.userId, phone: (demoResult.profile?.phone as string) || email, role: demoResult.role });
         return res.json({
           success: true,
           session: { access_token: token, refresh_token: token },
@@ -235,7 +236,7 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
         // Solo si hay algo que corregir se entrega un token, y sirve para subir documentos.
         ...(porSubir.length > 0 ? {
           documentsRequested: porSubir,
-          uploadToken: issueToken({ id: userId, phone: (profile?.phone as string) || email, role }),
+          uploadToken: await startSession({ id: userId, phone: (profile?.phone as string) || email, role }),
         } : {}),
       });
     }
@@ -245,7 +246,7 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
     }
 
     clearFail(email);
-    const token = issueToken({ id: userId, phone: (profile?.phone as string) || email, role });
+    const token = await startSession({ id: userId, phone: (profile?.phone as string) || email, role });
     return res.json({ success: true, session: { access_token: token, refresh_token: token }, user: { id: userId, email: data.user.email, firstName: profile?.first_name || '', lastName: profile?.last_name || '', role } });
   } catch (err) {
     log.error(`[Valet] Login error: ${errMsg(err)}`);
@@ -336,7 +337,7 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
 
     await registrarSolicitudValet({ email, firstName, lastName, phone, city: city || businessLocation });
 
-    const token = issueToken({ id: userId, phone: phone || email, role: assignedRole });
+    const token = await startSession({ id: userId, phone: phone || email, role: assignedRole });
     return res.status(201).json({
       success: true,
       pending: true,
@@ -416,12 +417,12 @@ valetAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: Requ
         errorCode: 'ACCOUNT_PENDING',
         ...(porSubir.length > 0 ? {
           documentsRequested: porSubir,
-          uploadToken: issueToken({ id: userId, phone: (profile2.phone as string) || email || userId, role }),
+          uploadToken: await startSession({ id: userId, phone: (profile2.phone as string) || email || userId, role }),
         } : {}),
       });
     }
 
-    const token = issueToken({ id: userId, phone: (profile2.phone as string) || email || userId, role });
+    const token = await startSession({ id: userId, phone: (profile2.phone as string) || email || userId, role });
 
     return res.json({
       success: true,
@@ -517,7 +518,7 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
     const pending = nuevo || existing?.account_status === 'pending';
     if (nuevo) await registrarSolicitudValet({ email: email || '', firstName, lastName, phone, city: city || businessLocation });
 
-    const token = issueToken({ id: userId, phone: phone || email || userId, role: assignedRole });
+    const token = await startSession({ id: userId, phone: phone || email || userId, role: assignedRole });
 
     log.info(`[Valet] complete-profile succeeded for ${email} (userId: ${userId})`);
     return res.status(200).json({

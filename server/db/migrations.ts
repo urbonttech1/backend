@@ -1464,6 +1464,15 @@ export async function runMigrations() {
     await safeAlter(`CREATE INDEX IF NOT EXISTS cleaning_charges_driver_status_idx ON cleaning_charges (driver_id, status)`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cleaning_policy_accepted_at TIMESTAMPTZ`);
 
+    // Una sola sesión por cuenta (services/singleSession). Las filas que ya
+    // existen quedan con la hora en que se crea la columna: así un inicio con
+    // Google anterior al despliegue no se registra como sesión nueva y no cierra
+    // la de nadie. El default se quita enseguida para que las cuentas nuevas
+    // empiecen sin sesión.
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS session_id TEXT`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS session_login_at TIMESTAMPTZ DEFAULT NOW()`);
+    await safeAlter(`ALTER TABLE profiles ALTER COLUMN session_login_at DROP DEFAULT`);
+
     // RideCheck: un estado de movimiento por viaje y un solo aviso abierto.
     await client.query(`
       CREATE TABLE IF NOT EXISTS ride_safety_state (

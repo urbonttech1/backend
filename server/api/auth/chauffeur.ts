@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { createClient } from '@supabase/supabase-js';
-import { supabaseAdmin, supabasePublic, issueToken, verifySupabaseToken, KNOWN_SUPABASE_URL, KNOWN_ANON_KEY } from '../../db/client';
+import { supabaseAdmin, supabasePublic, verifySupabaseToken, KNOWN_SUPABASE_URL, KNOWN_ANON_KEY } from '../../db/client';
+import { startSession } from '../../services/singleSession';
 import { pool } from '../../db/pool';
 import { sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
@@ -238,7 +239,7 @@ chauffeurAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Reques
       if (demoResult) {
         log.info(`[Chauffeur/login] Demo fallback login succeeded for ${email}`);
         clearFailedAttempts(email);
-        const token = issueToken({ id: demoResult.userId, phone: (demoResult.profile?.phone as string) || email, role: demoResult.role });
+        const token = await startSession({ id: demoResult.userId, phone: (demoResult.profile?.phone as string) || email, role: demoResult.role });
         const verificationStatus = (demoResult.profile?.verification_status as string) || (demoResult.appMeta.verification_status as string) || 'approved';
         return res.json({
           success: true,
@@ -316,7 +317,7 @@ chauffeurAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Reques
     }
 
     clearFailedAttempts(email);
-    const token = issueToken({ id: userId, phone: (profile?.phone as string) || email, role });
+    const token = await startSession({ id: userId, phone: (profile?.phone as string) || email, role });
     // Prefer profile column; fall back to app_metadata (set by admin for accounts created before schema migration)
     const verificationStatus = (profile?.verification_status as string)
       || (appMeta.verification_status as string)
@@ -523,7 +524,7 @@ chauffeurAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Req
       });
     }
 
-    const token = issueToken({ id: userId, phone: phone || email, role: 'chauffeur' });
+    const token = await startSession({ id: userId, phone: phone || email, role: 'chauffeur' });
 
     return res.status(201).json({
       success: true,
@@ -589,7 +590,7 @@ chauffeurAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: 
       });
     }
 
-    const token = issueToken({ id: userId, phone: (profile2.phone as string) || email || userId, role });
+    const token = await startSession({ id: userId, phone: (profile2.phone as string) || email || userId, role });
     const verificationStatus2 = (profile2.verification_status as string) || 'pending_documents';
     const operatingCity2 = (profile2.operating_city as string) || null;
     const rejectionReason2 = (profile2.rejection_reason as string) || null;
@@ -729,7 +730,7 @@ chauffeurAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (
       } catch { /* non-critical, profile already saved above */ }
     }
 
-    const customToken = issueToken({ id: userId, phone: phone || email || userId, role: 'chauffeur' });
+    const customToken = await startSession({ id: userId, phone: phone || email || userId, role: 'chauffeur' });
 
     log.info(`[Chauffeur] complete-profile succeeded for userId=${userId}`);
     // Return the real verification_status so existing drivers (e.g. returning
