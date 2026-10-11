@@ -1,64 +1,121 @@
 /**
- * Borrado de cuentas de pasajeros y valets desde el panel. Dos modos:
+ * Borrado de cuentas de pasajeros, valets y conductores desde el panel. Dos modos:
  *
- * - `borrarCuenta` (lógico, el normal) se explica abajo.
- * - `borrarCuentaDefinitiva` elimina la cuenta y sus viajes. Solo se permite
- *   si no tiene viajes completados ni pagados: esos son contabilidad y las
- *   ganancias de los choferes, y no se pueden conservar sin la cuenta.
+ * - `borrarCuenta` (lógico): el perfil se queda sin datos personales y marcado
+ *   'deleted', el usuario de Auth se bloquea y libera su correo, y los viajes
+ *   siguen apuntando a ese perfil.
+ * - `borrarCuentaDefinitiva`: la cuenta deja de existir (Auth, perfil,
+ *   documentos y archivos). Sus viajes se conservan sin dueño, porque son
+ *   contabilidad y ganancias de otros conductores.
  *
- * Borrado lógico. Borrar la fila no es posible: `rides.passenger_id` es
- * NOT NULL en producción y los viajes que despacha un valet llevan su id como
- * pasajero, así que la clave foránea rechaza el borrado. Y el perfil cuelga del
- * usuario de Auth en cascada, así que borrar éste falla igual.
- *
- * En su lugar: el perfil se queda sin datos personales y marcado 'deleted', el
- * usuario de Auth se bloquea y libera su correo, y los viajes se conservan.
+ * Por qué los viajes no se borran con la cuenta: `rides.passenger_id` es
+ * NOT NULL en producción con ON DELETE SET NULL, así que borrar el perfil de
+ * quien tiene viajes falla. Antes de borrarlo, sus viajes como pasajero pasan a
+ * DUENO_BORRADO, un perfil fijo sin datos; como conductor o valet la propia
+ * clave foránea los deja en NULL.
  */
 import { supabaseAdmin } from '../db/client';
+import { pool } from '../db/pool';
 import { logger } from '../lib/logger';
 
 export const ESTADOS_ACTIVOS = ['scheduled', 'searching', 'confirmed', 'driver_arrived', 'in_progress'] as const;
 
 export const CUENTA_BORRADA = 'deleted';
 
+/** Dueño de los viajes de las cuentas borradas definitivamente. */
+export const DUENO_BORRADO = '00000000-0000-0000-0000-00000000dead';
+
+const NOMBRE_BORRADO = 'Deleted User';
+
 export type ResultadoBorrado =
-  | { ok: true; email: string | null; nombre: string }
+  /** `nombre` cae al correo o al id para la auditoría; `persona` es sólo el nombre real, para el saludo del aviso. */
+  | { ok: true; email: string | null; nombre: string; persona: string }
   | { ok: false; status: number; error: string; errorCode: string };
 
-type Tipo = 'passenger' | 'valet';
+type Tipo = 'passenger' | 'valet' | 'chauffeur';
 
 const ROLES: Record<Tipo, string[]> = {
   passenger: ['passenger'],
   valet: ['valet', 'frontdesk', 'concierge'],
+  chauffeur: ['chauffeur', 'driver'],
 };
+
+const NO_ENCONTRADO: Record<Tipo, string> = {
+  passenger: 'Pasajero no encontrado.',
+  valet: 'Valet no encontrado.',
+  chauffeur: 'Conductor no encontrado.',
+};
+
+/** Tablas sin clave foránea a `profiles` que guardan datos de la persona. */
+const DATOS_PERSONALES: { tabla: string; columna: string }[] = [
+  { tabla: 'saved_places', columna: 'user_id' },
+  { tabla: 'notifications', columna: 'user_id' },
+  { tabla: 'corporate_members', columna: 'user_id' },
+  { tabla: 'preferred_drivers', columna: 'passenger_id' },
+  { tabla: 'preferred_drivers', columna: 'driver_id' },
+  { tabla: 'driver_documents', columna: 'driver_id' },
+  { tabla: 'driver_streaks', columna: 'driver_id' },
+  { tabla: 'driver_quest_progress', columna: 'driver_id' },
+];
+
+/** Carpetas `<uid>/` en Storage: documentos y fotos de perfil o del vehículo. */
+const BUCKETS = ['chauffeur-docs', 'avatars'];
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
-export async function borrarCuenta(uid: string, tipo: Tipo): Promise<ResultadoBorrado> {
+function filtroViajes(uid: string, tipo: Tipo): string {
+  if (tipo === 'valet') return `valet_user_id.eq.${uid},passenger_id.eq.${uid}`;
+  if (tipo === 'chauffeur') return `driver_id.eq.${uid}`;
+  return `passenger_id.eq.${uid}`;
+}
+
+function personaDe(perfil: Record<string, unknown>): string {
+  return [perfil.first_name, perfil.last_name].filter(Boolean).join(' ');
+}
+
+function resultado(perfil: Record<string, unknown>, uid: string): ResultadoBorrado {
+  const persona = personaDe(perfil);
+  return { ok: true, email: (perfil.email as string | null) ?? null, nombre: persona || String(perfil.email ?? uid), persona };
+}
+
+/** Perfil a borrar, o el error que hay que devolver. */
+async function validar(
+  uid: string, tipo: Tipo, { permitirBorrado }: { permitirBorrado: boolean },
+): Promise<{ perfil: Record<string, unknown> } | Extract<ResultadoBorrado, { ok: false }>> {
+  const noEncontrado = { ok: false as const, status: 404, error: NO_ENCONTRADO[tipo], errorCode: 'NOT_FOUND' };
+  if (uid === DUENO_BORRADO) return noEncontrado;
+
   const { data: perfil, error: errPerfil } = await supabaseAdmin
     .from('profiles').select('id, email, first_name, last_name, role, account_status').eq('id', uid).maybeSingle();
   if (errPerfil) throw errPerfil;
-  if (!perfil || !ROLES[tipo].includes(String(perfil.role)) || perfil.account_status === CUENTA_BORRADA) {
-    return { ok: false, status: 404, error: tipo === 'valet' ? 'Valet no encontrado.' : 'Pasajero no encontrado.', errorCode: 'NOT_FOUND' };
-  }
+  if (!perfil || !ROLES[tipo].includes(String(perfil.role))) return noEncontrado;
+  if (!permitirBorrado && perfil.account_status === CUENTA_BORRADA) return noEncontrado;
 
-  // Un viaje en curso perdería a su pasajero o a su valet a mitad de camino.
-  const filtro = tipo === 'valet' ? `valet_user_id.eq.${uid},passenger_id.eq.${uid}` : `passenger_id.eq.${uid}`;
+  // Un viaje en curso perdería a su pasajero, su valet o su conductor a mitad de camino.
   const { count, error: errActivos } = await supabaseAdmin
     .from('rides').select('id', { count: 'exact', head: true })
-    .or(filtro).in('ride_status', [...ESTADOS_ACTIVOS]);
+    .or(filtroViajes(uid, tipo)).in('ride_status', [...ESTADOS_ACTIVOS]);
   if (errActivos) throw errActivos;
   if ((count ?? 0) > 0) {
     return { ok: false, status: 409, error: 'Tiene un viaje activo o programado. Termínalo o cancélalo antes de borrar la cuenta.', errorCode: 'ACTIVE_RIDES' };
   }
+  return { perfil: perfil as Record<string, unknown> };
+}
 
+export async function borrarCuenta(uid: string, tipo: Tipo): Promise<ResultadoBorrado> {
+  const v = await validar(uid, tipo, { permitirBorrado: false });
+  if ('ok' in v) return v;
+  const { perfil } = v;
   const ahora = new Date().toISOString();
 
-  // Los viajes conservan sus ids (contabilidad), pero no el nombre ni el teléfono.
+  // Los viajes conservan sus ids (contabilidad), pero no el nombre.
   const { error: errViajes } = await supabaseAdmin.from('rides')
-    .update({ passenger_name: 'Deleted User', passenger_phone: null })
-    .eq('passenger_id', uid);
+    .update({ passenger_name: NOMBRE_BORRADO }).eq('passenger_id', uid);
   if (errViajes) throw errViajes;
+  if (tipo === 'chauffeur') {
+    const { error } = await supabaseAdmin.from('rides').update({ driver_name: NOMBRE_BORRADO }).eq('driver_id', uid);
+    if (error) throw error;
+  }
 
   const { error: errBorrar } = await supabaseAdmin.from('profiles').update({
     first_name: 'Deleted',
@@ -68,12 +125,16 @@ export async function borrarCuenta(uid: string, tipo: Tipo): Promise<ResultadoBo
     avatar_url: null,
     business_name: null,
     account_status: CUENTA_BORRADA,
-    is_online: false,
     updated_at: ahora,
   }).eq('id', uid);
   if (errBorrar) {
     logger.error(`[BORRADO] No se pudo anonimizar el perfil ${uid}: ${errBorrar.message}`);
     return { ok: false, status: 500, error: `No se pudo borrar la cuenta: ${errBorrar.message}`, errorCode: 'PROFILE_NOT_DELETED' };
+  }
+
+  // Desconectado: si no, el despacho le seguiría ofreciendo viajes.
+  if (tipo === 'chauffeur') {
+    await supabaseAdmin.from('driver_locations').update({ is_online: false }).eq('driver_id', uid);
   }
 
   // Sin esto la solicitud reaparece en el panel como un valet sin cuenta.
@@ -90,64 +151,68 @@ export async function borrarCuenta(uid: string, tipo: Tipo): Promise<ResultadoBo
   });
   if (errAuth) logger.warn(`[BORRADO] Perfil ${uid} anonimizado, pero no se pudo bloquear su usuario de Auth: ${errMsg(errAuth)}`);
 
-  return {
-    ok: true,
-    email: (perfil.email as string | null) ?? null,
-    nombre: [perfil.first_name, perfil.last_name].filter(Boolean).join(' ') || String(perfil.email ?? uid),
-  };
+  return resultado(perfil, uid);
 }
 
-/** Elimina la cuenta, su perfil y sus viajes (solo cancelados o sin cobrar). */
+/**
+ * La cuenta deja de existir; sus viajes se quedan sin dueño. También sirve para
+ * terminar de borrar una cuenta que ya tuvo el borrado lógico.
+ */
 export async function borrarCuentaDefinitiva(uid: string, tipo: Tipo): Promise<ResultadoBorrado> {
-  const { data: perfil, error: errPerfil } = await supabaseAdmin
-    .from('profiles').select('id, email, first_name, last_name, role').eq('id', uid).maybeSingle();
-  if (errPerfil) throw errPerfil;
-  if (!perfil || !ROLES[tipo].includes(String(perfil.role))) {
-    return { ok: false, status: 404, error: tipo === 'valet' ? 'Valet no encontrado.' : 'Pasajero no encontrado.', errorCode: 'NOT_FOUND' };
+  const v = await validar(uid, tipo, { permitirBorrado: true });
+  if ('ok' in v) return v;
+  const { perfil } = v;
+
+  // Auth primero: si falla no se ha tocado nada. Si después falla la base, el
+  // panel puede reintentar, porque un usuario de Auth que ya no existe se ignora.
+  const { error: errAuth } = await supabaseAdmin.auth.admin.deleteUser(uid);
+  if (errAuth && !/not.?found/i.test(errAuth.message)) {
+    logger.error(`[BORRADO] No se pudo eliminar el usuario de Auth ${uid}: ${errAuth.message}`);
+    return { ok: false, status: 409, error: `No se pudo eliminar la cuenta: ${errAuth.message}`, errorCode: 'ACCOUNT_NOT_DELETED' };
   }
 
-  const filtro = tipo === 'valet' ? `valet_user_id.eq.${uid},passenger_id.eq.${uid}` : `passenger_id.eq.${uid}`;
-  const { data: viajes, error: errViajes } = await supabaseAdmin
-    .from('rides').select('id, ride_status, payment_status').or(filtro);
-  if (errViajes) throw errViajes;
-
-  const lista = (viajes ?? []) as { id: string; ride_status: string | null; payment_status: string | null }[];
-  if (lista.some(v => (ESTADOS_ACTIVOS as readonly string[]).includes(String(v.ride_status)))) {
-    return { ok: false, status: 409, error: 'Tiene un viaje activo o programado. Termínalo o cancélalo antes de borrar la cuenta.', errorCode: 'ACTIVE_RIDES' };
-  }
-  const conHistorial = lista.filter(v => v.ride_status === 'completed' || v.payment_status === 'paid').length;
-  if (conHistorial > 0) {
-    return {
-      ok: false, status: 409,
-      error: `Tiene ${conHistorial} viaje(s) completados o pagados, que son contabilidad y ganancias de choferes. Usa el borrado lógico.`,
-      errorCode: 'HAS_COMPLETED_RIDES',
-    };
-  }
-
-  if (lista.length > 0) {
-    const { error } = await supabaseAdmin.from('rides').delete().in('id', lista.map(v => v.id));
-    if (error) {
-      logger.error(`[BORRADO] No se pudieron borrar los viajes de ${uid}: ${error.message}`);
-      return { ok: false, status: 409, error: `No se pudieron borrar sus viajes: ${error.message}`, errorCode: 'RIDES_NOT_DELETED' };
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO profiles (id, role, first_name, last_name, account_status)
+       VALUES ($1, 'deleted', 'Deleted', 'User', $2) ON CONFLICT (id) DO NOTHING`,
+      [DUENO_BORRADO, CUENTA_BORRADA],
+    );
+    await client.query(
+      `UPDATE rides SET passenger_id = $2, passenger_name = $3 WHERE passenger_id = $1`,
+      [uid, DUENO_BORRADO, NOMBRE_BORRADO],
+    );
+    // driver_id y valet_user_id los deja en NULL la clave foránea; el nombre no.
+    await client.query(`UPDATE rides SET driver_name = $2 WHERE driver_id = $1`, [uid, NOMBRE_BORRADO]);
+    for (const { tabla, columna } of DATOS_PERSONALES) {
+      await client.query(`DELETE FROM ${tabla} WHERE ${columna} = $1`, [uid]);
     }
+    // Las tablas con clave foránea a profiles se limpian solas (CASCADE / SET NULL).
+    await client.query(`DELETE FROM profiles WHERE id = $1`, [uid]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error(`[BORRADO] No se pudo eliminar el perfil ${uid}: ${errMsg(e)}`);
+    return { ok: false, status: 409, error: `No se pudo eliminar la cuenta: ${errMsg(e)}`, errorCode: 'ACCOUNT_NOT_DELETED' };
+  } finally {
+    client.release();
   }
 
   if (tipo === 'valet' && perfil.email) {
     await supabaseAdmin.from('valet_applications').delete().ilike('email', String(perfil.email));
   }
 
-  // El perfil cuelga del usuario de Auth en cascada: borrar éste borra los dos.
-  const { error: errAuth } = await supabaseAdmin.auth.admin.deleteUser(uid);
-  if (errAuth && !/not.?found/i.test(errAuth.message)) {
-    logger.error(`[BORRADO] No se pudo eliminar ${uid}: ${errAuth.message}`);
-    return { ok: false, status: 409, error: `No se pudo eliminar la cuenta: ${errAuth.message}`, errorCode: 'ACCOUNT_NOT_DELETED' };
+  // Archivos: la cuenta ya está borrada, así que un fallo aquí sólo se registra.
+  for (const bucket of BUCKETS) {
+    try {
+      const { data: archivos } = await supabaseAdmin.storage.from(bucket).list(uid, { limit: 1000 });
+      const rutas = (archivos ?? []).map(a => `${uid}/${a.name}`);
+      if (rutas.length) await supabaseAdmin.storage.from(bucket).remove(rutas);
+    } catch (e) {
+      logger.warn(`[BORRADO] Cuenta ${uid} eliminada, pero quedaron archivos en ${bucket}: ${errMsg(e)}`);
+    }
   }
-  // Si el usuario de Auth ya no existía, el perfil puede haber quedado suelto.
-  await supabaseAdmin.from('profiles').delete().eq('id', uid);
 
-  return {
-    ok: true,
-    email: (perfil.email as string | null) ?? null,
-    nombre: [perfil.first_name, perfil.last_name].filter(Boolean).join(' ') || String(perfil.email ?? uid),
-  };
+  return resultado(perfil, uid);
 }

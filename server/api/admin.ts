@@ -29,7 +29,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
-import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena } from '../services/accountEmails';
+import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
@@ -391,7 +391,8 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
 
     const rolesDeConductor = new Set(['chauffeur', 'driver']);
 
-    const drivers = (data ?? []).map((d: Record<string, unknown>) => {
+    // Las cuentas con borrado lógico siguen en la tabla (los viajes las referencian).
+    const drivers = (data ?? []).filter((d: Record<string, unknown>) => d.account_status !== 'deleted').map((d: Record<string, unknown>) => {
     const veh = (d.vehicle ?? {}) as Record<string, unknown>;
     const via = conteo.get(String(d.id));
     const doc = documentos.get(String(d.id));
@@ -1221,9 +1222,9 @@ adminRouter.post("/passengers/:id/reactivate", async (req: Request, res: Respons
   }
 });
 
-// ─── Borrar pasajeros y valets ───────────────────────────────────────────────
-// Solo el owner. `?mode=hard` elimina la cuenta y sus viajes; sin él, borrado
-// lógico que conserva los viajes. Ver services/accountDeletion.
+// ─── Borrar pasajeros, valets y conductores ──────────────────────────────────
+// Solo el owner. `?mode=hard` elimina la cuenta y deja sus viajes sin dueño;
+// sin él, borrado lógico que anonimiza el perfil. Ver services/accountDeletion.
 
 adminRouter.delete("/passengers/:id", requireAdminRole('owner'), async (req: Request, res: Response) => {
   try {
@@ -1231,10 +1232,26 @@ adminRouter.delete("/passengers/:id", requireAdminRole('owner'), async (req: Req
     const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'passenger') : await borrarCuenta(req.params.id, 'passenger');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
     await auditar(req, definitivo ? 'passenger.delete.hard' : 'passenger.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
-    res.json({ success: true });
+    // El correo se tomó antes de borrarlo; si no tiene, el panel lo avisa.
+    const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
+    res.json({ success: true, notification: aviso });
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin] borrar pasajero');
     res.status(500).json({ error: 'No se pudo borrar el pasajero.' });
+  }
+});
+
+adminRouter.delete("/drivers/:id", requireAdminRole('owner'), async (req: Request, res: Response) => {
+  try {
+    const definitivo = req.query.mode === 'hard';
+    const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'chauffeur') : await borrarCuenta(req.params.id, 'chauffeur');
+    if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
+    await auditar(req, definitivo ? 'driver.delete.hard' : 'driver.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
+    const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
+    res.json({ success: true, notification: aviso });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] borrar conductor');
+    res.status(500).json({ error: 'No se pudo borrar el conductor.' });
   }
 });
 
@@ -1254,7 +1271,8 @@ adminRouter.delete("/valets/:id", requireAdminRole('owner'), async (req: Request
     const r = definitivo ? await borrarCuentaDefinitiva(id, 'valet') : await borrarCuenta(id, 'valet');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
     await auditar(req, definitivo ? 'valet.delete.hard' : 'valet.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
-    res.json({ success: true });
+    const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
+    res.json({ success: true, notification: aviso });
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin] borrar valet');
     res.status(500).json({ error: 'No se pudo borrar el valet.' });

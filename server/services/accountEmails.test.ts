@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { vencimientoDocumentoHtml } from './accountEmails';
+import { cuentaEliminadaHtml, enviarAvisoCuentaEliminada, vencimientoDocumentoHtml } from './accountEmails';
 
 const chofer = { email: 'chofer@example.com', name: 'Ana Pérez' };
 
@@ -18,5 +18,28 @@ describe('vencimientoDocumentoHtml', () => {
 
   it('vencido dice que la cuenta quedó suspendida', () => {
     expect(vencimientoDocumentoHtml(chofer, 'Auto Insurance', '2026-10-06', 'vencido')).toContain('suspendida temporalmente');
+  });
+});
+
+describe('cuentaEliminadaHtml', () => {
+  it('avisa de la eliminación y de que el correo queda libre', () => {
+    const html = cuentaEliminadaHtml(chofer, false);
+    expect(html).toContain('Hola Ana Pérez,');
+    expect(html).toContain('<strong>eliminada</strong>');
+    expect(html).toContain('Borramos tus datos personales');
+    expect(html).toContain('puedes crear una cuenta nueva');
+  });
+
+  it('el definitivo dice que la cuenta deja de existir', () => {
+    expect(cuentaEliminadaHtml(chofer, true)).toContain('Eliminamos tu cuenta y los datos asociados');
+  });
+
+  it('sin nombre saluda sin nombre', () => {
+    expect(cuentaEliminadaHtml({ email: 'x@example.com', name: '' }, true)).toContain('Hola,');
+  });
+
+  it('sin correo no envía y lo dice', async () => {
+    const r = await enviarAvisoCuentaEliminada({ email: null, name: 'Ana' }, true);
+    expect(r).toMatchObject({ sent: false, reason: 'NO_EMAIL' });
   });
 });

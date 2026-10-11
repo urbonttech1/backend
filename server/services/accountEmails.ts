@@ -1,5 +1,5 @@
 /**
- * Correos de estado de cuenta — suspensión y reactivación.
+ * Correos de estado de cuenta — suspensión, reactivación y eliminación.
  *
  * Hasta ahora suspender a alguien era silencioso: se actualizaba el perfil y el
  * usuario solo se enteraba al intentar entrar y recibir un 403. El motivo ya
@@ -148,6 +148,32 @@ export function cambioContrasenaHtml(target: AccountEmailTarget): string {
   });
 }
 
+/**
+ * Aviso de cuenta eliminada desde el panel. `definitiva` distingue el borrado
+ * definitivo (la cuenta deja de existir) del lógico (se anonimiza); en los dos
+ * el correo queda libre y los viajes se conservan sin datos personales.
+ */
+export function cuentaEliminadaHtml(target: AccountEmailTarget, definitiva: boolean): string {
+  const queBorramos = definitiva
+    ? 'Eliminamos tu cuenta y los datos asociados a ella.'
+    : 'Borramos tus datos personales de nuestro sistema.';
+
+  return emailShell({
+    eyebrow: 'Estado de cuenta',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo(`Tu cuenta de URBONT fue <strong>eliminada</strong> y ya no podrás iniciar sesión con ella.`)}
+      <div style="margin:4px 0 18px;">${badge('Cuenta eliminada', brand.red)}</div>
+      ${parrafo(`${queBorramos} El historial de tus viajes se conserva sin información que te
+        identifique, porque forma parte de nuestra contabilidad.`)}
+      ${parrafo(`Este correo queda libre: si quieres volver a usar URBONT, puedes crear una cuenta nueva.`)}
+      ${parrafo(`Si no lo solicitaste o crees que es un error, escríbenos a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque tu cuenta fue eliminada.',
+  });
+}
+
 export type FaseVencimiento = '30d' | '15d' | '7d' | 'vencido';
 
 /** `YYYY-MM-DD` sin pasar por la zona del servidor, que podría restarle un día. */
@@ -246,6 +272,10 @@ export function enviarAvisoDocumentoValet(target: AccountEmailTarget, docLabel: 
 
 export function enviarAvisoCambioContrasena(target: AccountEmailTarget): Promise<ResultadoAviso> {
   return avisar(target, 'La contraseña de tu cuenta de URBONT cambió', cambioContrasenaHtml(target));
+}
+
+export function enviarAvisoCuentaEliminada(target: AccountEmailTarget, definitiva: boolean): Promise<ResultadoAviso> {
+  return avisar(target, 'Tu cuenta de URBONT fue eliminada', cuentaEliminadaHtml(target, definitiva));
 }
 
 const ASUNTO_VENCIMIENTO: Record<FaseVencimiento, (doc: string) => string> = {
