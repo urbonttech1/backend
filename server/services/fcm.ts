@@ -60,6 +60,7 @@ const HIGH_PRIORITY_TYPES = new Set([
   'ride_confirmed',
   'driver_arriving_soon',
   'driver_arrived',
+  'pickup_pin_verified',
   'ride_started',
   'chat_message',
   'payment_failed',
@@ -75,6 +76,7 @@ const TIME_SENSITIVE_TYPES = new Set([
   'scheduled_depart',
   'driver_arriving_soon',
   'driver_arrived',
+  'pickup_pin_verified',
   'payment_failed',
   'sos_alert',
 ]);
@@ -97,13 +99,17 @@ const COLLAPSE_GROUPS: Record<string, string> = {
   ride_searching:               'ride',
   driver_arriving_soon:         'ride',
   driver_arrived:               'ride',
+  pickup_pin_verified:          'ride',
   ride_started:                 'ride',
   driver_cancelled_reassigning: 'ride',
   chat_message:                 'chat',
 };
 
 export function deliveryOptions(payload: PushPayload) {
-  const type   = payload.data?.type ?? '';
+  // El push del valet reescribe `type` a valet_ride_update y guarda el evento
+  // real en `event`. La prioridad tiene que seguir al evento (llegada, PIN).
+  const raw = payload.data?.type ?? '';
+  const type = raw === 'valet_ride_update' ? (payload.data?.event || raw) : raw;
   const rideId = payload.data?.ride_id;
 
   const highPriority  = HIGH_PRIORITY_TYPES.has(type);

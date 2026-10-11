@@ -86,6 +86,27 @@ describe('deliveryOptions', () => {
     expect('badge' in o.apns.payload.aps).toBe(false);
   });
 
+  it('keeps valet arrival and pickup-code alerts immediate', () => {
+    // The valet rewrite stores the real event in `event` and sets type to
+    // valet_ride_update. Priority has to follow the event or a killed app
+    // gets a delayed, low-priority tray item.
+    const arrived = deliveryOptions({
+      ...base,
+      data: { type: 'valet_ride_update', event: 'driver_arrived', ride_id: 'r1' },
+    });
+    const pin = deliveryOptions({
+      ...base,
+      data: { type: 'valet_ride_update', event: 'pickup_pin_verified', ride_id: 'r1' },
+    });
+
+    expect(arrived.android.priority).toBe('high');
+    expect(arrived.apns.headers['apns-priority']).toBe('10');
+    expect(arrived.apns.payload.aps['interruption-level']).toBe('time-sensitive');
+    expect(pin.android.priority).toBe('high');
+    expect(pin.apns.headers['apns-priority']).toBe('10');
+    expect(pin.android.collapseKey).toBe('ride_r1');
+  });
+
   it('survives a payload with no data at all', () => {
     const o = deliveryOptions(base);
 
