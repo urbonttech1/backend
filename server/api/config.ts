@@ -8,6 +8,7 @@ import { telefonoEmergencias } from "../services/driverIncident";
 import { claveDeNavegador, mapIdPublicado } from '../services/mapsKeys';
 import { surgeVigente, estadoSurge, resolverSurge, guardarManual, esSilencioso, SURGE_MIN, SURGE_MAX } from '../services/surgeConfig';
 import { ensureReglasValetFresh } from '../services/valetCommissionConfig';
+import { ensureEfectivoFresh, efectivoPermitido } from '../services/cashConfig';
 
 const log = createContextLogger('CONFIG');
 export const configRouter = Router();
@@ -145,6 +146,10 @@ configRouter.get("/", async (req: Request, res: Response) => {
       // Espera gratis, topes, no-show y cancelación: la app y el panel los leen
       // de aquí en vez de llevarlos escritos en su código.
       pricingPolicy:    await ensureReglasValetFresh().then(() => getPricingPolicy()),
+      // Si el valet y el chofer pueden despachar viajes en efectivo. La app
+      // esconde la opción cuando es false; una app vieja no lo lee y el servidor
+      // rechaza igual el despacho.
+      cashPaymentsEnabled: await ensureEfectivoFresh().then(() => efectivoPermitido()),
       // Teléfonos de despacho y emergencias; ver `soporte()`.
       support,
     });
@@ -156,6 +161,7 @@ configRouter.get("/", async (req: Request, res: Response) => {
       effective_surge_multiplier: surgeEfectivo,
       stripePublishableKey, googleMapsApiKey, googleMapsMapId,
       pricingPolicy: getPricingPolicy(),
+      cashPaymentsEnabled: efectivoPermitido(),
       support,
     });
   }

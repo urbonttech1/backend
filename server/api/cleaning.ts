@@ -5,6 +5,7 @@ import { requireAdminJWT } from './admin-auth';
 import { supabaseAdmin } from '../db/client';
 import { createContextLogger } from '../lib/logger';
 import { notifyUser } from '../services/fcm';
+import { correoLimpiezaPasajero } from '../services/cleaningEmails';
 import { getStripe } from './rides/helpers';
 import {
   MOTIVOS,
@@ -130,6 +131,7 @@ function avisoPasajero(passengerId: string, rideId: string, motivo: MotivoLimpie
       : `Your driver reported a $${amount.toFixed(2)} ${label} charge. It will not be billed until URBONT reviews the photos.`,
     data: { type: 'cleaning_submitted', ride_id: rideId, screen: 'ride_history' },
   }).catch(() => {});
+  void correoLimpiezaPasajero(passengerId, 'submitted', { amountUsd: amount, label: MOTIVOS[motivo].label, rideId, awaitingReceipt: esperaRecibo });
 }
 
 // ── Política que el pasajero acepta antes de reservar ────────────────────────
@@ -600,6 +602,11 @@ cleaningAdminRouter.post('/:id/reject', async (req: Request, res: Response) => {
       body: `The $${amount.toFixed(2)} cleaning charge was not applied.`,
       data: { type: 'cleaning_rejected', ride_id: String(fila.ride_id), screen: 'ride_history' },
     }).catch(() => {});
+    void correoLimpiezaPasajero(String(fila.passenger_id), 'rejected', {
+      amountUsd: amount,
+      label: MOTIVOS[String(fila.reason) as MotivoLimpieza]?.label ?? String(fila.reason),
+      rideId: String(fila.ride_id),
+    });
     notifyUser(String(fila.driver_id), {
       title: 'Cleaning charge declined',
       body: motivoRechazo,

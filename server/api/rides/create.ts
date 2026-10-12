@@ -27,6 +27,7 @@ import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 import { claveDeServidor } from '../../services/mapsKeys';
+import { ensureEfectivoFresh, efectivoPermitido } from '../../services/cashConfig';
 
 export function registerCreateRoutes(router: Router): void {
 router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -649,9 +650,17 @@ router.post('/driver-create', requireSupabaseAuth, async (req: Request, res: Res
       || dp?.vehicle?.category
       || 'sedan';
 
-    const pmMethod = (paymentMethod || 'cash') as string;
+    await ensureEfectivoFresh();
+    const pmMethod = (paymentMethod || (efectivoPermitido() ? 'cash' : 'card')) as string;
     if (!['cash', 'card'].includes(pmMethod)) {
       return res.status(400).json({ error: 'Invalid payment method' });
+    }
+    if (pmMethod === 'cash' && !efectivoPermitido()) {
+      return res.status(409).json({
+        error: 'Cash payments are turned off. Create this ride as card.',
+        errorCode: 'CASH_DISABLED',
+        field: 'paymentMethod',
+      });
     }
 
     // Compute fare. Prefer explicit price from client (already from

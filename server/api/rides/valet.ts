@@ -27,6 +27,7 @@ import { esRolValet } from '../../services/docCatalog';
 import { accesoValet } from '../../services/valetAccess';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
+import { ensureEfectivoFresh, efectivoPermitido } from '../../services/cashConfig';
 
 /**
  * Un valet suspendido desde el panel conserva su token hasta que caduque, así que
@@ -208,7 +209,17 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
     const gpsDstLng = typeof dropoffLng === 'number' ? dropoffLng : null;
     // Normalizado por el CHECK de rides.payment_method: el dashboard de valet
     // manda el método como string libre y aquí no había validación.
-    const pmMethod = normalizePaymentMethod(paymentMethod || 'cash');
+    await ensureEfectivoFresh();
+    const pmMethod = normalizePaymentMethod(paymentMethod || (efectivoPermitido() ? 'cash' : 'card'));
+    // Apagado desde el panel: los viajes nuevos van con tarjeta. Los que ya
+    // existen en efectivo se completan y se liquidan igual.
+    if (pmMethod === 'cash' && !efectivoPermitido()) {
+      return res.status(409).json({
+        error: 'Cash payments are turned off. Dispatch this ride as card.',
+        errorCode: 'CASH_DISABLED',
+        field: 'paymentMethod',
+      });
+    }
 
     // ── Precio del servicio y comisión del valet ─────────────────────────────
     // El precio lo calcula el SERVIDOR con la tabla oficial, igual que en el

@@ -14,6 +14,7 @@ import { logger } from '../lib/logger';
 import { notifyUser } from './fcm';
 import { estadoConnectAlDia } from './payoutRecovery';
 import { MOTIVOS, type MotivoLimpieza } from './cleaningCharge';
+import { correoLimpiezaPasajero } from './cleaningEmails';
 
 export interface CobroListo {
   status: 'charged';
@@ -107,6 +108,7 @@ export async function cobrarLimpieza(opts: {
     body: `A $${amountUsd.toFixed(2)} ${etiqueta.toLowerCase()} charge was applied to your card.`,
     data: { type: 'cleaning_charged', ride_id: rideId, screen: 'ride_history' },
   }).catch(() => {});
+  void correoLimpiezaPasajero(passengerId, 'charged', { amountUsd, label: etiqueta, rideId });
 
   let transferId: string | undefined;
   try {

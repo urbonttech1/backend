@@ -35,6 +35,7 @@ import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletio
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
 import { DEFAULT_FARE_CLASSES, type FareClass, getPricingPolicy } from '../config/pricing';
+import { ensureEfectivoFresh, efectivoPermitido, guardarEfectivo } from '../services/cashConfig';
 
 // Antes este archivo creaba su propio `new Pool()` con la connection string
 // cruda, sin la conversión a pooler IPv4 que tiene server/db/pool.ts — por
@@ -1573,6 +1574,28 @@ adminRouter.get("/fares", async (_req: Request, res: Response) => {
 
 // PUT /api/admin/fares/commission — la comisión de Urbont
 // Sale de dentro del precio: subirla no encarece el viaje, le quita al chofer.
+// GET/PUT /api/admin/settings/cash-payments — aceptar o no viajes en efectivo.
+// Apagarlo no toca los viajes ya creados: siguen su curso y se liquidan igual.
+adminRouter.get("/settings/cash-payments", async (_req: Request, res: Response) => {
+  await ensureEfectivoFresh();
+  res.json({ enabled: efectivoPermitido() });
+});
+
+adminRouter.put("/settings/cash-payments", requireAdminRole('owner', 'operations'), async (req: Request, res: Response) => {
+  const quien = req.adminUser?.email || 'admin';
+  try {
+    const activo = await guardarEfectivo((req.body ?? {}).enabled, quien);
+    if (activo === null) {
+      return res.status(400).json({ error: 'Indica si el efectivo queda activado o desactivado.', errorCode: 'INVALID_VALUE', field: 'enabled' });
+    }
+    await auditar(req, 'settings.cash_payments', activo ? 'activado' : 'desactivado');
+    res.json({ success: true, enabled: activo });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] guardar pagos en efectivo');
+    res.status(500).json({ error: 'No se pudo guardar el ajuste.' });
+  }
+});
+
 adminRouter.put("/fares/commission", async (req: Request, res: Response) => {
   const { platformCommissionPercent } = (req.body ?? {}) as { platformCommissionPercent?: unknown };
   const quien = (req as Request & { adminEmail?: string }).adminEmail || 'admin';
