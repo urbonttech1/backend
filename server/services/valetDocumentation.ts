@@ -4,13 +4,15 @@
  */
 import { supabaseAdmin } from '../db/client';
 import { ACUERDO_VERSION } from './valetAgreement';
-import { companiaCompleta, companiaDesdeFila } from './valetCompany';
+import { companiaCompleta, companiaDesdeFila, type CompaniaValet } from './valetCompany';
 import { estadoW9, expediente, faltantesActivacion, type EstadoAcuerdo, type EstadoExpediente, type EstadoW9 } from './valetPacket';
 
 const PREFIJO_W9 = 'valet-tax:';
 
 export interface DocumentacionValet {
   companyComplete: boolean;
+  /** Lo que el valet escribió; el panel lo muestra para revisarlo. */
+  company: CompaniaValet;
   agreement: EstadoAcuerdo;
   agreementVersion: string | null;
   agreementAcceptedAt: string | null;
@@ -55,11 +57,13 @@ export async function documentacionDe(userId: string): Promise<DocumentacionVale
       .maybeSingle(),
   ]);
 
-  const company = companiaCompleta(companiaDesdeFila(perfil.data as Record<string, unknown> | null));
+  const datosCompania = companiaDesdeFila(perfil.data as Record<string, unknown> | null);
+  const company = companiaCompleta(datosCompania);
   const agreement: EstadoAcuerdo = firma.data ? 'accepted' : 'pending';
   const w9Estado = estadoW9((w9.data?.status as string | undefined) ?? null);
   return {
     companyComplete: company,
+    company: datosCompania,
     agreement,
     agreementVersion: (firma.data?.agreement_version as string | undefined) ?? null,
     agreementAcceptedAt: (firma.data?.accepted_at as string | undefined) ?? null,

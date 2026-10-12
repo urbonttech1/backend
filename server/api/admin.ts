@@ -878,6 +878,8 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
       }));
       const docu = expediente.get(String(p.id));
       const documentation = {
+        companyComplete: docu?.companyComplete ?? false,
+        company: docu?.company ?? null,
         agreement: docu?.agreement ?? 'pending',
         agreementVersion: docu?.agreementVersion ?? null,
         agreementAcceptedAt: docu?.agreementAcceptedAt ?? null,
@@ -931,6 +933,7 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
         suspensionReason: null, createdAt: a.created_at, hasProfile: false,
         documents: [], documentsSummary: { required: 0, approved: 0, missing: [] as string[] },
         documentation: {
+          companyComplete: false, company: null,
           agreement: 'pending' as const, agreementVersion: null, agreementAcceptedAt: null,
           w9: 'missing' as const, w9Url: null, accountDocumentation: 'pending_documentation' as const,
         },

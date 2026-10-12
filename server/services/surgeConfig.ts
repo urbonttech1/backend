@@ -18,7 +18,7 @@
  */
 import { pool } from '../db/pool';
 import { logger } from '../lib/logger';
-import { getTimeSurge } from '../config/pricing';
+import { getTimeSurge, MULTIPLICADOR_MINIMO } from '../config/pricing';
 
 const CONFIG_KEY = 'surge_config';
 const MIRROR_KEY = 'surge_multiplier';
@@ -26,7 +26,7 @@ const REASON_KEY = 'surge_reason';
 const TTL_MS = 60_000;
 
 /** Los mismos límites que ya validaba `PUT /api/config/surge`. */
-export const SURGE_MIN = 1.0;
+export const SURGE_MIN = MULTIPLICADOR_MINIMO;
 export const SURGE_MAX = 5.0;
 
 /** Diferencia mínima para molestarse en escribir; evita el vaivén de decimales. */

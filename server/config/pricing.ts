@@ -305,19 +305,26 @@ export interface FareRulesBreakdown {
  * es la mínima y `distance_charge` lo que la distancia la supera, así que la
  * suma sigue dando el importe del recorrido.
  */
+/**
+ * Mínimo del multiplicador de demanda. Por debajo de 1 es un descuento (horas
+ * valle, promociones): 0.1 deja hasta un 90 %. Lo usa también la validación
+ * del panel. La reserva y el cargo fijo no se descuentan nunca.
+ */
+export const MULTIPLICADOR_MINIMO = 0.1;
+
 export function calculateFareFromRules(opts: {
   vehicleType:      string;
   distanceMiles:    number;
   durationMinutes:  number;
   bookingType?:     string;
-  /** Recargo por demanda. Se ignora si es menor a 1: nunca abarata el viaje. */
+  /** Multiplicador por demanda: > 1 recarga, < 1 descuenta (mínimo MULTIPLICADOR_MINIMO). */
   surgeMultiplier?: number;
 }): FareRulesBreakdown | null {
   const rule = getFareClass(opts.vehicleType);
   if (!rule) return null;
 
   // El surge multiplica base, distancia y tiempo — NUNCA la reserva.
-  const surge           = Math.max(1, opts.surgeMultiplier ?? 1);
+  const surge           = Math.max(MULTIPLICADOR_MINIMO, opts.surgeMultiplier ?? 1);
   const miles           = Math.max(0, opts.distanceMiles);
   const { tier, perMile } = tramoPorMilla(rule, miles);
   const importeDistancia = calcularImporteDistancia(rule, miles);
@@ -384,7 +391,7 @@ export function calculateHourlyFare(opts: {
   if (!rule) return null;
   if (!Number.isFinite(opts.hours) || opts.hours < 0) return null;
 
-  const surge         = Math.max(1, opts.surgeMultiplier ?? 1);
+  const surge         = Math.max(MULTIPLICADOR_MINIMO, opts.surgeMultiplier ?? 1);
   const billedHours   = Math.max(rule.minHours, opts.hours);
   const hourly_charge = r2(billedHours * rule.perHour * surge);
   const booking_fee   = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;

@@ -146,8 +146,15 @@ describe('calculateFareFromRules — recargo por demanda', () => {
     expect(f.surge_multiplier).toBe(1.35);
   });
 
-  it('ignora un recargo menor a 1: nunca abarata el viaje', () => {
-    expect(fare('sedan', 8, 0, undefined, 0.5).total).toBe(fare('sedan', 8, 0).total);
+  it('un multiplicador menor a 1 descuenta el recorrido, nunca la reserva ni el cargo fijo', () => {
+    const normal = fare('sedan', 8, 0);
+    const descuento = fare('sedan', 8, 0, undefined, 0.8);
+    expect(descuento.total).toBeLessThan(normal.total);
+    expect(descuento.booking_fee_flat).toBe(normal.booking_fee_flat);
+  });
+
+  it('no baja del multiplicador mínimo (0.1)', () => {
+    expect(fare('sedan', 8, 0, undefined, 0.01).total).toBe(fare('sedan', 8, 0, undefined, 0.1).total);
   });
 });
 

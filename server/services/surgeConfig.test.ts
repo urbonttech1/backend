@@ -24,6 +24,8 @@ const cfg = (parcial: Partial<SurgeConfig> = {}): SurgeConfig => ({
 describe('normalizarMultiplicador', () => {
   it('acepta números dentro del rango', () => {
     expect(normalizarMultiplicador(1.5)).toBe(1.5);
+    expect(normalizarMultiplicador(0.8)).toBe(0.8); // descuento
+    expect(normalizarMultiplicador(0.1)).toBe(0.1); // límite inferior inclusivo
     expect(normalizarMultiplicador(1)).toBe(1);
     expect(normalizarMultiplicador(5)).toBe(5); // límite inclusivo, como PUT /api/config/surge
   });
@@ -38,7 +40,7 @@ describe('normalizarMultiplicador', () => {
   });
 
   it('rechaza lo que está fuera de rango o no es un número', () => {
-    expect(normalizarMultiplicador(0.9)).toBeNull();
+    expect(normalizarMultiplicador(0.05)).toBeNull();
     expect(normalizarMultiplicador(5.01)).toBeNull();
     expect(normalizarMultiplicador('mucho')).toBeNull();
     expect(normalizarMultiplicador(undefined)).toBeNull();
@@ -69,7 +71,7 @@ describe('parseSurgeConfig', () => {
   });
 
   it('descarta un candado manual fuera de rango en vez de honrarlo', () => {
-    expect(parseSurgeConfig('{"manualMultiplier":0.5}').manualMultiplier).toBeNull();
+    expect(parseSurgeConfig('{"manualMultiplier":0.05}').manualMultiplier).toBeNull();
     expect(parseSurgeConfig('{"manualMultiplier":9}').manualMultiplier).toBeNull();
     expect(parseSurgeConfig('{"manualMultiplier":1.8}').manualMultiplier).toBe(1.8);
   });

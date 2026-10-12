@@ -6,7 +6,7 @@ import { getTimeSurge, getFareClasses, getPricingPolicy, VEHICLE_ALIAS } from ".
 import { ensureZonesFresh, getZones, resolveZone } from "../services/serviceZones";
 import { telefonoEmergencias } from "../services/driverIncident";
 import { claveDeNavegador, mapIdPublicado } from '../services/mapsKeys';
-import { surgeVigente, estadoSurge, resolverSurge, guardarManual, esSilencioso } from '../services/surgeConfig';
+import { surgeVigente, estadoSurge, resolverSurge, guardarManual, esSilencioso, SURGE_MIN, SURGE_MAX } from '../services/surgeConfig';
 import { ensureReglasValetFresh } from '../services/valetCommissionConfig';
 
 const log = createContextLogger('CONFIG');
@@ -307,7 +307,7 @@ configRouter.put("/surge", requireSupabaseAuth, async (req: Request, res: Respon
   try {
     const cfg = await guardarManual(multiplier, null, req.supabaseUid ?? 'admin');
     if (!cfg) {
-      return res.status(400).json({ error: 'multiplier must be between 1.0 and 5.0' });
+      return res.status(400).json({ error: `multiplier must be between ${SURGE_MIN} and ${SURGE_MAX}` });
     }
     log.info({ multiplier: cfg.manualMultiplier }, 'surge manual lock set');
     res.json({ applied: true, surge_multiplier: cfg.manualMultiplier });
