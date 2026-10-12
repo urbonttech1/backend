@@ -4,6 +4,7 @@ import { supabaseAdmin } from "../../db/client";
 import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
+import { esReservaConTiempo, leerSillas } from "../../services/childSeats";
 import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
@@ -63,7 +64,7 @@ router.get("/valet-pending", requireSupabaseAuth, async (req: Request, res: Resp
     }
     const { data, error } = await supabaseAdmin
       .from('rides')
-      .select('id, pickup, dropoff, vehicle_type, guest_name, scheduled_at, valet_booking_ref, created_at, notes, passengers, luggage, valet_user_id, dispatched_by_valet, pickup_pin, passenger_id, fare, distance, ride_status')
+      .select('id, pickup, dropoff, vehicle_type, guest_name, scheduled_at, valet_booking_ref, created_at, notes, passengers, luggage, child_seats, valet_user_id, dispatched_by_valet, pickup_pin, passenger_id, fare, distance, ride_status')
       .eq('dispatched_by_valet', true)
       .eq('ride_status', 'searching')
       .is('driver_id', null)
@@ -194,13 +195,27 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
     if (await bloquearSiSuspendido(req, res)) return;
     const {
       guestName, pickup, destination, vehicleType,
-      paymentMethod, scheduledAt, notes, skipPin,
+      paymentMethod, scheduledAt, notes, skipPin, childSeats,
       passengers, luggage, pickupLat, pickupLng, dropoffLat, dropoffLng,
       vehiclePrice, distanceMiles: valetMiles, durationMinutes: valetDuration,
     } = req.body;
 
     if (!pickup || !vehicleType || !destination) {
       return res.status(400).json({ error: 'Missing required fields: pickup, destination, vehicleType' });
+    }
+
+    const sillas = leerSillas(childSeats);
+    if (!sillas.ok) {
+      return res.status(400).json({
+        error: 'Child seats must be rear-facing, forward-facing, or booster, up to 4 in total.',
+        errorCode: 'CHILD_SEATS_INVALID',
+      });
+    }
+    if (sillas.seats && !esReservaConTiempo(scheduledAt)) {
+      return res.status(400).json({
+        error: 'Child seats can only be requested on a reservation more than 30 minutes ahead.',
+        errorCode: 'CHILD_SEATS_SCHEDULED_ONLY',
+      });
     }
 
     const gpsLat = typeof pickupLat === 'number' ? pickupLat : null;
@@ -284,6 +299,7 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
       payment_method:       pmMethod,
       notes:                notes || null,
       scheduled_at:         scheduledAt || null,
+      ...(sillas.seats ? { child_seats: sillas.seats } : {}),
       ride_status:          'searching',
       pickup_pin:           pin,
       dispatched_by_valet:  true,
@@ -327,8 +343,8 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
       const rideId = (ride as RideRow).id;
       // Patch extended columns via direct SQL
       await pool.query(
-        `UPDATE rides SET locked_fare = $1, valet_surcharge = $2, passengers = $3, luggage = $4 WHERE id = $5`,
-        [totalFare, valetSurcharge, typeof passengers === 'number' ? passengers : 1, typeof luggage === 'number' ? luggage : 0, rideId]
+        `UPDATE rides SET locked_fare = $1, valet_surcharge = $2, passengers = $3, luggage = $4, child_seats = $5::jsonb WHERE id = $6`,
+        [totalFare, valetSurcharge, typeof passengers === 'number' ? passengers : 1, typeof luggage === 'number' ? luggage : 0, sillas.seats ? JSON.stringify(sillas.seats) : null, rideId]
       );
     }
 

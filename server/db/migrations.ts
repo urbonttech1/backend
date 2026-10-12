@@ -1502,6 +1502,8 @@ export async function runMigrations() {
     `);
     await safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS ride_safety_checks_one_open ON ride_safety_checks (ride_id) WHERE status = 'open'`);
 
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS child_seats JSONB`);
+
     // Compañía del valet y la prueba de que pulsó «I AGREE».
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_legal_name VARCHAR(255)`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_entity_type VARCHAR(40)`);

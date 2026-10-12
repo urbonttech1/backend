@@ -238,11 +238,12 @@ export const driverNotif = {
     };
   },
 
-  scheduledRideOffer(rideId: string, vehicleType: string, address: string, whenLabel: string): PushTemplate {
+  scheduledRideOffer(rideId: string, vehicleType: string, address: string, whenLabel: string, childSeatLine?: string): PushTemplate {
     const short = address.length > 55 ? address.slice(0, 52) + '...' : address;
+    const requirement = childSeatLine ? ` ${childSeatLine}.` : '';
     return {
       title: 'Scheduled ride',
-      body: `${whenLabel} — ${vehicleType} at ${short}`,
+      body: `${whenLabel} — ${vehicleType} at ${short}.${requirement}`,
       data: { type: 'scheduled_ride_offer', ride_id: rideId, vehicle_type: vehicleType, screen: 'ride_offer' },
     };
   },

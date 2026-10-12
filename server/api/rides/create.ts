@@ -19,6 +19,7 @@ import { ensureFaresFresh } from "../../services/fareConfig";
 import { resolveZone, ensureZonesFresh } from "../../services/serviceZones";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { offerScheduledRide } from "../../services/scheduledOffer";
+import { esReservaConTiempo, leerSillas, textoSillas } from "../../services/childSeats";
 import { devolverCobroDelViaje } from "../../services/rideRefund";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -201,6 +202,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       accessibility,
       guestName, guest_name: guestNameAlt,
       guestPhone, guest_phone: guestPhoneAlt,
+      childSeats, child_seats: childSeatsAlt,
     } = req.body;
 
     const passenger_id = req.supabaseUid;
@@ -300,6 +302,21 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
           return res.status(400).json({ error: 'Scheduled pickup time must be in the future.' });
         }
       }
+
+      const sillas = leerSillas(childSeats ?? childSeatsAlt);
+      if (!sillas.ok) {
+        return res.status(400).json({
+          error: 'Child seats must be rear-facing, forward-facing, or booster, up to 4 in total.',
+          errorCode: 'CHILD_SEATS_INVALID',
+        });
+      }
+      if (sillas.seats && !esReservaConTiempo(rawScheduledAt)) {
+        return res.status(400).json({
+          error: 'Child seats can only be requested on a reservation more than 30 minutes ahead.',
+          errorCode: 'CHILD_SEATS_SCHEDULED_ONLY',
+        });
+      }
+      const childSeatRow = sillas.seats;
 
       // Generate a 4-digit verification PIN for this ride
     const verificationPin = String(randomInt(1000, 10000));
@@ -448,6 +465,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       // Route data from Google Directions (stored at booking time)
       distance_meters:       finalDistanceMeters,
       distance_miles:        finalDistanceMiles,
+      ...(childSeatRow ? { child_seats: childSeatRow } : {}),
     };
 
     // ── Server-side fare guard: override client fare when server has enough data ──
@@ -518,6 +536,9 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
               rideId,
             ]
           );
+          if (childSeatRow) {
+            await pool.query(`UPDATE rides SET child_seats = $1::jsonb WHERE id = $2`, [JSON.stringify(childSeatRow), rideId]);
+          }
         } catch (patchErr: unknown) {
           logger.warn(`[RIDES] Extended patch failed: ${errMsg(patchErr)}`);
         }
@@ -585,6 +606,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         pickupLat: typeof pLat === 'number' ? pLat : null,
         pickupLng: typeof pLng === 'number' ? pLng : null,
         scheduledAt: sa,
+        childSeatLine: textoSillas(childSeatRow),
       }).catch((err: unknown) => {
         logger.error(`[RIDES] scheduled offer failed for ${rideRecord.id}: ${err instanceof Error ? err.message : String(err)}`);
       });

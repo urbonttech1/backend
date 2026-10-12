@@ -49,7 +49,7 @@ router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       const graceStart = new Date(Date.now() - SCHEDULED_START_GRACE_MINUTES * 60 * 1000).toISOString();
       const { data, error } = await supabaseAdmin
         .from('rides')
-        .select('id, pickup, dropoff, scheduled_at, vehicle_type, passenger_id, fare, notes, ride_status, guest_name, valet_booking_ref, passengers, luggage')
+        .select('id, pickup, dropoff, scheduled_at, vehicle_type, passenger_id, fare, notes, child_seats, ride_status, guest_name, valet_booking_ref, passengers, luggage')
         .eq('driver_id', uid)
         // `accepted` no existe: el CHECK de `rides` y la máquina de estados usan
         // `confirmed` cuando un chofer acepta. Filtrando por `accepted`, las

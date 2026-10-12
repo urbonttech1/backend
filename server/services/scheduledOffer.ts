@@ -54,6 +54,7 @@ export async function offerScheduledRide(args: {
   pickupLat?: number | null;
   pickupLng?: number | null;
   scheduledAt: string;
+  childSeatLine?: string;
 }): Promise<void> {
   const driverIds = await broadcastScheduledOffer({
     ...args,
@@ -73,7 +74,7 @@ export async function offerScheduledRide(args: {
   const tokens = (tokenRows ?? []).map((r: { token: string }) => r.token);
   if (tokens.length === 0) return;
 
-  const note = driverNotif.scheduledRideOffer(args.rideId, args.vehicleType, args.pickupAddress, whenLabel(args.scheduledAt));
+  const note = driverNotif.scheduledRideOffer(args.rideId, args.vehicleType, args.pickupAddress, whenLabel(args.scheduledAt), args.childSeatLine);
   await sendMulticast(tokens, note);
   recordRideOffers(
     args.rideId,

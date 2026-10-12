@@ -1906,7 +1906,7 @@ adminRouter.get("/rides", async (req: Request, res: Response) => {
     let query = supabaseAdmin
       .from('rides')
       .select(`
-        id, created_at, ride_status, booking_type, scheduled_at,
+        id, created_at, ride_status, booking_type, scheduled_at, notes, child_seats,
         started_at, completed_at, cancelled_at, cancel_reason,
         pickup, dropoff, pickup_address, dropoff_address,
         stops, distance_miles, duration_minutes,
@@ -2029,7 +2029,7 @@ adminRouter.get("/rides/:id", async (req: Request, res: Response) => {
     const { data, error } = await supabaseAdmin
       .from('rides')
       .select(`
-        id, created_at, ride_status, booking_type, scheduled_at,
+        id, created_at, ride_status, booking_type, scheduled_at, notes, child_seats,
         started_at, completed_at, cancelled_at, cancel_reason,
         pickup, dropoff, pickup_address, dropoff_address,
         stops, distance_miles, duration_minutes,
