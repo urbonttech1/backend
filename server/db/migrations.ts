@@ -1502,6 +1502,37 @@ export async function runMigrations() {
     `);
     await safeAlter(`CREATE UNIQUE INDEX IF NOT EXISTS ride_safety_checks_one_open ON ride_safety_checks (ride_id) WHERE status = 'open'`);
 
+    // Compañía del valet y la prueba de que pulsó «I AGREE».
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_legal_name VARCHAR(255)`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_entity_type VARCHAR(40)`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_address TEXT`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_phone VARCHAR(40)`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_email VARCHAR(255)`);
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS company_rep_name VARCHAR(255)`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS legal_name VARCHAR(255)`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS trade_name VARCHAR(255)`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS entity_type VARCHAR(40)`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS company_address TEXT`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS company_phone VARCHAR(40)`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS company_email VARCHAR(255)`);
+    await safeAlter(`ALTER TABLE valet_applications ADD COLUMN IF NOT EXISTS authorized_rep VARCHAR(255)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS valet_agreement_acceptances (
+        id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id             UUID NOT NULL,
+        valet_name          TEXT,
+        email               TEXT,
+        agreement_version   TEXT NOT NULL,
+        agreement_sha256    TEXT NOT NULL,
+        accepted_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        checkbox_confirmed  BOOLEAN NOT NULL,
+        action              TEXT NOT NULL,
+        ip                  TEXT,
+        user_agent          TEXT
+      );
+    `);
+    await safeAlter(`CREATE INDEX IF NOT EXISTS valet_agreement_user_idx ON valet_agreement_acceptances (user_id, accepted_at DESC)`);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

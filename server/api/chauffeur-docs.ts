@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { documentosVigentes, catalogoCompleto } from '../services/docCatalogStore';
 import { esRolValet } from '../services/docCatalog';
+import { marcarRutaW9 } from '../services/valetDocumentation';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
 import { pool } from '../db/pool';
@@ -344,11 +345,21 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
 
     // Stable storage path: re-uploads overwrite the previous file (Uber-style).
     // Format: <uid>/<docKey>.<ext>  — no timestamp, deterministic per driver+doc.
+    // El W-9 del valet es fiscal: va a un bucket privado y no se publica la URL.
     const ext         = (safeFileName.split('.').pop() || mimeType.split('/')[1] || 'bin').replace('jpeg', 'jpg');
     const storagePath = `${uid}/${docKey}.${ext}`;
+    const w9Privado   = esValet && docKey === 'w9';
+    const bucket      = w9Privado ? 'valet-tax' : 'chauffeur-docs';
+
+    if (w9Privado) {
+      const { error: bucketErr } = await supabaseAdmin.storage.createBucket(bucket, { public: false });
+      if (bucketErr && !/already exists/i.test(bucketErr.message)) {
+        logger.warn(`[DocUpload] valet-tax bucket: ${bucketErr.message}`);
+      }
+    }
 
     const { error: uploadError } = await supabaseAdmin.storage
-      .from('chauffeur-docs')
+      .from(bucket)
       .upload(storagePath, buffer, { contentType: mimeType, upsert: true });
 
     if (uploadError) {
@@ -361,8 +372,9 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       });
     }
 
-    const { data: urlData } = supabaseAdmin.storage.from('chauffeur-docs').getPublicUrl(storagePath);
-    const storageUrl = urlData?.publicUrl || storagePath;
+    const storageUrl = w9Privado
+      ? marcarRutaW9(storagePath)
+      : (supabaseAdmin.storage.from('chauffeur-docs').getPublicUrl(storagePath).data?.publicUrl || storagePath);
 
     const { data: profileData } = await supabaseAdmin
       .from('profiles').select('first_name, last_name, email, phone').eq('id', uid).maybeSingle();
@@ -376,10 +388,10 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       doc_key:       docKey,
       document_type: docKey,
       storage_url:   storageUrl,
-      image_url:     storageUrl,
+      image_url:     w9Privado ? '' : storageUrl,
       file_name:     safeFileName,
       driver_name:   driverName,
-      status:        'pending',
+      status:        w9Privado ? 'received' : 'pending',
       updated_at:    new Date().toISOString(),
       expiry_date:   vencimiento,
     });
@@ -403,7 +415,8 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
 
     return res.json({
       success: true,
-      storageUrl,
+      // El W-9 no sale en la respuesta: la URL pública no existe y la firmada es solo del panel.
+      ...(w9Privado ? {} : { storageUrl }),
       docKey,
       // Se devuelve lo que quedó guardado, no lo que llegó: si la fecha venía en
       // un formato que no se pudo leer, aquí llega `null` y la app se entera.

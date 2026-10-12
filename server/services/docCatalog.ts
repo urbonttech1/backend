@@ -54,14 +54,13 @@ export const WEB_DOC_KEYS = [
  * Lo que se le pide a un valet (Valet Front Desk).
  *
  * No conduce: trabaja en un local fijo coordinando viajes, así que los permisos
- * de vehículo, aeropuerto, puerto y limusina no le aplican. Sólo hace falta
- * verificar su identidad, que es lo que el formulario de /valet ya enseña:
- * un documento oficial y una foto.
+ * de vehículo, aeropuerto, puerto y limusina no le aplican. Hace falta
+ * verificar su identidad y el formulario fiscal W-9.
  *
  * Son claves que ya existen en el catálogo, así que no hay que dar de alta
  * ninguna nueva ni tocar `ACCEPTED_DOC_KEYS`.
  */
-export const VALET_DOC_KEYS = ['license', 'photo'] as const;
+export const VALET_DOC_KEYS = ['license', 'photo', 'w9'] as const;
 
 /** Roles que usan el esquema reducido del valet. */
 export function esRolValet(role: string | null | undefined): boolean {
@@ -79,10 +78,11 @@ export function audienciaDeRol(role: string | null | undefined): AudienciaCatalo
   return esRolValet(role) ? 'valet' : 'driver';
 }
 
-/** Semilla del catálogo del valet: un documento oficial y una foto. */
+/** Semilla del catálogo del valet: identidad y el formulario fiscal. */
 export const VALET_DOC_SEED: Record<string, Omit<DocMeta, 'key'>> = {
   license: { label: 'Government-issued ID', category: 'Personal Identity', hint: "Driver's license, state ID or passport (current and valid)", expires: true  },
   photo:   { label: 'Profile Photo',        category: 'Personal Identity', hint: 'Recent photo, neutral background, good lighting (JPG or PNG)',  expires: false },
+  w9:      { label: 'IRS Form W-9',         category: 'Legal & Compliance', hint: 'Completed and signed IRS Form W-9 (PDF or photo). Stored privately.', expires: false },
 };
 
 /** Todo lo que se admite subir, sin importar el esquema. */

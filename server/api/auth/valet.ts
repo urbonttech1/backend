@@ -3,13 +3,17 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAdmin, supabasePublic, KNOWN_SUPABASE_URL, KNOWN_ANON_KEY } from '../../db/client';
 import { startSession } from '../../services/singleSession';
 import { pool } from '../../db/pool';
-import { sanitizeBody } from '../../middleware';
+import { requireSupabaseAuth, sanitizeBody } from '../../middleware';
 import { createContextLogger } from '../../lib/logger';
 import { esEmailDuplicado } from '../../lib/authErrors';
 import { catalogoCompleto } from '../../services/docCatalogStore';
 import { normalizarEstadoDoc } from '../../services/docCatalog';
 import { accesoValet } from '../../services/valetAccess';
 import { perfilEnBlanco } from '../../services/blankProfile';
+import { ACUERDO_HASH, ACUERDO_TEXTO, ACUERDO_VERSION, aceptacionValida, copiaFirmada } from '../../services/valetAgreement';
+import { columnasCompania, companiaCompleta, faltantesCompania, type CompaniaValet } from '../../services/valetCompany';
+import { documentacionDe } from '../../services/valetDocumentation';
+import { enviarCopiaAcuerdoValet } from '../../services/accountEmails';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('VALET');
@@ -39,7 +43,34 @@ async function documentosPorSubir(userId: string) {
     .map(d => ({ key: d.key, label: d.label, hint: d.hint, reason: filas.get(d.key)?.rejection_reason ?? null }));
 }
 
-async function registrarSolicitudValet(d: { email: string; firstName?: string; lastName?: string; phone?: string; city?: string }) {
+function companiaDelBody(body: Record<string, unknown>): CompaniaValet {
+  return {
+    legalName: typeof body.legalName === 'string' ? body.legalName : null,
+    tradeName: typeof body.tradeName === 'string' ? body.tradeName : (typeof body.businessName === 'string' ? body.businessName : null),
+    entityType: typeof body.entityType === 'string' ? body.entityType : null,
+    address: typeof body.companyAddress === 'string' ? body.companyAddress : (typeof body.businessLocation === 'string' ? body.businessLocation : null),
+    phone: typeof body.companyPhone === 'string' ? body.companyPhone : null,
+    email: typeof body.companyEmail === 'string' ? body.companyEmail : null,
+    authorizedRep: typeof body.authorizedRep === 'string' ? body.authorizedRep : null,
+  };
+}
+
+function columnasSolicitud(c: CompaniaValet): Record<string, string | null> {
+  const cols = columnasCompania(c);
+  return {
+    legal_name: cols.company_legal_name,
+    trade_name: cols.business_name,
+    entity_type: cols.company_entity_type,
+    company_address: cols.company_address,
+    company_phone: cols.company_phone,
+    company_email: cols.company_email,
+    authorized_rep: cols.company_rep_name,
+  };
+}
+
+async function registrarSolicitudValet(d: {
+  email: string; firstName?: string; lastName?: string; phone?: string; city?: string; company?: CompaniaValet;
+}) {
   if (!d.email) return;
   const now = new Date().toISOString();
   const { error } = await supabaseAdmin.from('valet_applications').upsert({
@@ -49,6 +80,27 @@ async function registrarSolicitudValet(d: { email: string; firstName?: string; l
     // nunca debe devolver a «pendiente» lo que el panel ya decidió.
   }, { onConflict: 'email', ignoreDuplicates: true });
   if (error) log.warn(`[Valet] no se pudo guardar la solicitud de ${d.email}: ${error.message}`);
+  if (!d.company || !companiaCompleta(d.company)) return;
+  const { error: compErr } = await supabaseAdmin.from('valet_applications')
+    .update({ ...columnasSolicitud(d.company), updated_at: now })
+    .ilike('email', d.email);
+  if (compErr) log.warn(`[Valet] no se pudo guardar la compañía de ${d.email}: ${compErr.message}`);
+}
+
+/** Cuenta en revisión: el token solo sirve para terminar la documentación, no para entrar. */
+async function respuestaPendiente(userId: string, phone: string, email: string, role: string) {
+  const porSubir = await documentosPorSubir(userId);
+  const documentation = await documentacionDe(userId).catch(() => null);
+  const incompleto = !documentation || documentation.accountDocumentation === 'pending_documentation' || porSubir.length > 0;
+  return {
+    error: "Your account is under review. We'll email you as soon as it's approved.",
+    errorCode: 'ACCOUNT_PENDING' as const,
+    ...(documentation ? { documentation } : {}),
+    ...(incompleto ? {
+      documentsRequested: porSubir,
+      uploadToken: await startSession({ id: userId, phone: phone || email, role }),
+    } : {}),
+  };
 }
 
 const DEMO_VALET_EMAIL    = 'valet@urbont.com';
@@ -229,16 +281,7 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
       });
     }
     if (acceso === 'pending') {
-      const porSubir = await documentosPorSubir(userId);
-      return res.status(403).json({
-        error: "Your account is under review. We'll email you as soon as it's approved.",
-        errorCode: 'ACCOUNT_PENDING',
-        // Solo si hay algo que corregir se entrega un token, y sirve para subir documentos.
-        ...(porSubir.length > 0 ? {
-          documentsRequested: porSubir,
-          uploadToken: await startSession({ id: userId, phone: (profile?.phone as string) || email, role }),
-        } : {}),
-      });
+      return res.status(403).json(await respuestaPendiente(userId, (profile?.phone as string) || '', email, role));
     }
 
     if (!['valet', 'frontdesk', 'concierge', 'admin'].includes(role)) {
@@ -260,10 +303,16 @@ valetAuthRouter.post('/login', sanitizeBody, ipRateLimit, async (req: Request, r
 
 /* ── POST /api/valet/register ── */
 valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request, res: Response) => {
-  const { email, password, firstName, lastName, businessName, phone, city, businessLocation, role: reqRole } = req.body as {
-    email: string; password: string; firstName?: string; lastName?: string;
-    businessName?: string; phone?: string; city?: string; businessLocation?: string; role?: string;
-  };
+  const body = req.body as Record<string, unknown>;
+  const email = typeof body.email === 'string' ? body.email : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  const firstName = typeof body.firstName === 'string' ? body.firstName : '';
+  const lastName = typeof body.lastName === 'string' ? body.lastName : '';
+  const phone = typeof body.phone === 'string' ? body.phone : '';
+  const city = typeof body.city === 'string' ? body.city : '';
+  const businessLocation = typeof body.businessLocation === 'string' ? body.businessLocation : '';
+  const reqRole = typeof body.role === 'string' ? body.role : '';
+  const company = companiaDelBody(body);
 
   if (!email || !password)
     return res.status(400).json({ error: 'Email and password are required.', errorCode: 'MISSING_FIELDS' });
@@ -277,6 +326,15 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
 
   const allowedRoles = ['valet', 'frontdesk', 'concierge'];
   const assignedRole = allowedRoles.includes(reqRole || '') ? reqRole! : 'valet';
+
+  const faltaCompania = faltantesCompania(company);
+  if (faltaCompania.length > 0) {
+    return res.status(400).json({
+      error: 'Company information is required before the account can be activated.',
+      errorCode: 'COMPANY_INCOMPLETE',
+      fields: faltaCompania,
+    });
+  }
 
   try {
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
@@ -312,7 +370,7 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
       phone: phone || null,
       first_name: firstName || null,
       last_name: lastName || null,
-      business_name: businessName || null,
+      ...columnasCompania(company),
       operating_city: city || businessLocation || null,
       role: assignedRole,
       status_val: 'active',
@@ -335,7 +393,7 @@ valetAuthRouter.post('/register', sanitizeBody, ipRateLimit, async (req: Request
       });
     }
 
-    await registrarSolicitudValet({ email, firstName, lastName, phone, city: city || businessLocation });
+    await registrarSolicitudValet({ email, firstName, lastName, phone, city: city || businessLocation, company });
 
     const token = await startSession({ id: userId, phone: phone || email, role: assignedRole });
     return res.status(201).json({
@@ -409,17 +467,9 @@ valetAuthRouter.post('/oauth-login', sanitizeBody, ipRateLimit, async (req: Requ
       });
     }
     if (accesoG === 'pending') {
-      // Igual que en el login con correo: si hay documentos por corregir, se entrega un
-      // token que solo sirve para volver a subirlos.
-      const porSubir = await documentosPorSubir(userId);
-      return res.status(403).json({
-        error: "Your account is under review. We'll email you as soon as it's approved.",
-        errorCode: 'ACCOUNT_PENDING',
-        ...(porSubir.length > 0 ? {
-          documentsRequested: porSubir,
-          uploadToken: await startSession({ id: userId, phone: (profile2.phone as string) || email || userId, role }),
-        } : {}),
-      });
+      return res.status(403).json(await respuestaPendiente(
+        userId, (profile2.phone as string) || '', email || '', role,
+      ));
     }
 
     const token = await startSession({ id: userId, phone: (profile2.phone as string) || email || userId, role });
@@ -452,13 +502,26 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
     return res.status(401).json({ error: 'Access token required.', errorCode: 'MISSING_TOKEN' });
   }
 
-  const { firstName, lastName, phone, businessName, city, businessLocation, role: reqRole } = req.body as {
-    firstName?: string; lastName?: string; phone?: string;
-    businessName?: string; city?: string; businessLocation?: string; role?: string;
-  };
+  const body = req.body as Record<string, unknown>;
+  const firstName = typeof body.firstName === 'string' ? body.firstName : '';
+  const lastName = typeof body.lastName === 'string' ? body.lastName : '';
+  const phone = typeof body.phone === 'string' ? body.phone : '';
+  const city = typeof body.city === 'string' ? body.city : '';
+  const businessLocation = typeof body.businessLocation === 'string' ? body.businessLocation : '';
+  const reqRole = typeof body.role === 'string' ? body.role : '';
+  const company = companiaDelBody(body);
 
   const allowedRoles = ['valet', 'frontdesk', 'concierge'];
   const assignedRole = allowedRoles.includes(reqRole || '') ? reqRole! : 'valet';
+
+  const faltaCompaniaPerfil = faltantesCompania(company);
+  if (faltaCompaniaPerfil.length > 0) {
+    return res.status(400).json({
+      error: 'Company information is required before the account can be activated.',
+      errorCode: 'COMPANY_INCOMPLETE',
+      fields: faltaCompaniaPerfil,
+    });
+  }
 
   try {
     const { data: userData, error: userError } = await supabaseAdmin.auth.getUser(supabaseToken);
@@ -495,7 +558,7 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
       phone: phone || null,
       first_name: firstName || null,
       last_name: lastName || null,
-      business_name: businessName || null,
+      ...columnasCompania(company),
       operating_city: city || businessLocation || null,
       role: assignedRole,
       status_val: 'active',
@@ -516,7 +579,13 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
     }
 
     const pending = nuevo || existing?.account_status === 'pending';
-    if (nuevo) await registrarSolicitudValet({ email: email || '', firstName, lastName, phone, city: city || businessLocation });
+    if (nuevo) {
+      await registrarSolicitudValet({ email: email || '', firstName, lastName, phone, city: city || businessLocation, company });
+    } else if (email) {
+      await supabaseAdmin.from('valet_applications')
+        .update({ ...columnasSolicitud(company), updated_at: now })
+        .ilike('email', email);
+    }
 
     const token = await startSession({ id: userId, phone: phone || email || userId, role: assignedRole });
 
@@ -535,4 +604,114 @@ valetAuthRouter.post('/complete-profile', sanitizeBody, ipRateLimit, async (req:
       action: 'retry',
     });
   }
+});
+
+function ipDe(req: Request): string | null {
+  const fwd = req.headers['x-forwarded-for'];
+  const primero = Array.isArray(fwd) ? fwd[0] : fwd;
+  const limpio = primero?.split(',')[0]?.trim();
+  return limpio || req.ip || null;
+}
+
+/* ── GET /api/valet/agreement — texto vigente, sin sesión ── */
+valetAuthRouter.get('/agreement', (_req: Request, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  return res.json({
+    version: ACUERDO_VERSION,
+    title: 'Independent Valet Participation Agreement',
+    text: ACUERDO_TEXTO,
+    sha256: ACUERDO_HASH,
+  });
+});
+
+/* ── POST /api/valet/agreement/accept — la pulsación de I AGREE ── */
+valetAuthRouter.post('/agreement/accept', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const uid = req.supabaseUid;
+  if (!uid) return res.status(401).json({ error: 'Unauthorized.', errorCode: 'UNAUTHORIZED' });
+  if (!aceptacionValida(req.body as { version?: string; checkbox?: boolean; action?: string })) {
+    return res.status(400).json({
+      error: 'Check the box and press I AGREE on the current agreement.',
+      errorCode: 'AGREEMENT_REQUIRED',
+    });
+  }
+
+  const { data: profile } = await supabaseAdmin.from('profiles')
+    .select('first_name, last_name, email, role').eq('id', uid).maybeSingle();
+  const role = String(profile?.role || req.supabaseRole || '');
+  if (!profile || !['valet', 'frontdesk', 'concierge'].includes(role)) {
+    return res.status(403).json({ error: 'Valet account required.', errorCode: 'ACCESS_DENIED' });
+  }
+
+  const name = [profile.first_name, profile.last_name].filter(Boolean).join(' ');
+  const email = String(profile.email || '');
+  const now = new Date().toISOString();
+  const { error } = await supabaseAdmin.from('valet_agreement_acceptances').insert({
+    user_id: uid,
+    valet_name: name || null,
+    email: email || null,
+    agreement_version: ACUERDO_VERSION,
+    agreement_sha256: ACUERDO_HASH,
+    accepted_at: now,
+    checkbox_confirmed: true,
+    action: 'i_agree',
+    ip: ipDe(req),
+    user_agent: req.get('user-agent') || null,
+  });
+  if (error) {
+    log.error(`[Valet] agreement accept failed for ${uid}: ${error.message}`);
+    return res.status(500).json({ error: 'Could not record your acceptance. Please try again.', errorCode: 'AGREEMENT_SAVE_FAILED' });
+  }
+
+  const copia = copiaFirmada({ name, email, acceptedAt: now, version: ACUERDO_VERSION, sha256: ACUERDO_HASH });
+  enviarCopiaAcuerdoValet({ email, name }, copia).catch(() => {});
+  return res.json({ success: true, version: ACUERDO_VERSION, acceptedAt: now });
+});
+
+/* ── GET /api/valet/agreement/copy — el acuerdo más el registro de la firma ── */
+valetAuthRouter.get('/agreement/copy', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const uid = req.supabaseUid;
+  if (!uid) return res.status(401).json({ error: 'Unauthorized.', errorCode: 'UNAUTHORIZED' });
+  const { data } = await supabaseAdmin.from('valet_agreement_acceptances')
+    .select('valet_name, email, agreement_version, agreement_sha256, accepted_at')
+    .eq('user_id', uid)
+    .eq('agreement_version', ACUERDO_VERSION)
+    .order('accepted_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return res.status(404).json({ error: 'You have not signed this agreement yet.', errorCode: 'AGREEMENT_MISSING' });
+  const texto = copiaFirmada({
+    name: String(data.valet_name || ''),
+    email: String(data.email || ''),
+    acceptedAt: String(data.accepted_at),
+    version: String(data.agreement_version),
+    sha256: String(data.agreement_sha256),
+  });
+  res.set('Content-Type', 'text/plain; charset=utf-8');
+  res.set('Content-Disposition', 'attachment; filename="urbont-valet-agreement.txt"');
+  return res.send(texto);
+});
+
+/* ── POST /api/valet/company — completar la compañía con la sesión de revisión ── */
+valetAuthRouter.post('/company', requireSupabaseAuth, async (req: Request, res: Response) => {
+  const uid = req.supabaseUid;
+  if (!uid) return res.status(401).json({ error: 'Unauthorized.', errorCode: 'UNAUTHORIZED' });
+  const company = companiaDelBody(req.body as Record<string, unknown>);
+  const falta = faltantesCompania(company);
+  if (falta.length > 0) {
+    return res.status(400).json({ error: 'Company information is required.', errorCode: 'COMPANY_INCOMPLETE', fields: falta });
+  }
+  const { data: profile } = await supabaseAdmin.from('profiles').select('email, role').eq('id', uid).maybeSingle();
+  if (!profile || !['valet', 'frontdesk', 'concierge'].includes(String(profile.role))) {
+    return res.status(403).json({ error: 'Valet account required.', errorCode: 'ACCESS_DENIED' });
+  }
+  const now = new Date().toISOString();
+  const { error } = await supabaseAdmin.from('profiles')
+    .update({ ...columnasCompania(company), updated_at: now }).eq('id', uid);
+  if (error) return res.status(500).json({ error: 'Could not save company information.', errorCode: 'COMPANY_SAVE_FAILED' });
+  if (profile.email) {
+    await supabaseAdmin.from('valet_applications')
+      .update({ ...columnasSolicitud(company), updated_at: now })
+      .ilike('email', String(profile.email));
+  }
+  return res.json({ success: true });
 });

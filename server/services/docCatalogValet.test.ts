@@ -18,8 +18,8 @@ describe('esRolValet', () => {
 });
 
 describe('VALET_DOC_KEYS', () => {
-  it('pide solo identidad: un documento oficial y una foto', () => {
-    expect([...VALET_DOC_KEYS]).toEqual(['license', 'photo']);
+  it('pide identidad y el formulario fiscal W-9', () => {
+    expect([...VALET_DOC_KEYS]).toEqual(['license', 'photo', 'w9']);
   });
 
   // Si alguna clave no estuviera en el catálogo, el valet no podria subirla:
@@ -40,7 +40,7 @@ describe('VALET_DOC_KEYS', () => {
 describe('catálogo propio del valet', () => {
   it('la semilla trae la identidad con el nombre que ve el valet', () => {
     const semilla = catalogoSemillaValet();
-    expect(semilla.map((d) => d.key)).toEqual(['license', 'photo']);
+    expect(semilla.map((d) => d.key)).toEqual(['license', 'photo', 'w9']);
     expect(semilla[0].label).toBe('Government-issued ID');
     expect(semilla.every((d) => d.active)).toBe(true);
   });

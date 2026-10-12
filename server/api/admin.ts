@@ -30,6 +30,7 @@ import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
+import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
@@ -849,8 +850,13 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
       stats.set(id, s);
     }
 
+    const expediente = new Map<string, DocumentacionValet>();
+    await Promise.all(perfilIds.map(async (id) => {
+      try { expediente.set(id, await documentacionDe(id)); } catch { /* sin expediente: se muestra pendiente */ }
+    }));
+
     const seen = new Set<string>();
-    const valets = ((profilesRes.data ?? []) as Array<Record<string, any>>).map(p => {
+    const valets = await Promise.all(((profilesRes.data ?? []) as Array<Record<string, any>>).map(async (p) => {
       const email = String(p.email ?? '').toLowerCase();
       const app = appByEmail.get(email);
       seen.add(email);
@@ -861,11 +867,24 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
         : (appStatus === 'pending' || accountStatus === 'pending') ? 'pending'
         : 'active';
       const s = stats.get(p.id) ?? { dispatched: 0, completed: 0, cancelled: 0, commission: 0, commissionPending: 0, commissionCash: 0, lastRideAt: null };
-      const documents = (docsPorValet.get(String(p.id)) ?? []).map(d => ({
-        id: d.id, key: d.doc_key, label: etiqueta.get(String(d.doc_key)) ?? String(d.doc_key),
-        state: normalizarEstadoDoc(d.status), url: d.storage_url ?? null, fileName: d.file_name ?? null,
-        uploadedAt: d.updated_at ?? d.created_at, rejectionReason: d.rejection_reason ?? null,
+      const documents = await Promise.all((docsPorValet.get(String(p.id)) ?? []).map(async (d) => {
+        const esW9 = String(d.doc_key) === 'w9';
+        const url = esW9 ? await urlFirmadaW9(d.storage_url) : (d.storage_url ?? null);
+        return {
+          id: d.id, key: d.doc_key, label: etiqueta.get(String(d.doc_key)) ?? String(d.doc_key),
+          state: normalizarEstadoDoc(d.status), url, fileName: d.file_name ?? null,
+          uploadedAt: d.updated_at ?? d.created_at, rejectionReason: d.rejection_reason ?? null,
+        };
       }));
+      const docu = expediente.get(String(p.id));
+      const documentation = {
+        agreement: docu?.agreement ?? 'pending',
+        agreementVersion: docu?.agreementVersion ?? null,
+        agreementAcceptedAt: docu?.agreementAcceptedAt ?? null,
+        w9: docu?.w9 ?? 'missing',
+        w9Url: documents.find(d => d.key === 'w9')?.url ?? null,
+        accountDocumentation: docu?.accountDocumentation ?? 'pending_documentation',
+      };
       const aprobados = new Set(documents.filter(d => d.state === 'aprobado').map(d => d.key));
       const documentsSummary = {
         required: requeridos.length,
@@ -873,7 +892,7 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
         missing: requeridos.filter(d => !documents.some(x => x.key === d.key)).map(d => d.label),
       };
       return {
-        documents, documentsSummary,
+        documents, documentsSummary, documentation,
         id: p.id,
         name: [p.first_name, p.last_name].filter(Boolean).join(' ') || p.email || 'Sin nombre',
         email: p.email ?? '',
@@ -897,7 +916,7 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
         stripeStatus: p.stripe_account_id ? (p.stripe_connect_status || 'pending') : 'not_connected',
         canReceivePayouts: p.stripe_connect_status === 'active',
       };
-    });
+    }));
 
     // Solicitudes cuyo perfil no se llegó a crear (falló el alta de Auth): sin ellas
     // se perdería una solicitud que sí llegó.
@@ -911,6 +930,10 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
         status: a.status === 'rejected' ? 'rejected' : 'pending',
         suspensionReason: null, createdAt: a.created_at, hasProfile: false,
         documents: [], documentsSummary: { required: 0, approved: 0, missing: [] as string[] },
+        documentation: {
+          agreement: 'pending' as const, agreementVersion: null, agreementAcceptedAt: null,
+          w9: 'missing' as const, w9Url: null, accountDocumentation: 'pending_documentation' as const,
+        },
         application: { status: a.status, venueType: a.venue_type, experienceLevel: a.experience_level, schedule: a.schedule, languages: a.languages, notes: a.notes },
         ridesDispatched: 0, ridesCompleted: 0, ridesCancelled: 0, commissionTotal: 0, commissionPending: 0,
         commissionCash: 0, rating: null, lastRideAt: null, stripeStatus: 'not_connected', canReceivePayouts: false,
@@ -1027,6 +1050,25 @@ for (const [accion, opts] of [
     try {
       const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() || null : null;
 
+      // Compañía, acuerdo vigente y W-9 presentado. `force` no salta esta regla.
+      if (accion === 'approve') {
+        if (String(req.params.id).startsWith('app:')) {
+          return res.status(409).json({
+            error: 'The valet must finish Required Documentation in the app before the account can be activated.',
+            errorCode: 'DOCUMENTATION_INCOMPLETE',
+            missing: ['Company information', 'Independent Valet Participation Agreement', 'IRS Form W-9'],
+          });
+        }
+        const faltan = await faltantesParaActivar(String(req.params.id));
+        if (faltan.length > 0) {
+          return res.status(409).json({
+            error: `Falta documentación: ${faltan.join(', ')}.`,
+            errorCode: 'DOCUMENTATION_INCOMPLETE',
+            missing: faltan,
+          });
+        }
+      }
+
       // Aprobar sin los documentos aprobados exige confirmación explícita (`force`).
       if (accion === 'approve' && req.body?.force !== true && !String(req.params.id).startsWith('app:')) {
         const pendientes = await documentosSinAprobar(String(req.params.id));
@@ -1065,6 +1107,29 @@ for (const [accion, opts] of [
     }
   });
 }
+
+// El panel marca el W-9 como recibido, en revisión o aprobado. La URL firmada
+// sale en GET /valets; aquí no se vuelve a exponer el archivo.
+adminRouter.post('/valets/:id/w9', async (req: Request, res: Response) => {
+  const status = req.body?.status;
+  if (status !== 'received' && status !== 'pending_review' && status !== 'approved') {
+    return res.status(400).json({ error: 'Status must be received, pending_review, or approved.', errorCode: 'INVALID_STATUS' });
+  }
+  try {
+    const { data, error } = await supabaseAdmin.from('driver_documents')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('driver_id', req.params.id)
+      .eq('doc_key', 'w9')
+      .select('id')
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'W-9 has not been uploaded.', errorCode: 'W9_MISSING' });
+    return res.json({ success: true, w9: status });
+  } catch (err: any) {
+    logger.error(`[admin/valets/w9] ${errMsg(err)}`);
+    return res.status(500).json({ error: 'Failed to update W-9' });
+  }
+});
 
 adminRouter.get("/passengers", async (req: Request, res: Response) => {
   try {

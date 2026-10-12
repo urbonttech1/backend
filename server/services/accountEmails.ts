@@ -258,6 +258,21 @@ export function enviarAvisoReactivacion(target: AccountEmailTarget): Promise<Res
   return avisar(target, 'Tu cuenta de URBONT vuelve a estar activa', reactivacionHtml(target));
 }
 
+export function enviarCopiaAcuerdoValet(target: AccountEmailTarget, copia: string): Promise<ResultadoAviso> {
+  const seguro = copia
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const html = emailShell({
+    eyebrow: 'Independent Valet Participation Agreement',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo('This is your copy of the agreement you signed electronically by pressing I AGREE.')}
+      <pre style="white-space:pre-wrap;font-family:${FONT};font-size:12px;line-height:1.5;color:${brand.navyDeep};">${seguro}</pre>
+    `),
+    footerNote: 'Keep this message. It is the copy of the agreement you accepted.',
+  });
+  return avisar(target, 'Your signed URBONT valet agreement', html);
+}
+
 export function enviarAvisoAprobacionValet(target: AccountEmailTarget): Promise<ResultadoAviso> {
   return avisar(target, 'Tu solicitud de valet en URBONT fue aprobada', aprobacionValetHtml(target));
 }
