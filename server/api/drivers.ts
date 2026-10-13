@@ -220,7 +220,7 @@ driverRouter.get(
           const pc = await pool.connect();
           try {
             const pr = await pc.query<Record<string, unknown>>(
-              `SELECT id, first_name, last_name, rating, vehicle, avatar_url FROM profiles WHERE id = ANY($1)`,
+              `SELECT id, first_name, last_name, rating::float8 AS rating, vehicle, avatar_url FROM profiles WHERE id = ANY($1)`,
               [driverIds],
             );
             profiles = pr.rows;
@@ -560,7 +560,7 @@ driverRouter.get('/profile', requireSupabaseAuth, async (req: Request, res: Resp
     let data: Record<string, unknown> | null = null;
     try {
       const result = await client.query<Record<string, unknown>>(
-        `SELECT id, first_name, last_name, email, phone, avatar_url, vehicle, rating, membership,
+        `SELECT id, first_name, last_name, email, phone, avatar_url, vehicle, rating::float8 AS rating, membership,
          to_char(date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
          drivers_license, license_expiry, ssn_last4, home_address
          FROM profiles WHERE id = $1`,

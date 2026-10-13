@@ -45,7 +45,7 @@ async function demoChauffeurFallback(email: string, password: string) {
         vehicle: unknown; rating: number | null; avatar_url: string | null; membership: string | null; title: string | null;
       }>(
         `SELECT id, phone, role, first_name, last_name, verification_status, operating_city,
-                rejection_reason, vehicle, rating, avatar_url, membership, title
+                rejection_reason, vehicle, rating::float8 AS rating, avatar_url, membership, title
          FROM public.profiles WHERE email = $1 LIMIT 1`,
         [DEMO_DRIVER_EMAIL],
       ).catch(() => null);

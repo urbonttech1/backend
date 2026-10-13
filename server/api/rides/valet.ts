@@ -151,7 +151,9 @@ router.get("/valet-history", requireSupabaseAuth, async (req: Request, res: Resp
       const pc = await pool.connect();
       try {
         const pr = await pc.query<Record<string, any>>(
-          'SELECT id, first_name, last_name, avatar_url, rating, phone, vehicle FROM profiles WHERE id = ANY($1)',
+          // rating es NUMERIC(3,2) y pg serializa los numeric como string ("4.85"): el cast
+          // lo devuelve como número, que es lo que la app espera para hacer .toFixed(1).
+          'SELECT id, first_name, last_name, avatar_url, rating::float8 AS rating, phone, vehicle FROM profiles WHERE id = ANY($1)',
           [driverIds],
         );
         for (const p of pr.rows) {
