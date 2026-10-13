@@ -61,7 +61,8 @@ export function otpEmailHtml(code: string): string {
     return jwt.sign({ key, codeHash, type: 'otp' }, jwtSecret, { expiresIn: Math.floor(ttlMs / 1000) });
   }
 
-  function verifyOtpToken(token: string, key: string, code: string): boolean {
+  /** También la usa POST /api/users/phone para verificar el número antes de guardarlo. */
+  export function verifyOtpToken(token: string, key: string, code: string): boolean {
     try {
       const payload = jwt.verify(token, jwtSecret) as { key: string; codeHash: string; type: string };
       if (payload.type !== 'otp' || payload.key !== key) return false;

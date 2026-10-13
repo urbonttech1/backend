@@ -3,7 +3,7 @@ import { createContextLogger } from '../lib/logger';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 const log = createContextLogger('USERS');
-import { requireSupabaseAuth, validateBody } from '../middleware';
+import { requireSupabaseAuth, validateBody, otpRateLimiter, recordOtpFailure } from '../middleware';
 import {
   createUserDoc,
   createDriverDoc,
@@ -16,6 +16,9 @@ import { pool } from '../db/pool';
 import { randomUUID } from 'crypto';
 import { notifyUser } from '../services/fcm';
 import { passengerNotif, driverNotif } from '../services/notificationTemplates';
+import { verifyOtpToken } from './auth/otp';
+import { variantesTelefono } from '../services/phoneProfiles';
+import { cambiaTelefonoSinCodigo, numeroEnOtraCuenta } from '../services/profilePhone';
 
 const AVATAR_ALLOWED_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
 const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
@@ -202,6 +205,51 @@ function isColumnError(err: { code?: string; message?: string } | null): boolean
   );
 }
 
+// ─── POST /api/users/phone ────────────────────────────────────────────────────
+// Añadir o cambiar el teléfono desde Editar perfil. Se guarda solo si se
+// demuestra que el número es de quien lo pide: con el código que
+// /api/otp/send mandó a ese número (phone + code + otpToken). Ver
+// services/profilePhone.
+userRouter.post('/phone', requireSupabaseAuth, otpRateLimiter, async (req: Request, res: Response) => {
+  const uid = req.supabaseUid;
+  if (!uid) return res.status(401).json({ error: 'Unauthorized.' });
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const { phone, code, otpToken } = (req.body ?? {}) as { phone?: unknown; code?: unknown; otpToken?: unknown };
+
+  if (typeof phone !== 'string' || !/^\+[1-9]\d{6,14}$/.test(phone)) {
+    return res.status(400).json({ error: 'Invalid phone number. Use international format (e.g. +13055550100).' });
+  }
+  const codeStr = String(code ?? '').trim();
+  if (!/^\d{6}$/.test(codeStr) || typeof otpToken !== 'string' || !verifyOtpToken(otpToken, phone, codeStr)) {
+    recordOtpFailure(ip);
+    return res.status(400).json({ error: 'Incorrect or expired code. Please request a new one.' });
+  }
+
+  try {
+    const { data: perfil } = await supabaseAdmin.from('profiles').select('id, role').eq('id', uid).maybeSingle();
+    if (!perfil) return res.status(404).json({ error: 'Profile not found.' });
+    const role = (perfil.role as string | null) || 'passenger';
+
+    const { data: coincidencias } = await supabaseAdmin
+      .from('profiles').select('id, role').in('phone', variantesTelefono(phone));
+    if (numeroEnOtraCuenta((coincidencias ?? []) as { id: string; role: string | null }[], uid, role)) {
+      return res.status(409).json({ error: 'This number is already linked to another account.' });
+    }
+
+    const { error } = await supabaseAdmin.from('profiles')
+      .update({ phone, updated_at: new Date().toISOString() }).eq('id', uid);
+    if (error?.code === '23505') {
+      return res.status(409).json({ error: 'This number is already linked to another account.' });
+    }
+    if (error) throw error;
+    log.info(`[phone] Teléfono verificado y guardado para ${uid}`);
+    return res.json({ success: true, phone });
+  } catch (err) {
+    log.error(`[phone]: ${errMsg(err)}`);
+    return res.status(500).json({ error: 'Could not save your phone number. Please try again.' });
+  }
+});
+
 userRouter.patch('/profile', requireSupabaseAuth, async (req: Request, res: Response) => {
   const uid = req.supabaseUid;
   if (!uid) return res.status(401).json({ error: 'Unauthorized.' });
@@ -226,7 +274,12 @@ userRouter.patch('/profile', requireSupabaseAuth, async (req: Request, res: Resp
     if (firstName    !== undefined) coreUpdate.first_name    = firstName;
     if (lastName     !== undefined) coreUpdate.last_name     = lastName;
     if (email        !== undefined) coreUpdate.email         = email;
-    if (phone        !== undefined) coreUpdate.phone         = phone;
+    // El pasajero entra por SMS con este número: sin código se podría poner el
+    // de otra persona (services/profilePhone). Lo cambia en POST /phone.
+    if (phone !== undefined) {
+      if (cambiaTelefonoSinCodigo(req.supabaseRole)) coreUpdate.phone = phone;
+      else log.warn(`[profile patch] teléfono sin verificar ignorado para el pasajero ${uid}`);
+    }
     if (businessName !== undefined) coreUpdate.business_name = businessName;
     if (propertyName !== undefined) coreUpdate.business_name = propertyName;
     if (title        !== undefined) coreUpdate.title         = title;
