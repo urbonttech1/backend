@@ -84,45 +84,68 @@ function generateReferralCode(uid: string): string {
   return uid.replace(/-/g, '').substring(0, 8).toUpperCase();
 }
 
+type PerfilGuardado = {
+  first_name?: string | null; last_name?: string | null;
+  phone?: string | null; email?: string | null;
+  avatar_url?: string | null; membership_type?: string | null;
+};
+
+/**
+ * Lo que se escribe en el perfil de un pasajero al entrar.
+ *
+ * Un perfil que ya existe solo se completa: lo que la persona guardó (nombre,
+ * teléfono, correo, foto, membresía) no se pisa con lo que trae el inicio de
+ * sesión. Antes, cada entrada con Google volvía a poner el nombre y el correo
+ * de Google y la foto por defecto, y lo editado en el perfil se perdía.
+ */
+export function perfilPasajeroAlEntrar(
+  uid: string,
+  existing: PerfilGuardado | null,
+  data: Partial<UserDoc>,
+  now: string,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    id: uid,
+    role: 'passenger',
+    referral_code: generateReferralCode(uid),
+    updated_at: now,
+  };
+  if (!existing) payload.total_rides = 0;
+  if (!existing?.membership_type) payload.membership_type = 'standard';
+  if (!existing?.avatar_url) payload.avatar_url = '/default-avatar.svg';
+
+  const completar = (col: 'phone' | 'email' | 'first_name' | 'last_name') => {
+    const valor = data[col];
+    if (valor && !existing?.[col]) payload[col] = valor;
+    else if (!existing) payload[col] = null;
+  };
+  completar('phone');
+  completar('email');
+  completar('first_name');
+  completar('last_name');
+  return payload;
+}
+
 export async function createUserDoc(uid: string, data: Partial<UserDoc>): Promise<void> {
   const now = new Date().toISOString();
   try {
-    // Check if profile already exists so we don't overwrite data on re-login
     const { data: existing } = await supabaseAdmin
       .from('profiles')
-      .select('id, first_name, last_name, total_rides')
+      .select('id, first_name, last_name, phone, email, avatar_url, membership_type')
       .eq('id', uid)
       .maybeSingle();
 
-    const payload: Record<string, unknown> = {
-      id: uid,
-      role: 'passenger',
-      membership_type: 'standard',
-      avatar_url: '/default-avatar.svg',
-      referral_code: generateReferralCode(uid),
-      updated_at: now,
-    };
-
-    // Only set total_rides for brand-new profiles — never reset existing ride count
-    if (!existing) payload.total_rides = 0;
-
-    // Only include phone/email if provided — never overwrite saved values with null
-    // on re-login (e.g. re-onboard calls that only send {role, phone} would otherwise
-    // wipe a separately-saved email back to null on every login).
-    if (data.phone)   payload.phone = data.phone;
-    else if (!existing) payload.phone = null;
-
-    if (data.email)   payload.email = data.email;
-    else if (!existing) payload.email = null;
-
-    // Only include names if provided — never overwrite saved names with null on re-login
-    if (data.first_name)       payload.first_name = data.first_name;
-    else if (!existing)        payload.first_name = null;
-
-    if (data.last_name)        payload.last_name  = data.last_name;
-    else if (!existing)        payload.last_name  = null;
-
-    await supabaseAdmin.from('profiles').upsert(payload, { onConflict: 'id', ignoreDuplicates: false });
+    const payload = perfilPasajeroAlEntrar(uid, existing as PerfilGuardado | null, data, now);
+    let { error } = await supabaseAdmin.from('profiles').upsert(payload, { onConflict: 'id', ignoreDuplicates: false });
+    // El correo o el teléfono ya están en otra cuenta: se guarda lo demás (el
+    // nombre sobre todo) en vez de perderlo todo sin avisar.
+    if (error?.code === '23505' && (payload.email || payload.phone)) {
+      logger.warn({ uid, err: error.message }, '[DB] createUserDoc: correo o teléfono en uso; se guarda sin ellos');
+      delete payload.email;
+      delete payload.phone;
+      ({ error } = await supabaseAdmin.from('profiles').upsert(payload, { onConflict: 'id', ignoreDuplicates: false }));
+    }
+    if (error) logger.error({ uid, err: error.message }, '[DB] createUserDoc upsert error');
   } catch (err) {
     logger.error({ err: (err as Error).message }, '[DB] createUserDoc error');
   }
