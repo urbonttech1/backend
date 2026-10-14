@@ -28,6 +28,8 @@ import { nombreDeConductor, type PerfilConductor } from '../services/driverName'
 import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
+import { resumen as resumenLanzamientoTapToPay } from '../services/tapToPayLaunch';
+import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
@@ -3661,5 +3663,24 @@ adminRouter.post("/promos/:id/enable", async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to enable promo' });
+  }
+});
+
+// ─── Lanzamiento de Tap to Pay on iPhone (checklist 6.1 y 6.3) ───────────────
+// Vista previa del email y del push y a cuántos conductores irían. Sólo
+// lectura: el envío se habilita aparte.
+adminRouter.get("/tap-to-pay/launch", requireAdminRole('owner', 'operations'), async (_req: Request, res: Response) => {
+  try {
+    const r = await resumenLanzamientoTapToPay();
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      ...r,
+      asunto: ASUNTO_TAP_TO_PAY,
+      push: { title: PUSH_TAP_TO_PAY.title, body: PUSH_TAP_TO_PAY.body },
+      html: launchEmailHtml(),
+    });
+  } catch (err) {
+    logger.error(`[admin/tap-to-pay/launch] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudo cargar el lanzamiento de Tap to Pay.' });
   }
 });

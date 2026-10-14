@@ -1464,6 +1464,19 @@ export async function runMigrations() {
     await safeAlter(`CREATE INDEX IF NOT EXISTS cleaning_charges_driver_status_idx ON cleaning_charges (driver_id, status)`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cleaning_policy_accepted_at TIMESTAMPTZ`);
 
+    // Campañas que se mandan una sola vez por persona y canal (hoy, el
+    // lanzamiento de Tap to Pay on iPhone): repetir la orden no duplica envíos.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS marketing_sends (
+        campaign  TEXT NOT NULL,
+        user_id   UUID NOT NULL,
+        channel   VARCHAR(10) NOT NULL CHECK (channel IN ('email', 'push')),
+        sent_by   TEXT,
+        sent_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (campaign, user_id, channel)
+      );
+    `);
+
     // Una sola sesión por cuenta (services/singleSession). Las filas que ya
     // existen quedan con la hora en que se crea la columna: así un inicio con
     // Google anterior al despliegue no se registra como sesión nueva y no cierra
