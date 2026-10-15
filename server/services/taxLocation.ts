@@ -56,3 +56,12 @@ export function codigoPostalDelViaje(viaje: {
 }): string | null {
   return codigoPostalDe(viaje?.pickup?.address) ?? codigoPostalDe(viaje?.dropoff?.address);
 }
+
+/**
+ * El código postal que manda la app al cobrar, antes de que exista el viaje.
+ * Primero la recogida; si esa dirección no trae ZIP, el destino. Sin ninguno,
+ * null: el cobro usa la tasa de respaldo configurada en el panel.
+ */
+export function codigoPostalDeDirecciones(recogida: unknown, destino: unknown): string | null {
+  return codigoPostalDe(recogida) ?? codigoPostalDe(destino);
+}

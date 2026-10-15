@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { codigoPostalDe, codigoPostalDelViaje } from './taxLocation';
+import { codigoPostalDe, codigoPostalDelViaje, codigoPostalDeDirecciones } from './taxLocation';
 
 describe('codigoPostalDe', () => {
   it('lo saca de una dirección de Google', () => {
@@ -43,5 +43,25 @@ describe('codigoPostalDelViaje', () => {
   it('sin ninguno de los dos, null', () => {
     expect(codigoPostalDelViaje({ pickup: { address: 'Casa' }, dropoff: null })).toBeNull();
     expect(codigoPostalDelViaje({})).toBeNull();
+  });
+});
+
+describe('codigoPostalDeDirecciones', () => {
+  it('usa el ZIP de la recogida', () => {
+    expect(codigoPostalDeDirecciones(
+      '100 Biscayne Blvd, Miami, FL 33132, USA',
+      '1 Ocean Dr, Miami Beach, FL 33139, USA',
+    )).toBe('33132');
+  });
+
+  it('si la recogida no trae ZIP, usa el destino', () => {
+    expect(codigoPostalDeDirecciones(
+      'Miami International Airport',
+      '1 Ocean Dr, Miami Beach, FL 33139, USA',
+    )).toBe('33139');
+  });
+
+  it('sin ZIP en ninguna dirección no inventa uno', () => {
+    expect(codigoPostalDeDirecciones('Current Location', 'Downtown')).toBeNull();
   });
 });

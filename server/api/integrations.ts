@@ -7,7 +7,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { calculateRideMetrics, calcularReparto } from '../services/rideMetrics';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
-import { codigoPostalDe, codigoPostalDelViaje } from '../services/taxLocation';
+import { codigoPostalDeDirecciones, codigoPostalDelViaje } from '../services/taxLocation';
 import { notifyUser } from '../services/fcm';
 import { passengerNotif } from '../services/notificationTemplates';
 import { pagarChoferPorViaje } from '../services/ridePayout';
@@ -351,9 +351,8 @@ integrationsRouter.get("/stripe/estimate-tax", async (req: Request, res: Respons
       return res.status(400).json({ error: 'Invalid amountCents' });
     }
 
-    // Opcional y compatible con las apps viejas: sin el, se estima con la tasa
-    // de respaldo, que es lo que venia pasando siempre.
-    const postalCode = codigoPostalDe(req.query.postalCode);
+    // La recogida, y si no trae ZIP el destino. Sin ninguno, la tasa de respaldo.
+    const postalCode = codigoPostalDeDirecciones(req.query.postalCode, req.query.dropoff);
     const result = await calculateStripeTax(stripe, amountCents, `estimate-${Date.now()}`, postalCode);
     res.json({
       taxAmountCents:   result.taxAmountCents,
@@ -430,7 +429,8 @@ integrationsRouter.post("/stripe/create-payment-intent", optionalSupabaseAuth, v
     }
 
     const taxResult = await calculateStripeTax(
-      stripe, amount, `payment-${req.supabaseUid || 'anon'}`, codigoPostalDe(req.body?.postalCode),
+      stripe, amount, `payment-${req.supabaseUid || 'anon'}`,
+      codigoPostalDeDirecciones(req.body?.postalCode, req.body?.dropoff),
     );
 
     // The client generates a random `checkoutToken` once per checkout attempt
