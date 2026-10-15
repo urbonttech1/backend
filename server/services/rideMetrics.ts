@@ -8,6 +8,8 @@
  *   - transfer_data.amount   → driver payout (85%)
  */
 
+import { centavosDe, impuestoDelCobro } from './rideTax';
+
 export interface RideMetricsInput {
   totalFareUSD: number;
 }
@@ -106,5 +108,66 @@ export function calculateRideMetrics(input: RideMetricsInput): RideMetricsResult
     applicationFeeCents,
     driverPayoutCents,
     commissionRate: COMMISSION_RATE,
+  };
+}
+
+export interface GananciaAjustada {
+  /** Lo que le corresponde al chofer, en dólares. */
+  ganancia: number;
+  /** Impuesto que se quedó en la plataforma, en dólares. */
+  impuesto: number;
+  /** Comisión de Urbont más el impuesto y el valet, en dólares. */
+  comisionPlataforma: number;
+  /** true cuando `driver_earnings` se había calculado sobre la tarjeta entera. */
+  corregida: boolean;
+}
+
+/**
+ * Corrige una ganancia que se calculó sobre el cobro con impuesto.
+ *
+ * Pasa en los viajes cuyo `tax_amount` nunca se guardó: el 85 % se aplicó a
+ * los $31.42 de la tarjeta y quedó $26.71, en vez del 85 % de los $29.50.
+ * Solo se toca si el número guardado es exactamente ese reparto inflado y el
+ * dinero todavía no salió (quien llama no transfiere si ya hay transferencia).
+ */
+export function gananciaSiRepartioElImpuesto(viaje: {
+  driver_earnings?: unknown;
+  fare?: unknown;
+  locked_fare?: unknown;
+  tax_amount?: unknown;
+  total_price?: unknown;
+  wait_fee?: unknown;
+  valet_surcharge?: unknown;
+}): GananciaAjustada {
+  const stored = centavosDe(viaje.driver_earnings);
+  const fareCents = centavosDe(viaje.locked_fare) || centavosDe(viaje.fare);
+  const captured = centavosDe(viaje.total_price);
+  const sinCambio: GananciaAjustada = {
+    ganancia: stored / 100,
+    impuesto: centavosDe(viaje.tax_amount) / 100,
+    comisionPlataforma: 0,
+    corregida: false,
+  };
+  if (stored === 0 || captured <= fareCents) return sinCambio;
+
+  const tax = impuestoDelCobro({
+    taxAmount: viaje.tax_amount,
+    capturedCents: captured,
+    fare: viaje.fare,
+    lockedFare: viaje.locked_fare,
+    waitFee: viaje.wait_fee,
+  });
+  if (tax <= 0 || captured <= tax) return sinCambio;
+
+  const valet = Math.min(centavosDe(viaje.valet_surcharge), captured - tax);
+  const bien = calcularReparto({ fareCents: captured - tax, taxCents: tax, valetCents: valet });
+  const inflado = calcularReparto({ fareCents: captured, taxCents: 0, valetCents: valet });
+  if (stored !== inflado.driverPayoutCents || bien.driverPayoutCents >= stored) return sinCambio;
+
+  return {
+    ganancia: bien.driverPayoutCents / 100,
+    impuesto: tax / 100,
+    comisionPlataforma: bien.applicationFeeCents / 100,
+    corregida: true,
   };
 }

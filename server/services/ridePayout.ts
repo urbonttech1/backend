@@ -12,6 +12,7 @@ import type Stripe from 'stripe';
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
 import { calcularReparto } from './rideMetrics';
+import { impuestoDelCobro } from './rideTax';
 import { estadoConnectAlDia } from './payoutRecovery';
 import { puedeCobrar } from './connectStatus';
 
@@ -58,19 +59,32 @@ export async function pagarChoferPorViaje(opts: {
   // ahora los dos extremos dicen lo mismo.
   const { data: viaje } = await supabaseAdmin
     .from('rides')
-    .select('tax_amount, valet_surcharge')
+    .select('fare, locked_fare, tax_amount, valet_surcharge, wait_fee')
     .eq('id', rideId)
     .maybeSingle();
+
+  const fila = viaje as {
+    fare?: unknown; locked_fare?: unknown; tax_amount?: unknown;
+    valet_surcharge?: unknown; wait_fee?: unknown;
+  } | null;
 
   const centavos = (v: unknown): number => {
     const n = Number(v);
     return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
   };
 
-  const taxCents = centavos((viaje as { tax_amount?: unknown } | null)?.tax_amount);
-  const valetCents = centavos((viaje as { valet_surcharge?: unknown } | null)?.valet_surcharge);
-  // El precio del servicio es lo capturado menos el impuesto. Si el impuesto no
-  // está registrado sale cero y se reparte todo, que es como se comportaba antes.
+  // El checkout cobra el precio más el impuesto, pero el viaje a veces se
+  // guarda sin `tax_amount`. Sin esto se reparte la tarjeta entera y el chofer
+  // se lleva el 85 % de un impuesto que Urbont tiene que declarar.
+  const taxCents = impuestoDelCobro({
+    taxAmount: fila?.tax_amount,
+    metadataTaxCents: pi.metadata?.tax_amount_cents,
+    capturedCents: capturedAmountCents,
+    fare: fila?.fare,
+    lockedFare: fila?.locked_fare,
+    waitFee: fila?.wait_fee,
+  });
+  const valetCents = centavos(fila?.valet_surcharge);
   const fareCents = Math.max(1, capturedAmountCents - taxCents);
 
   const metrics = calcularReparto({
@@ -143,11 +157,18 @@ export async function pagarChoferPorViaje(opts: {
   // `driver_earnings` es lo que le corresponde al chofer, se haya transferido o
   // no: el webhook `account.updated` busca viajes con `driver_earnings > 0` y
   // `stripe_transfer_id` nulo para pagarlos cuando el chofer activa su cuenta.
+  const impuestoGuardado = centavos(fila?.tax_amount);
   const { error: finErr } = await supabaseAdmin.from('rides').update({
     payment_status: 'paid',
     total_price: Math.round(fareUSD * 100) / 100,
     platform_fee_amount: platformFeeUSD,
     driver_earnings: driverPayoutUSD,
+    // Si el checkout no dejó el impuesto en el viaje, se apunta ahora: el
+    // historial y un reintento de pago tienen que ver el mismo número.
+    ...(taxCents > 0 && impuestoGuardado === 0 ? {
+      tax_amount: taxCents / 100,
+      total_with_tax: Math.round(fareUSD * 100) / 100,
+    } : {}),
     ...(driverTransferId ? { stripe_transfer_id: driverTransferId } : {}),
     updated_at: new Date().toISOString(),
   }).eq('id', rideId);

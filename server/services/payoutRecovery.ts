@@ -17,6 +17,7 @@ import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
 import { estadoDeCuenta, puedeCobrar, hayQueConsultarAStripe, type EstadoConnect, type CuentaConnect } from './connectStatus';
 import { agruparDeuda, type ViajePendiente } from './pendingPayouts';
+import { gananciaSiRepartioElImpuesto } from './rideMetrics';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -104,7 +105,7 @@ export async function pagarViajesPendientes(opts: {
 
   let consulta = supabaseAdmin
     .from('rides')
-    .select('id, driver_id, driver_earnings, payment_intent_id')
+    .select('id, driver_id, driver_earnings, payment_intent_id, fare, locked_fare, tax_amount, total_price, wait_fee, valet_surcharge')
     .eq('ride_status', 'completed')
     .is('stripe_transfer_id', null)
     .gt('driver_earnings', 0)
@@ -117,7 +118,21 @@ export async function pagarViajesPendientes(opts: {
     return resultado;
   }
 
-  const deuda = agruparDeuda((data ?? []) as ViajePendiente[]);
+  const filas = (data ?? []) as ViajePendiente[];
+  for (const fila of filas) {
+    const adj = gananciaSiRepartioElImpuesto(fila);
+    if (!adj.corregida) continue;
+    fila.driver_earnings = adj.ganancia;
+    const { error: corrErr } = await supabaseAdmin.from('rides').update({
+      driver_earnings: adj.ganancia,
+      tax_amount: adj.impuesto,
+      platform_fee_amount: adj.comisionPlataforma,
+      updated_at: new Date().toISOString(),
+    }).eq('id', fila.id).is('stripe_transfer_id', null);
+    if (corrErr) logger.warn(`[PENDING_PAYOUTS] No se pudo corregir el impuesto del viaje ${fila.id}: ${corrErr.message}`);
+  }
+
+  const deuda = agruparDeuda(filas);
   resultado.viajesRevisados = deuda.reduce((n, d) => n + d.viajes.length, 0);
   if (deuda.length === 0) return resultado;
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calcularReparto, calculateRideMetrics } from './rideMetrics';
+import { calcularReparto, calculateRideMetrics, gananciaSiRepartioElImpuesto } from './rideMetrics';
 
 describe('calculateRideMetrics', () => {
   it('reparte 85/15 sobre el precio del viaje', () => {
@@ -72,5 +72,30 @@ describe('calcularReparto — viajes despachados por un valet', () => {
 
   it('la comisión no puede superar el precio', () => {
     expect(() => calcularReparto({ fareCents: 1000, valetCents: 1500 })).toThrow(RangeError);
+  });
+});
+
+describe('gananciaSiRepartioElImpuesto', () => {
+  it('baja los $26.71 que eran el 85 % de la tarjeta a la parte del precio', () => {
+    const r = gananciaSiRepartioElImpuesto({
+      fare: 29.5,
+      locked_fare: 29.5,
+      total_price: 31.42,
+      driver_earnings: 26.71,
+    });
+    expect(r.corregida).toBe(true);
+    expect(r.impuesto).toBe(1.92);
+    expect(r.ganancia).toBe(25.07);
+  });
+
+  it('no toca una ganancia que ya se calculó sin el impuesto', () => {
+    const r = gananciaSiRepartioElImpuesto({
+      fare: 29.5,
+      total_price: 31.42,
+      tax_amount: 1.92,
+      driver_earnings: 25.07,
+    });
+    expect(r.corregida).toBe(false);
+    expect(r.ganancia).toBe(25.07);
   });
 });

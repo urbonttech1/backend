@@ -17,6 +17,7 @@ import { driverNotif } from "../services/notificationTemplates";
 import { loadDriverDecisions, recordRideRejection } from "../services/driverRideHistory";
 import Stripe from "stripe";
 import { resumenDeSaldo, puedeRetirar, enDolares, gananciaConPropina, type MetodoRetiro } from "../services/driverBalance";
+import { gananciaSiRepartioElImpuesto } from "../services/rideMetrics";
 import { estadoConnectAlDia, pagarViajesPendientes } from "../services/payoutRecovery";
 import { puedeCobrar } from "../services/connectStatus";
 import { tasaDeAceptacion, tasaDeCancelacion, valoracionMedia } from "../services/driverPerformance";
@@ -705,12 +706,37 @@ async function saldoEnStripe(stripe: Stripe, accountId: string | null) {
 async function pendienteDeCobro(driverId: string): Promise<Array<number | null>> {
   const { data } = await supabaseAdmin
     .from('rides')
-    .select('driver_earnings')
+    .select('id, driver_earnings, fare, locked_fare, tax_amount, total_price, wait_fee, valet_surcharge')
     .eq('driver_id', driverId)
     .eq('ride_status', 'completed')
     .is('stripe_transfer_id', null)
     .gt('driver_earnings', 0);
-  return ((data ?? []) as Array<{ driver_earnings: number | null }>).map(r => r.driver_earnings);
+  const filas = (data ?? []) as Array<{
+    id: string;
+    driver_earnings: number | null;
+    fare: number | null;
+    locked_fare: number | null;
+    tax_amount: number | null;
+    total_price: number | null;
+    wait_fee: number | null;
+    valet_surcharge: number | null;
+  }>;
+  return Promise.all(filas.map(async (r) => {
+    const adj = gananciaSiRepartioElImpuesto(r);
+    if (adj.corregida) {
+      // El 85 % se había aplicado a la tarjeta con impuesto. Se corrige antes
+      // de enseñarlo y antes de que la transferencia atrasada lo pague de más.
+      const { error } = await supabaseAdmin.from('rides').update({
+        driver_earnings: adj.ganancia,
+        tax_amount: adj.impuesto,
+        total_with_tax: r.total_price,
+        platform_fee_amount: adj.comisionPlataforma,
+        updated_at: new Date().toISOString(),
+      }).eq('id', r.id).is('stripe_transfer_id', null);
+      if (error) log.warn({ err: error.message, rideId: r.id }, 'no se pudo corregir la ganancia');
+    }
+    return adj.ganancia;
+  }));
 }
 
 // GET /api/drivers/balance — dónde está su dinero y cuánto puede sacar.
@@ -845,8 +871,8 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
     // el total de arriba dijera otra cosa.
     const conDetalle = req.query.detail === '1' || req.query.detail === 'true';
     const columnas = conDetalle
-      ? 'id, fare, driver_earnings, created_at, started_at, completed_at, tip_amount, distance_miles, duration_minutes, pickup_address, dropoff_address'
-      : 'fare, driver_earnings, tip_amount, created_at';
+      ? 'id, fare, locked_fare, tax_amount, total_price, wait_fee, valet_surcharge, driver_earnings, created_at, started_at, completed_at, tip_amount, distance_miles, duration_minutes, pickup_address, dropoff_address'
+      : 'fare, locked_fare, tax_amount, total_price, wait_fee, valet_surcharge, driver_earnings, tip_amount, created_at';
 
     const { data: rides } = await supabaseAdmin
       .from('rides')
@@ -855,6 +881,11 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
       .eq('ride_status', 'completed')
       .gte('created_at', monthStart.toISOString())
       .order('created_at', { ascending: false });
+
+    const ganadoDe = (viaje: { driver_earnings?: number | null; fare?: number | null; tip_amount?: number | null }) => {
+      const adj = gananciaSiRepartioElImpuesto(viaje);
+      return gananciaConPropina(adj.corregida ? { ...viaje, driver_earnings: adj.ganancia } : viaje);
+    };
 
     const list = (rides ?? []) as unknown as Array<{
       id?: string;
@@ -877,7 +908,9 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
       // Lo que gana el chofer, no lo que factura Urbont, y con la propina
       // dentro. Ver `gananciaConPropina`: esta pantalla sumaba `fare`, el precio
       // del pasajero, y luego ignoraba las propinas, que van enteras al chofer.
-      const ganado = gananciaConPropina(r);
+      // Si el reparto se hizo sobre la tarjeta con impuesto, se usa la parte
+      // del precio. `pendienteDeCobro` persiste esa corrección.
+      const ganado = ganadoDe(r);
       const d = new Date(r.created_at);
       month += ganado; monthTrips++;
       if (d >= weekStart) { week += ganado; weekTrips++; }
@@ -907,7 +940,7 @@ driverRouter.get('/earnings', requireSupabaseAuth, async (req: Request, res: Res
           completed_at: r.completed_at ?? null,
           // Lo que gana el chofer, igual que los totales de arriba: su parte del
           // viaje más la propina, que va entera para él.
-          driverEarnings: gananciaConPropina(r),
+          driverEarnings: ganadoDe(r),
           fare: r.fare != null ? Number(r.fare) : null,
           tip: r.tip_amount != null ? Number(r.tip_amount) : 0,
           distance: r.distance_miles != null ? Number(r.distance_miles) : 0,
@@ -938,7 +971,7 @@ driverRouter.get('/quests', requireSupabaseAuth, async (req: Request, res: Respo
     // 1) Live progress from completed rides this week
     const { data: rides } = await supabaseAdmin
       .from('rides')
-      .select('fare, driver_earnings, tip_amount, created_at')
+      .select('fare, locked_fare, tax_amount, total_price, wait_fee, valet_surcharge, driver_earnings, tip_amount, created_at')
       .eq('driver_id', driverId)
       .eq('ride_status', 'completed')
       .gte('created_at', weekStart.toISOString());
@@ -948,7 +981,10 @@ driverRouter.get('/quests', requireSupabaseAuth, async (req: Request, res: Respo
     }>;
     const tripsThisWeek = list.length;
     // La meta se mide sobre lo que gana, propina incluida.
-    const earningsThisWeek = list.reduce((s, r) => s + gananciaConPropina(r), 0);
+    const earningsThisWeek = list.reduce((s, r) => {
+      const adj = gananciaSiRepartioElImpuesto(r);
+      return s + gananciaConPropina(adj.corregida ? { ...r, driver_earnings: adj.ganancia } : r);
+    }, 0);
 
     // 2) Streak from driver_streaks
     const { rows } = await pool.query(

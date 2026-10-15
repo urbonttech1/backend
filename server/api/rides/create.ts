@@ -21,6 +21,7 @@ import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory }
 import { offerScheduledRide } from "../../services/scheduledOffer";
 import { esReservaConTiempo, leerSillas, textoSillas } from "../../services/childSeats";
 import { devolverCobroDelViaje } from "../../services/rideRefund";
+import { impuestoDelCobro } from "../../services/rideTax";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
 import { logger } from '../../lib/logger';
@@ -29,6 +30,44 @@ import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 import { claveDeServidor } from '../../services/mapsKeys';
 import { ensureEfectivoFresh, efectivoPermitido } from '../../services/cashConfig';
+
+/**
+ * Impuesto del cobro que ya se hizo, para guardarlo en el viaje.
+ * Sin código postal Stripe Tax no deja id, y el respaldo del 6.5 % igual
+ * está en el monto de la tarjeta y en `tax_amount_cents`.
+ */
+async function impuestoAlCrearViaje(
+  paymentIntentId: string | null,
+  fareUSD: number,
+  taxDelCliente?: unknown,
+): Promise<{ tax: number; total: number } | null> {
+  if (!(fareUSD > 0)) return null;
+  if (paymentIntentId) {
+    try {
+      const stripe = getStripe();
+      if (stripe) {
+        const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+        const taxCents = impuestoDelCobro({
+          metadataTaxCents: pi.metadata?.tax_amount_cents,
+          capturedCents: pi.amount,
+          fare: fareUSD,
+          lockedFare: fareUSD,
+        });
+        if (taxCents > 0) {
+          return { tax: Math.round(taxCents) / 100, total: Math.round(pi.amount) / 100 };
+        }
+      }
+    } catch (err: unknown) {
+      logger.warn(`[RIDES] No se pudo leer el impuesto de ${paymentIntentId}: ${errMsg(err)}`);
+    }
+  }
+  const declarado = Number(taxDelCliente);
+  if (Number.isFinite(declarado) && declarado > 0 && declarado < fareUSD * 0.15) {
+    const tax = Math.round(declarado * 100) / 100;
+    return { tax, total: Math.round((fareUSD + tax) * 100) / 100 };
+  }
+  return null;
+}
 
 export function registerCreateRoutes(router: Router): void {
 router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -480,6 +519,21 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Fare must be at least $3.00' });
     }
 
+    // El pasajero ya pagó precio + impuesto. El viaje solo traía el precio, y
+    // al terminar se le daba al chofer el 85 % de la tarjeta. Se apunta el
+    // impuesto aquí, leyéndolo del cobro, para que el reparto lo descuente.
+    const fareParaImpuesto = Number(extendedPayload.fare);
+    const impuestoGuardado = await impuestoAlCrearViaje(
+      finalPaymentIntentId,
+      fareParaImpuesto,
+      (req.body as { taxAmount?: unknown; tax_amount?: unknown }).taxAmount
+        ?? (req.body as { tax_amount?: unknown }).tax_amount,
+    );
+    if (impuestoGuardado) {
+      extendedPayload.tax_amount = impuestoGuardado.tax;
+      extendedPayload.total_with_tax = impuestoGuardado.total;
+    }
+
     // First attempt: full payload (works when Supabase schema has extended columns)
     let { data: ride, error } = await supabaseAdmin
       .from('rides').insert(extendedPayload).select().single();
@@ -538,6 +592,12 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
           );
           if (childSeatRow) {
             await pool.query(`UPDATE rides SET child_seats = $1::jsonb WHERE id = $2`, [JSON.stringify(childSeatRow), rideId]);
+          }
+          if (impuestoGuardado) {
+            await pool.query(
+              `UPDATE rides SET tax_amount = $1, total_with_tax = $2 WHERE id = $3`,
+              [impuestoGuardado.tax, impuestoGuardado.total, rideId],
+            );
           }
         } catch (patchErr: unknown) {
           logger.warn(`[RIDES] Extended patch failed: ${errMsg(patchErr)}`);

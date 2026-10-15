@@ -451,10 +451,12 @@ integrationsRouter.post("/stripe/create-payment-intent", optionalSupabaseAuth, v
       payment_method_types: ['card'],
       metadata: {
         passenger_id: req.supabaseUid || 'anonymous',
-        ...(taxResult.taxCalculationId ? {
-          tax_calculation_id: taxResult.taxCalculationId,
-          tax_amount_cents: String(taxResult.taxAmountCents),
-        } : {}),
+        fare_cents: String(amount),
+        // Siempre, también cuando el impuesto es la tasa de respaldo: sin el
+        // id de Stripe Tax este dato no se guardaba y el reparto al chofer
+        // tomaba la tarjeta entera.
+        tax_amount_cents: String(taxResult.taxAmountCents),
+        ...(taxResult.taxCalculationId ? { tax_calculation_id: taxResult.taxCalculationId } : {}),
       },
       ...(customerId ? { customer: customerId } : {}),
       // Attach the saved PM upfront so Stripe validates it before confirm
@@ -808,10 +810,8 @@ integrationsRouter.post(
           passenger_id: req.supabaseUid || 'anonymous',
           commission_rate: String(metrics.commissionRate),
           fare_cents: String(metrics.totalCents),
-          ...(taxResult.taxCalculationId ? {
-            tax_calculation_id: taxResult.taxCalculationId,
-            tax_amount_cents: String(taxResult.taxAmountCents),
-          } : {}),
+          tax_amount_cents: String(taxResult.taxAmountCents),
+          ...(taxResult.taxCalculationId ? { tax_calculation_id: taxResult.taxCalculationId } : {}),
         },
       };
 

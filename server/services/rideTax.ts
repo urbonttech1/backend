@@ -62,3 +62,56 @@ export function totalDeViaje(fila: Record<string, unknown>, tasa = TASA_IMPUESTO
   const impuesto = r2(subtotal * (tasa >= 0 ? tasa : TASA_IMPUESTO_RESPALDO));
   return { subtotal: r2(subtotal), impuesto, total: r2(subtotal + impuesto), estimado: true };
 }
+
+/** Centavos de un importe en dólares. Cero si no es un número positivo. */
+export function centavosDe(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0;
+}
+
+/**
+ * Por encima de esto, la diferencia entre lo cobrado y el precio no se trata
+ * como impuesto: un condado de Florida está cerca del 6–8 %, y una brecha
+ * mayor sería una espera o un dato mal guardado.
+ */
+const TOPE_TASA_INFERIDA = 0.15;
+
+/**
+ * El impuesto de un cobro, en centavos.
+ *
+ * El checkout cobra el precio más el impuesto, pero el viaje se creaba solo
+ * con el precio. Al pagar al chofer, `tax_amount` vacío se leía como cero y
+ * se le daba el 85 % de la tarjeta entera: $31.42 cobrados sobre $29.50
+ * quedaban en $26.71 en vez de su parte del precio.
+ *
+ * Orden: lo guardado en el viaje, lo que Stripe dejó en el cobro, y si ninguno
+ * está, la diferencia entre la tarjeta y el precio del servicio.
+ */
+export function impuestoDelCobro(opts: {
+  taxAmount?: unknown;
+  metadataTaxCents?: unknown;
+  capturedCents: number;
+  fare?: unknown;
+  lockedFare?: unknown;
+  waitFee?: unknown;
+}): number {
+  const cobrado = Math.max(0, Math.round(opts.capturedCents) || 0);
+  const guardado = centavosDe(opts.taxAmount);
+  if (guardado > 0 && guardado < cobrado) return guardado;
+
+  const meta = Number(opts.metadataTaxCents);
+  if (Number.isFinite(meta) && meta > 0 && meta < cobrado) return Math.round(meta);
+
+  const base = centavosDe(opts.lockedFare) || centavosDe(opts.fare);
+  if (base <= 0 || cobrado <= base) return 0;
+
+  const espera = centavosDe(opts.waitFee);
+  const tarifaActual = centavosDe(opts.fare);
+  let servicio = base;
+  if (espera > 0 && cobrado >= base + espera) servicio = base + espera;
+  else if (tarifaActual > base && cobrado >= tarifaActual) servicio = tarifaActual;
+
+  const diferencia = cobrado - servicio;
+  if (diferencia <= 0 || diferencia / servicio > TOPE_TASA_INFERIDA) return 0;
+  return diferencia;
+}
