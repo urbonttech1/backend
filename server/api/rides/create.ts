@@ -92,6 +92,8 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
       const hourly = calculateHourlyFare({
         vehicleType, hours, surgeMultiplier,
         bookingType: req.query.scheduled === 'true' ? 'scheduled' : undefined,
+        pickup: typeof req.query.pickup === 'string' ? req.query.pickup : undefined,
+        dropoff: typeof req.query.dropoff === 'string' ? req.query.dropoff : undefined,
       });
       if (!hourly) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
       return res.json(oculto ? { ...hourly, surge_multiplier: 1.0 } : hourly);
@@ -106,7 +108,11 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
     const distanceMiles = distanceKm * 0.621371;
     // Con `bookingType=scheduled` se cotiza con la reserva de la clase. La app ya
     // lo manda; antes el servidor lo ignoraba en esta ruta.
-    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier });
+    const breakdown = calculateFareFromRules({
+      vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier,
+      pickup: typeof req.query.pickup === 'string' ? req.query.pickup : undefined,
+      dropoff: typeof req.query.dropoff === 'string' ? req.query.dropoff : undefined,
+    });
     if (!breakdown) return res.status(400).json({ error: `Unknown vehicleType: ${vehicleType}` });
     return res.json(oculto ? { ...breakdown, surge_multiplier: 1.0 } : breakdown);
   } catch (err: any) {
@@ -200,7 +206,11 @@ router.get('/estimate', requireSupabaseAuth, async (req: Request, res: Response)
     // cobraría con recargo — justo la dirección que no queremos.
     await ensureFaresFresh();
     const surgeMultiplier = await getEffectiveSurge();
-    const breakdown = calculateFareFromRules({ vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier })
+    const breakdown = calculateFareFromRules({
+      vehicleType, distanceMiles, durationMinutes, bookingType, surgeMultiplier,
+      pickup: typeof req.query.pickup === 'string' ? req.query.pickup : undefined,
+      dropoff: typeof req.query.dropoff === 'string' ? req.query.dropoff : undefined,
+    })
       ?? { total: 0, distanceMiles, durationMinutes, surge_multiplier: surgeMultiplier };
     const oculto = await surgeSilencioso();
     res.json({ ...breakdown, ...(oculto ? { surge_multiplier: 1.0 } : {}), distanceMiles, durationMinutes });
@@ -463,6 +473,8 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         hours:       requestedHours,
         bookingType: bookingTypeTarifa,
         surgeMultiplier,
+        pickup:      pickupAddress,
+        dropoff:     dropoffAddress,
       });
     } else if (typeof bodyMiles === 'number' && typeof bodyDuration === 'number') {
       fareBreakdown = calculateFareFromRules({
@@ -471,6 +483,8 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         durationMinutes: bodyDuration,
         bookingType:     bookingTypeTarifa,
         surgeMultiplier,
+        pickup:          pickupAddress,
+        dropoff:         dropoffAddress,
       });
     }
 
@@ -757,8 +771,10 @@ router.post('/driver-create', requireSupabaseAuth, async (req: Request, res: Res
         vehicleType: resolvedVehicleType,
         distanceMiles,
         durationMinutes,
+        pickup,
+        dropoff: destination,
       }) as unknown as Record<string, unknown>;
-      if (!fareTotal && fareBreakdown?.total) fareTotal = Number(fareBreakdown.total);
+      if (fareBreakdown?.total) fareTotal = Number(fareBreakdown.total);
     }
     if (fareTotal < 1) {
       return res.status(400).json({ error: 'Could not compute a valid fare' });

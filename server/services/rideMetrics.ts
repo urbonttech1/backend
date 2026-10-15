@@ -9,6 +9,7 @@
  */
 
 import { centavosDe, impuestoDelCobro } from './rideTax';
+import { BOOKING_FEE_USD } from '../config/pricing';
 
 export interface RideMetricsInput {
   totalFareUSD: number;
@@ -56,6 +57,16 @@ export interface RepartoInput {
    * de otro.
    */
   valetCents?: number;
+  /**
+   * Booking fijo, en centavos, que Urbont retiene entero. Va dentro del precio
+   * y se resta de la parte del chofer después del 15 %, en instantáneo y en reserva.
+   */
+  bookingFeeCents?: number;
+  /**
+   * Aeropuerto o puerto, en centavos. Está dentro del precio y lleva impuesto,
+   * pero no entra en el 15 %: Urbont se lo queda entero.
+   */
+  accessFeeCents?: number;
 }
 
 export interface RepartoResult {
@@ -79,17 +90,46 @@ export interface RepartoResult {
  * El impuesto va DENTRO de la comisión: lo retiene la plataforma porque es
  * quien lo declara, y así al chofer le llega el 90 % del precio limpio.
  */
-export function calcularReparto({ fareCents, taxCents = 0, valetCents = 0 }: RepartoInput): RepartoResult {
-  if (fareCents < 0 || taxCents < 0 || valetCents < 0) throw new RangeError('los importes no pueden ser negativos');
+/** El booking fijo, en centavos. Urbont se lo queda entero en un viaje de ahora. */
+export const BOOKING_FEE_CENTS = Math.round(BOOKING_FEE_USD * 100);
+
+/**
+ * Cuánto booking se le resta al chofer.
+ *
+ * Urbont retiene los $2.50 completos, además del 15 % del precio, tanto en un
+ * viaje instantáneo como en una reserva. El argumento se queda para que quien
+ * llama pueda pasar el viaje sin cambiar de firma.
+ */
+export function bookingRetenidoPorUrbont(_viaje?: {
+  scheduled_at?: unknown;
+  booking_type?: unknown;
+}): number {
+  return BOOKING_FEE_CENTS;
+}
+
+export function calcularReparto({
+  fareCents,
+  taxCents = 0,
+  valetCents = 0,
+  bookingFeeCents = 0,
+  accessFeeCents = 0,
+}: RepartoInput): RepartoResult {
+  if (fareCents < 0 || taxCents < 0 || valetCents < 0 || bookingFeeCents < 0 || accessFeeCents < 0) {
+    throw new RangeError('los importes no pueden ser negativos');
+  }
   if (valetCents > fareCents) throw new RangeError('la comisión del valet no puede superar el precio');
 
-  // El servicio del chofer es el precio sin la comisión del valet.
-  const servicio = fareCents - valetCents;
+  // El aeropuerto y el puerto se cobran en el precio, pero no se reparten:
+  // Urbont se queda esos $10 enteros y el 15 % sale de lo que queda.
+  const acceso = Math.min(accessFeeCents, Math.max(0, fareCents - valetCents));
+  const servicio = fareCents - valetCents - acceso;
   const comision = Math.round(servicio * COMMISSION_RATE);
+  // Los $2.50 salen de la parte del chofer, después del 15 %.
+  const booking = Math.min(bookingFeeCents, Math.max(0, servicio - comision));
   return {
     chargeCents:         fareCents + taxCents,
-    applicationFeeCents: comision + taxCents + valetCents,
-    driverPayoutCents:   servicio - comision,
+    applicationFeeCents: comision + taxCents + valetCents + booking + acceso,
+    driverPayoutCents:   servicio - comision - booking,
     commissionRate:      COMMISSION_RATE,
   };
 }

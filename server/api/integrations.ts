@@ -5,7 +5,8 @@ import { validateBody, requireSupabaseAuth, optionalSupabaseAuth } from "../midd
 import { supabaseAdmin } from '../db/client';
 import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
-import { calculateRideMetrics, calcularReparto } from '../services/rideMetrics';
+import { accesoEnCentavos } from '../config/pricing';
+import { calculateRideMetrics, calcularReparto, bookingRetenidoPorUrbont } from '../services/rideMetrics';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
 import { codigoPostalDeDirecciones, codigoPostalDelViaje } from '../services/taxLocation';
 import { notifyUser } from '../services/fcm';
@@ -763,11 +764,12 @@ integrationsRouter.post(
       let connectedAccountId = driverConnectedAccountId || null;
       let valetCommissionCents = 0;
       let postalCode: string | null = null;
+      let citaDelViaje: { scheduled_at?: unknown; booking_type?: unknown; base_fare_breakdown?: unknown } | null = null;
 
       {
         const { data: ride } = await supabaseAdmin
           .from('rides')
-          .select('driver_id, valet_surcharge, pickup, dropoff')
+          .select('driver_id, valet_surcharge, pickup, dropoff, scheduled_at, booking_type, base_fare_breakdown')
           .eq('id', rideId)
           .maybeSingle();
 
@@ -778,6 +780,7 @@ integrationsRouter.post(
         } | null ?? {});
 
         valetCommissionCents = Math.round(Number((ride as { valet_surcharge?: unknown } | null)?.valet_surcharge ?? 0) * 100) || 0;
+        citaDelViaje = ride as { scheduled_at?: unknown; booking_type?: unknown; base_fare_breakdown?: unknown } | null;
 
         if (!connectedAccountId && ride?.driver_id) {
           const { data: driver } = await supabaseAdmin
@@ -819,14 +822,17 @@ integrationsRouter.post(
       //
       // Se manda SÓLO `application_fee_amount`: Stripe rechaza que vayan a la vez
       // con `transfer_data.amount`, así que con las dos el cobro fallaba entero.
-      // El impuesto va dentro de la comisión porque lo declara la plataforma; al
-      // chofer le llega el 90 % del precio, sin impuesto.
+      // El impuesto va dentro de la comisión porque lo declara la plataforma.
+      // Urbont retiene el 15 % del precio (sin aeropuerto ni puerto) y, además,
+      // los $2.50 del booking. Los $10 de aeropuerto o puerto se quedan enteros.
+      const reparto = calcularReparto({
+        fareCents:  metrics.totalCents,
+        taxCents:   taxResult.taxAmountCents,
+        valetCents: Math.min(valetCommissionCents, metrics.totalCents),
+        bookingFeeCents: bookingRetenidoPorUrbont(citaDelViaje ?? {}),
+        accessFeeCents: accesoEnCentavos(citaDelViaje?.base_fare_breakdown),
+      });
       if (connectedAccountId) {
-        const reparto = calcularReparto({
-          fareCents:  metrics.totalCents,
-          taxCents:   taxResult.taxAmountCents,
-          valetCents: Math.min(valetCommissionCents, metrics.totalCents),
-        });
         paymentIntentParams.application_fee_amount = reparto.applicationFeeCents;
         paymentIntentParams.transfer_data = { destination: connectedAccountId };
         paymentIntentParams.metadata = {
@@ -871,8 +877,8 @@ integrationsRouter.post(
           totalCents: metrics.totalCents,
           taxAmountCents: taxResult.taxAmountCents,
           totalWithTaxCents: taxResult.taxedAmountCents,
-          platformFeeCents: metrics.applicationFeeCents,
-          driverPayoutCents: metrics.driverPayoutCents,
+          platformFeeCents: reparto.applicationFeeCents,
+          driverPayoutCents: reparto.driverPayoutCents,
           commissionRate: '10%',
           driverHasConnectedAccount: !!connectedAccountId,
         },

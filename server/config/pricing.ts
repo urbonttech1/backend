@@ -47,6 +47,86 @@ export function setPlatformCommission(tasa: number): void {
  */
 export const BOOKING_FEE_USD = 2.50;
 
+/**
+ * Servicio de aeropuerto o de puerto, al entrar o al salir. Se suma una vez
+ * por tipo: un viaje que toca un aeropuerto paga $10, aunque los dos extremos
+ * sean aeropuerto. Si además toca un puerto, son otros $10. No entra en el
+ * 15 % del chofer: Urbont se los queda, y el impuesto se calcula encima.
+ */
+export const ACCESS_FEE_USD = 10;
+
+const AIRPORT_IATA = [
+  'mia', 'jfk', 'lax', 'ord', 'dfw', 'fll', 'ewr', 'bos', 'sfo', 'sea', 'den',
+  'atl', 'dca', 'iad', 'phl', 'mco', 'mdw', 'bwi', 'las', 'phx', 'san', 'pdx',
+  'hnl', 'aus', 'iah', 'msy', 'rdu', 'cle', 'cvg', 'pit', 'dtw', 'mem', 'slc',
+  'smf', 'stl',
+];
+
+const AIRPORT_IATA_RE = new RegExp(
+  `(^|[^a-z])(${AIRPORT_IATA.join('|')})([^a-z]|$)`,
+);
+
+const PUERTO_RE = /portmiami|port of miami|port miami|port everglades|miami seaport|cruise port|cruise terminal|terminal de cruceros|puerto de miami|puerto everglades/;
+
+function textoDeLugar(raw: string): string {
+  return raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+/** Un aeropuerto, con el mismo criterio que la app: la palabra, o un código IATA suelto. */
+export function esAeropuerto(raw?: string | null): boolean {
+  if (!raw || !raw.trim()) return false;
+  const d = textoDeLugar(raw);
+  if (d.includes('airport') || d.includes('aeropuerto')) return true;
+  return AIRPORT_IATA_RE.test(d);
+}
+
+/** Puerto de cruceros. No basta la palabra "port": Portland y muchas calles la llevan. */
+export function esPuerto(raw?: string | null): boolean {
+  if (!raw || !raw.trim()) return false;
+  return PUERTO_RE.test(textoDeLugar(raw));
+}
+
+/**
+ * $10 si algún extremo es aeropuerto, y $10 si algún extremo es puerto.
+ * Un mismo extremo no cobra los dos: el aeropuerto gana.
+ */
+export function cargoDeAcceso(pickup?: string | null, dropoff?: string | null): {
+  airport_fee: number;
+  port_fee: number;
+} {
+  const tipos = [pickup, dropoff].map((lugar) => {
+    if (esAeropuerto(lugar)) return 'airport' as const;
+    if (esPuerto(lugar)) return 'port' as const;
+    return null;
+  });
+  return {
+    airport_fee: tipos.includes('airport') ? ACCESS_FEE_USD : 0,
+    port_fee: tipos.includes('port') ? ACCESS_FEE_USD : 0,
+  };
+}
+
+/** Centavos de aeropuerto + puerto guardados en `base_fare_breakdown`. */
+export function accesoEnCentavos(raw: unknown): number {
+  if (!raw) return 0;
+  let obj: Record<string, unknown>;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return 0;
+    }
+  } else if (typeof raw === 'object') {
+    obj = raw as Record<string, unknown>;
+  } else {
+    return 0;
+  }
+  const airport = Number(obj.airport_fee);
+  const port = Number(obj.port_fee);
+  const usd = (Number.isFinite(airport) && airport > 0 ? airport : 0)
+    + (Number.isFinite(port) && port > 0 ? port : 0);
+  return Math.round(usd * 100);
+}
+
 // ── Espera ───────────────────────────────────────────────────────────────────
 /** Minutos que el pasajero tiene para llegar al coche sin cargo. */
 export const WAIT_TIME_FREE_MINUTES = 5;
@@ -275,6 +355,10 @@ export interface FareRulesBreakdown {
   booking_fee:      number;
   /** Cargo fijo de reserva del sistema, en todos los viajes. */
   booking_fee_flat: number;
+  /** $10 si el viaje entra o sale de un aeropuerto. Fuera del 15 % del chofer. */
+  airport_fee:      number;
+  /** $10 si el viaje entra o sale de un puerto. Fuera del 15 % del chofer. */
+  port_fee:         number;
   ride_fare:        number;
   platform_fee:     number;
   total:            number;
@@ -319,6 +403,9 @@ export function calculateFareFromRules(opts: {
   bookingType?:     string;
   /** Multiplicador por demanda: > 1 recarga, < 1 descuenta (mínimo MULTIPLICADOR_MINIMO). */
   surgeMultiplier?: number;
+  /** Direcciones, para el cargo de aeropuerto o de puerto. */
+  pickup?:          string | null;
+  dropoff?:         string | null;
 }): FareRulesBreakdown | null {
   const rule = getFareClass(opts.vehicleType);
   if (!rule) return null;
@@ -336,13 +423,17 @@ export function calculateFareFromRules(opts: {
   const booking_fee     = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;
   // El recargo por demanda no toca ni la reserva ni el booking fijo.
   const booking_fee_flat = BOOKING_FEE_USD;
-  const ride_fare       = r2(base_fare + distance_charge + time_charge + booking_fee + booking_fee_flat);
-  // Contenida en el precio, no añadida: `total` es lo que paga el pasajero.
-  const platform_fee    = r2(ride_fare * getPlatformCommission());
+  const acceso          = cargoDeAcceso(opts.pickup, opts.dropoff);
+  const airport_fee     = acceso.airport_fee;
+  const port_fee        = acceso.port_fee;
+  const ride_fare       = r2(base_fare + distance_charge + time_charge + booking_fee + booking_fee_flat + airport_fee + port_fee);
+  // El 15 % se calcula sin el aeropuerto ni el puerto: esos $10 se los queda Urbont enteros.
+  const platform_fee    = r2((ride_fare - airport_fee - port_fee) * getPlatformCommission());
   const total           = ride_fare;
 
   return {
     base_fare, distance_charge, time_charge, booking_fee, booking_fee_flat,
+    airport_fee, port_fee,
     ride_fare, platform_fee, total,
     surge_multiplier: surge,
     distance_miles:   r2(miles),
@@ -359,6 +450,8 @@ export interface HourlyFareBreakdown {
   hourly_charge:    number;
   booking_fee:      number;
   booking_fee_flat: number;
+  airport_fee:      number;
+  port_fee:         number;
   ride_fare:        number;
   platform_fee:     number;
   total:            number;
@@ -386,6 +479,8 @@ export function calculateHourlyFare(opts: {
   hours:            number;
   bookingType?:     string;
   surgeMultiplier?: number;
+  pickup?:          string | null;
+  dropoff?:         string | null;
 }): HourlyFareBreakdown | null {
   const rule = getFareClass(opts.vehicleType);
   if (!rule) return null;
@@ -396,12 +491,15 @@ export function calculateHourlyFare(opts: {
   const hourly_charge = r2(billedHours * rule.perHour * surge);
   const booking_fee   = esProgramado(opts.bookingType) ? r2(rule.serviceFee) : 0;
   const booking_fee_flat = BOOKING_FEE_USD;
-  const ride_fare     = r2(hourly_charge + booking_fee + booking_fee_flat);
-  const platform_fee  = r2(ride_fare * getPlatformCommission());
+  const acceso        = cargoDeAcceso(opts.pickup, opts.dropoff);
+  const airport_fee   = acceso.airport_fee;
+  const port_fee      = acceso.port_fee;
+  const ride_fare     = r2(hourly_charge + booking_fee + booking_fee_flat + airport_fee + port_fee);
+  const platform_fee  = r2((ride_fare - airport_fee - port_fee) * getPlatformCommission());
   const total         = ride_fare;
 
   return {
-    hourly_charge, booking_fee, booking_fee_flat, ride_fare, platform_fee, total,
+    hourly_charge, booking_fee, booking_fee_flat, airport_fee, port_fee, ride_fare, platform_fee, total,
     surge_multiplier: surge,
     billed_hours:     billedHours,
     requested_hours:  opts.hours,

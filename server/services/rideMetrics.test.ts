@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calcularReparto, calculateRideMetrics, gananciaSiRepartioElImpuesto } from './rideMetrics';
+import { bookingRetenidoPorUrbont, calcularReparto, calculateRideMetrics, gananciaSiRepartioElImpuesto } from './rideMetrics';
 
 describe('calculateRideMetrics', () => {
   it('reparte 85/15 sobre el precio del viaje', () => {
@@ -72,6 +72,39 @@ describe('calcularReparto — viajes despachados por un valet', () => {
 
   it('la comisión no puede superar el precio', () => {
     expect(() => calcularReparto({ fareCents: 1000, valetCents: 1500 })).toThrow(RangeError);
+  });
+
+  it('una reserva también retiene los $2.50', () => {
+    expect(bookingRetenidoPorUrbont({ scheduled_at: '2026-10-20T15:00:00.000Z' })).toBe(250);
+    expect(bookingRetenidoPorUrbont({ booking_type: 'scheduled' })).toBe(250);
+  });
+
+  it('de una reserva de $110 el chofer se queda con $91', () => {
+    // $100 + $10 del sedán. 15 % de 110 = $16.50, luego $2.50. Quedan $91.
+    const r = calcularReparto({ fareCents: 11000, bookingFeeCents: 250 });
+    expect(r.driverPayoutCents).toBe(9100);
+    expect(r.applicationFeeCents).toBe(1900);
+  });
+
+  it('los $10 de aeropuerto no entran en el 15 %', () => {
+    // $110 de carrera + $10 de aeropuerto. El chofer se calcula sobre los $110.
+    const r = calcularReparto({ fareCents: 12000, bookingFeeCents: 250, accessFeeCents: 1000 });
+    expect(r.driverPayoutCents).toBe(9100);
+    expect(r.applicationFeeCents).toBe(2900);
+    expect(r.chargeCents).toBe(12000);
+  });
+
+  it('un viaje de ahora sí los retiene', () => {
+    expect(bookingRetenidoPorUrbont({ booking_type: 'now' })).toBe(250);
+    expect(bookingRetenidoPorUrbont({})).toBe(250);
+  });
+
+  it('en un viaje de ahora Urbont se queda el booking de $2.50 y el 15 %', () => {
+    // $100 de precio. El chofer cobra 85 % menos los $2.50: $82.50.
+    const r = calcularReparto({ fareCents: 10000, bookingFeeCents: 250 });
+    expect(r.driverPayoutCents).toBe(8250);
+    expect(r.applicationFeeCents).toBe(1750);
+    expect(r.applicationFeeCents + r.driverPayoutCents).toBe(r.chargeCents);
   });
 });
 

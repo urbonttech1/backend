@@ -166,7 +166,7 @@ router.post('/:id/change-destination', requireSupabaseAuth, async (req: Request,
   try {
     const { data: ride, error: fetchErr } = await supabaseAdmin
       .from('rides')
-      .select('passenger_id, driver_id, ride_status, fare, locked_fare, vehicle_type, surge_multiplier, pickup_lat, pickup_lng, scheduled_at')
+      .select('passenger_id, driver_id, ride_status, fare, locked_fare, vehicle_type, surge_multiplier, pickup_lat, pickup_lng, scheduled_at, pickup_address, pickup')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -182,12 +182,19 @@ router.post('/:id/change-destination', requireSupabaseAuth, async (req: Request,
     let newFare = Number(r.fare || 0);
     let newBreakdown = null;
     if (typeof distanceMiles === 'number' && typeof durationMinutes === 'number') {
+      const recogida = typeof r.pickup_address === 'string' && r.pickup_address.trim()
+        ? r.pickup_address
+        : (r.pickup && typeof r.pickup === 'object' && typeof (r.pickup as { address?: unknown }).address === 'string'
+          ? String((r.pickup as { address?: unknown }).address)
+          : undefined);
       newBreakdown = calculateFareFromRules({
         vehicleType:     String(r.vehicle_type || 'sedan'),
         distanceMiles,
         durationMinutes,
         // Una reserva conserva su cargo de reserva al cambiar de destino.
         bookingType:     r.scheduled_at ? 'scheduled' : undefined,
+        pickup:          recogida,
+        dropoff:         String(address),
       });
       newFare = newBreakdown?.total ?? newFare;
     }

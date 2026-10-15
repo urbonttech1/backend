@@ -4,10 +4,10 @@ import { desgloseDeDinero } from './rideMoneyBreakdown';
 describe('desgloseDeDinero', () => {
   it('reparte 85/15 sobre la tarifa, con el impuesto retenido', () => {
     // El viaje real del 25/09: $28.07 cobrados = $26.36 tarifa + $1.71 impuesto.
-    const d = desgloseDeDinero({ fare: 26.36, tax_amount: 1.71, total_with_tax: 28.07 });
+    const d = desgloseDeDinero({ fare: 26.36, tax_amount: 1.71, total_with_tax: 28.07, booking_type: 'scheduled' });
     expect(d.cobradoAlPasajero).toBe(28.07);
-    expect(d.comisionUrbont).toBeCloseTo(5.66, 2); // 15% de 26.36 + 1.71 de impuesto
-    expect(d.gananciaChofer).toBeCloseTo(22.41, 2); // 85% de 26.36
+    expect(d.comisionUrbont).toBeCloseTo(8.16, 2); // 15% de 26.36 + 2.50 de booking + 1.71 de impuesto
+    expect(d.gananciaChofer).toBeCloseTo(19.91, 2); // 85% de 26.36, menos los 2.50
     expect(d.fuente).toBe('estimado');
     expect(d.transferido).toBe(false);
   });
@@ -60,15 +60,15 @@ describe('desgloseDeDinero', () => {
     });
 
     it('también cuadra en el caso estimado, no sólo en el registrado', () => {
-      const d = desgloseDeDinero({ fare: 20, tip_amount: 10 });
-      expect(d.gananciaChoferViaje).toBeCloseTo(17, 2); // 85% de 20, sin la propina
+      const d = desgloseDeDinero({ fare: 20, tip_amount: 10, booking_type: 'scheduled' });
+      expect(d.gananciaChoferViaje).toBeCloseTo(14.5, 2); // 85% de 20, menos los 2.50, sin la propina
       expect(d.comisionUrbont + d.gananciaChoferViaje).toBeCloseTo(d.cobradoAlPasajero, 2);
     });
   });
 
   it('la propina se suma a la ganancia del chofer, registrada o estimada', () => {
-    const estimado = desgloseDeDinero({ fare: 20, tip_amount: 10 });
-    expect(estimado.gananciaChofer).toBeCloseTo(17 + 10, 2); // 85% de 20 + propina
+    const estimado = desgloseDeDinero({ fare: 20, tip_amount: 10, booking_type: 'scheduled' });
+    expect(estimado.gananciaChofer).toBeCloseTo(14.5 + 10, 2); // 85% de 20 menos 2.50, más la propina
 
     const registrado = desgloseDeDinero({ fare: 20, driver_earnings: 17, tip_amount: 10 });
     expect(registrado.gananciaChofer).toBe(27);
@@ -103,7 +103,7 @@ describe('desgloseDeDinero', () => {
   describe('cargo por espera', () => {
     // status.ts reescribe fare = locked_fare + wait_fee al completar el viaje.
     const conEspera = {
-      fare: 26.00, locked_fare: 23.25, wait_fee: 2.75,
+      fare: 26.00, locked_fare: 23.25, wait_fee: 2.75, booking_type: 'scheduled',
       base_fare_breakdown: JSON.stringify({ booking_fee: 0, booking_fee_flat: 2.50 }),
     };
 
@@ -122,7 +122,7 @@ describe('desgloseDeDinero', () => {
 
     it('entra en el reparto 85/15, como el resto del precio', () => {
       const d = desgloseDeDinero(conEspera);
-      expect(d.gananciaChoferViaje).toBeCloseTo(26.00 * 0.85, 1);
+      expect(d.gananciaChoferViaje).toBeCloseTo(26.00 * 0.85 - 2.5, 2);
     });
 
     it('si la reescritura de fare falló, la espera se suma igual', () => {
@@ -142,15 +142,15 @@ describe('desgloseDeDinero', () => {
 
   describe('comisión del valet', () => {
     it('no se cuenta como de Urbont: se transfiere al valet', () => {
-      const d = desgloseDeDinero({ fare: 40, valet_surcharge: 10 });
+      const d = desgloseDeDinero({ fare: 40, valet_surcharge: 10, booking_type: 'scheduled' });
       // 40 de servicio: 10 al valet, y el 85/15 se aplica a los 30 restantes.
       expect(d.comisionValet).toBe(10);
-      expect(d.comisionUrbont).toBeCloseTo(4.50, 2);
-      expect(d.gananciaChoferViaje).toBeCloseTo(25.50, 2);
+      expect(d.comisionUrbont).toBeCloseTo(7.00, 2);
+      expect(d.gananciaChoferViaje).toBeCloseTo(23.00, 2);
     });
 
     it('Urbont + Valet + Chofer suman lo cobrado, estimado o registrado', () => {
-      const estimado = desgloseDeDinero({ fare: 40, valet_surcharge: 10, tax_amount: 2.60 });
+      const estimado = desgloseDeDinero({ fare: 40, valet_surcharge: 10, tax_amount: 2.60, booking_type: 'scheduled' });
       expect(estimado.comisionUrbont + estimado.comisionValet + estimado.gananciaChoferViaje)
         .toBeCloseTo(estimado.cobradoAlPasajero, 2);
 
@@ -175,6 +175,13 @@ describe('desgloseDeDinero', () => {
       // La ruta admin lo pasa tal cual viene de Supabase; a veces ya es objeto.
       const d = desgloseDeDinero({ fare: 20.50, base_fare_breakdown: { booking_fee: 0, booking_fee_flat: 2.50 } });
       expect(d.bookingFee).toBe(2.50);
+    });
+
+    it('en un viaje de ahora Urbont se queda los $2.50 además del 15 %', () => {
+      const d = desgloseDeDinero({ fare: 100, booking_type: 'now' });
+      expect(d.gananciaChoferViaje).toBe(82.5);
+      expect(d.comisionUrbont).toBe(17.5);
+      expect(d.comisionUrbont + d.gananciaChoferViaje).toBeCloseTo(d.cobradoAlPasajero, 2);
     });
 
     it('null, no 0, cuando no hay desglose guardado', () => {

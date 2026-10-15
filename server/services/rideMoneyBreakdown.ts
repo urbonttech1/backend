@@ -1,4 +1,5 @@
-import { calcularReparto } from './rideMetrics';
+import { accesoEnCentavos } from '../config/pricing';
+import { bookingRetenidoPorUrbont, calcularReparto } from './rideMetrics';
 import { gananciaDelChofer } from './driverBalance';
 
 /**
@@ -42,6 +43,9 @@ export interface FilaDeViaje {
    * que existiera esta columna — no todos los viajes lo tienen.
    */
   base_fare_breakdown?: string | Record<string, unknown> | null;
+  /** Si hay cita, o el tipo es `scheduled`, es una reserva y el booking no se resta. */
+  scheduled_at?: string | null;
+  booking_type?: string | null;
 }
 
 export interface DesgloseDeDinero {
@@ -160,6 +164,10 @@ export function desgloseDeDinero(viaje: FilaDeViaje): DesgloseDeDinero {
     fareCents: Math.round(tarifaBase * 100),
     taxCents: Math.round(impuesto * 100),
     valetCents: Math.min(Math.round(comisionValet * 100), Math.round(tarifaBase * 100)),
+    // Los $2.50 salen enteros de la parte del chofer, en instantáneo y en reserva.
+    // El aeropuerto y el puerto no entran en el 15 %.
+    bookingFeeCents: bookingRetenidoPorUrbont(viaje),
+    accessFeeCents: accesoEnCentavos(viaje.base_fare_breakdown),
   });
   // Lo que se aplica a la comisión del valet no cabe en ninguna de las dos
   // partes: sale del cobro, pero va a un tercero.

@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   calculateFareFromRules,
   calculateHourlyFare,
+  cargoDeAcceso,
+  accesoEnCentavos,
   calcularImporteDistancia,
   calcularCargoEspera,
   calcularNoShowDemanda,
@@ -129,6 +131,37 @@ describe('calculateFareFromRules — reserva', () => {
   it('un programado suma la reserva de su clase', () => {
     // 31.50 a demanda; programado: 24 + 5 + 2.50 de booking + 10 de reserva.
     expect(fare('sedan', 8, 20, 'scheduled').total).toBe(41.50);
+  });
+
+  it('sumar aeropuerto o puerto no cambia el 15 % de la carrera', () => {
+    const ciudad = fare('sedan', 8, 20);
+    const aero = calculateFareFromRules({
+      vehicleType: 'sedan', distanceMiles: 8, durationMinutes: 20,
+      pickup: 'Brickell', dropoff: 'Miami International Airport',
+    })!;
+    expect(aero.airport_fee).toBe(10);
+    expect(aero.port_fee).toBe(0);
+    expect(aero.total).toBe(ciudad.total + 10);
+    expect(aero.platform_fee).toBe(ciudad.platform_fee);
+  });
+
+  it('aeropuerto y puerto en el mismo viaje son $20, una sola vez cada uno', () => {
+    const idaYVuelta = cargoDeAcceso('MIA', 'Miami International Airport');
+    expect(idaYVuelta).toEqual({ airport_fee: 10, port_fee: 0 });
+    const mixto = cargoDeAcceso('PortMiami, 1015 N America Way', 'Fort Lauderdale-Hollywood International Airport');
+    expect(mixto).toEqual({ airport_fee: 10, port_fee: 10 });
+    expect(cargoDeAcceso('Brickell City Centre', 'Wynwood')).toEqual({ airport_fee: 0, port_fee: 0 });
+    expect(cargoDeAcceso('Calle Atlántico, Barranquilla', 'Denver Street')).toEqual({ airport_fee: 0, port_fee: 0 });
+  });
+
+  it('el desglose guarda los $10 para restarlos al pagar al chofer', () => {
+    const f = calculateFareFromRules({
+      vehicleType: 'sedan', distanceMiles: 8, durationMinutes: 20, bookingType: 'scheduled',
+      dropoff: 'Port Everglades',
+    })!;
+    expect(f.port_fee).toBe(10);
+    expect(accesoEnCentavos(f)).toBe(1000);
+    expect(accesoEnCentavos(JSON.stringify(f))).toBe(1000);
   });
 
   it('el recargo nunca multiplica la reserva', () => {

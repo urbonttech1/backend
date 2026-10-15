@@ -11,7 +11,8 @@
 import type Stripe from 'stripe';
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
-import { calcularReparto } from './rideMetrics';
+import { accesoEnCentavos } from '../config/pricing';
+import { bookingRetenidoPorUrbont, calcularReparto } from './rideMetrics';
 import { impuestoDelCobro } from './rideTax';
 import { estadoConnectAlDia } from './payoutRecovery';
 import { puedeCobrar } from './connectStatus';
@@ -59,13 +60,15 @@ export async function pagarChoferPorViaje(opts: {
   // ahora los dos extremos dicen lo mismo.
   const { data: viaje } = await supabaseAdmin
     .from('rides')
-    .select('fare, locked_fare, tax_amount, valet_surcharge, wait_fee')
+    .select('fare, locked_fare, tax_amount, valet_surcharge, wait_fee, scheduled_at, booking_type, base_fare_breakdown')
     .eq('id', rideId)
     .maybeSingle();
 
   const fila = viaje as {
     fare?: unknown; locked_fare?: unknown; tax_amount?: unknown;
     valet_surcharge?: unknown; wait_fee?: unknown;
+    scheduled_at?: unknown; booking_type?: unknown;
+    base_fare_breakdown?: unknown;
   } | null;
 
   const centavos = (v: unknown): number => {
@@ -91,6 +94,13 @@ export async function pagarChoferPorViaje(opts: {
     fareCents,
     taxCents,
     valetCents: Math.min(valetCents, fareCents),
+    // Urbont se queda el 15 % y, además, los $2.50, en instantáneo y en reserva.
+    // El aeropuerto y el puerto no entran en ese 15 %.
+    bookingFeeCents: bookingRetenidoPorUrbont({
+      scheduled_at: fila?.scheduled_at,
+      booking_type: fila?.booking_type,
+    }),
+    accessFeeCents: accesoEnCentavos(fila?.base_fare_breakdown),
   });
   const driverPayoutUSD = metrics.driverPayoutCents / 100;
   const platformFeeUSD = metrics.applicationFeeCents / 100;
