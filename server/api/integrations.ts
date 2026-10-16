@@ -7,6 +7,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { accesoEnCentavos } from '../config/pricing';
 import { calculateRideMetrics, calcularReparto, bookingRetenidoPorUrbont } from '../services/rideMetrics';
+import { ensureComisionFresh } from '../services/commissionConfig';
 import { tasaImpuestoRespaldo } from '../services/taxConfig';
 import { codigoPostalDeDirecciones, codigoPostalDelViaje } from '../services/taxLocation';
 import { notifyUser } from '../services/fcm';
@@ -793,7 +794,9 @@ integrationsRouter.post(
         }
       }
 
-      // Calculate commission â flat 10%
+      // La comisión del panel, recién leída. Queda en la metadata del cobro
+      // (`commission_rate`) y es con la que después se le paga al chofer.
+      await ensureComisionFresh();
       const metrics = calculateRideMetrics({ totalFareUSD: fareUSD });
 
       // Build PaymentIntent options
@@ -831,6 +834,7 @@ integrationsRouter.post(
         valetCents: Math.min(valetCommissionCents, metrics.totalCents),
         bookingFeeCents: bookingRetenidoPorUrbont(citaDelViaje ?? {}),
         accessFeeCents: accesoEnCentavos(citaDelViaje?.base_fare_breakdown),
+        commissionRate: metrics.commissionRate,
       });
       if (connectedAccountId) {
         paymentIntentParams.application_fee_amount = reparto.applicationFeeCents;

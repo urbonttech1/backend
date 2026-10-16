@@ -15,6 +15,7 @@ import {
   CONSECUTIVE_TRIP_BONUS,
 } from "../../config/pricing";
 import { pagarChoferPorViaje } from "../../services/ridePayout";
+import { gananciaDelChofer } from "../../services/driverBalance";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { claimFailed, claimScheduledRide, scheduledClaimLeadMinutes, scheduledStartableAt } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
@@ -539,13 +540,16 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
             // El pago al chofer vive en services/ridePayout.ts: lo usa también el
             // no-show de reservas, que paga al chofer lo acordado.
             const assignedDriverId = String(r.driver_id || updates.driver_id || (isDriver ? uid : ''));
-            await pagarChoferPorViaje({
+            const pago = await pagarChoferPorViaje({
               stripe,
               pi,
               rideId:   req.params.id,
               driverId: assignedDriverId,
               concepto: 'completed ride',
             });
+            if (assignedDriverId) {
+              notifyUser(assignedDriverId, driverNotif.tripEarnings(req.params.id, pago.driverPayoutUSD)).catch(() => {});
+            }
 
             // Valet commission: if ride was referred/assisted by a valet and hasn't been paid yet
             const valetUserId = (r as Record<string, unknown>).valet_user_id as string | undefined;
@@ -664,9 +668,13 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       }).catch(() => {});
       // Notify driver of earnings + check quest milestones
       if (driverId) {
-        const fare = Number(r.fare) || 0;
-        const driverEarnings = Math.round(fare * 0.9 * 100) / 100;
-        notifyUser(driverId, driverNotif.tripEarnings(rideId, driverEarnings)).catch(() => {});
+        // Con tarjeta, el aviso sale cuando el pago apunta lo suyo (tras
+        // pagarChoferPorViaje), con el número real. Sin cobro en la app se
+        // estima con la comisión vigente: antes decía siempre el 90 % del precio.
+        if (!r.payment_intent_id) {
+          const driverEarnings = gananciaDelChofer({ fare: Number(r.locked_fare) || Number(r.fare) || 0 });
+          notifyUser(driverId, driverNotif.tripEarnings(rideId, driverEarnings)).catch(() => {});
+        }
 
         // Quest milestone: count trips this week and fire at 5, 10, 15, 25
         void (async () => {

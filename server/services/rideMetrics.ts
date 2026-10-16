@@ -1,18 +1,21 @@
 /**
  * URBONT Ride Metrics — Stripe Connect commission engine
  *
- * Platform commission: flat 15% on every ride, contained in the price.
+ * La comisión de Urbont es la que se fija en el panel (`commissionConfig`, por
+ * defecto el 15 %) y sale de dentro del precio.
  *
  * All monetary output is in cents (integer) for direct use with Stripe:
- *   - application_fee_amount → platform cut (15%)
- *   - transfer_data.amount   → driver payout (85%)
+ *   - application_fee_amount → la comisión de Urbont
+ *   - transfer_data.amount   → lo que le queda al chofer
  */
 
 import { centavosDe, impuestoDelCobro } from './rideTax';
-import { BOOKING_FEE_USD } from '../config/pricing';
+import { BOOKING_FEE_USD, PLATFORM_COMMISSION, getPlatformCommission } from '../config/pricing';
 
 export interface RideMetricsInput {
   totalFareUSD: number;
+  /** Tasa a aplicar; si no se da, la vigente del panel. */
+  commissionRate?: number;
 }
 
 export interface RideMetricsResult {
@@ -23,17 +26,34 @@ export interface RideMetricsResult {
 }
 
 /**
- * Lo que se queda Urbont de cada viaje, contenido en el precio: el chofer cobra
- * el 85 %. Era el 10 % —y además el precio llevaba otro 10 % por encima—, así que
- * el chofer se llevaba prácticamente la tarifa entera. Mismo valor que
- * `PLATFORM_COMMISSION` en config/pricing.ts.
+ * Lo que se queda Urbont de cada viaje, contenido en el precio. Era una
+ * constante del 15 % aquí mismo, así que cambiar la comisión en el panel no
+ * movía ni un centavo de los cobros ni de los pagos: sólo se guardaba. Ahora es
+ * la del panel (`getPlatformCommission`, que se refresca con
+ * `ensureComisionFresh`), y quien ya cobró pasa la tasa con la que lo hizo.
  */
-const COMMISSION_RATE = 0.15;
+function tasa(commissionRate?: number): number {
+  return commissionRate !== undefined && Number.isFinite(commissionRate) && commissionRate >= 0 && commissionRate <= 0.5
+    ? commissionRate
+    : getPlatformCommission();
+}
+
+/**
+ * La comisión con la que se creó un cobro, guardada en su metadata
+ * (`commission_rate`). Pagarle al chofer con esa y no con la del día evita que,
+ * si el panel la cambia entre el cobro y el pago, el reparto de Stripe y lo
+ * apuntado en el viaje digan cosas distintas. `null` si no la trae.
+ */
+export function tasaDelCobro(metadata: Record<string, unknown> | null | undefined): number | null {
+  const crudo = metadata?.commission_rate;
+  const n = typeof crudo === 'string' && crudo.trim() !== '' ? Number(crudo) : typeof crudo === 'number' ? crudo : NaN;
+  return Number.isFinite(n) && n >= 0 && n <= 0.5 ? n : null;
+}
 
 /**
  * calculateRideMetrics
  *
- * Commission: flat 15% to URBONT, 85% to driver.
+ * Commission: la del panel (o `commissionRate`), el resto al chofer.
  *
  * @param input.totalFareUSD - Total trip fare in USD (e.g. 45.50)
  *
@@ -67,6 +87,8 @@ export interface RepartoInput {
    * pero no entra en el 15 %: Urbont se lo queda entero.
    */
   accessFeeCents?: number;
+  /** Tasa a aplicar (la del cobro, si ya se cobró); si no se da, la del panel. */
+  commissionRate?: number;
 }
 
 export interface RepartoResult {
@@ -113,6 +135,7 @@ export function calcularReparto({
   valetCents = 0,
   bookingFeeCents = 0,
   accessFeeCents = 0,
+  commissionRate,
 }: RepartoInput): RepartoResult {
   if (fareCents < 0 || taxCents < 0 || valetCents < 0 || bookingFeeCents < 0 || accessFeeCents < 0) {
     throw new RangeError('los importes no pueden ser negativos');
@@ -123,14 +146,15 @@ export function calcularReparto({
   // Urbont se queda esos $10 enteros y el 15 % sale de lo que queda.
   const acceso = Math.min(accessFeeCents, Math.max(0, fareCents - valetCents));
   const servicio = fareCents - valetCents - acceso;
-  const comision = Math.round(servicio * COMMISSION_RATE);
+  const rate = tasa(commissionRate);
+  const comision = Math.round(servicio * rate);
   // Los $2.50 salen de la parte del chofer, después del 15 %.
   const booking = Math.min(bookingFeeCents, Math.max(0, servicio - comision));
   return {
     chargeCents:         fareCents + taxCents,
     applicationFeeCents: comision + taxCents + valetCents + booking + acceso,
     driverPayoutCents:   servicio - comision - booking,
-    commissionRate:      COMMISSION_RATE,
+    commissionRate:      rate,
   };
 }
 
@@ -139,15 +163,16 @@ export function calculateRideMetrics(input: RideMetricsInput): RideMetricsResult
 
   if (totalFareUSD < 0) throw new RangeError('totalFareUSD cannot be negative');
 
+  const rate = tasa(input.commissionRate);
   const totalCents = Math.round(totalFareUSD * 100);
-  const applicationFeeCents = Math.round(totalCents * COMMISSION_RATE);
+  const applicationFeeCents = Math.round(totalCents * rate);
   const driverPayoutCents = totalCents - applicationFeeCents;
 
   return {
     totalCents,
     applicationFeeCents,
     driverPayoutCents,
-    commissionRate: COMMISSION_RATE,
+    commissionRate: rate,
   };
 }
 
@@ -200,8 +225,11 @@ export function gananciaSiRepartioElImpuesto(viaje: {
   if (tax <= 0 || captured <= tax) return sinCambio;
 
   const valet = Math.min(centavosDe(viaje.valet_surcharge), captured - tax);
-  const bien = calcularReparto({ fareCents: captured - tax, taxCents: tax, valetCents: valet });
-  const inflado = calcularReparto({ fareCents: captured, taxCents: 0, valetCents: valet });
+  // Esos viajes se repartieron con el 15 % de entonces: es contra ese número
+  // que se reconoce el error, aunque el panel tenga hoy otra comisión.
+  const historica = PLATFORM_COMMISSION;
+  const bien = calcularReparto({ fareCents: captured - tax, taxCents: tax, valetCents: valet, commissionRate: historica });
+  const inflado = calcularReparto({ fareCents: captured, taxCents: 0, valetCents: valet, commissionRate: historica });
   if (stored !== inflado.driverPayoutCents || bien.driverPayoutCents >= stored) return sinCambio;
 
   return {

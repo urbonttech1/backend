@@ -12,7 +12,8 @@ import type Stripe from 'stripe';
 import { supabaseAdmin } from '../db/client';
 import { logger } from '../lib/logger';
 import { accesoEnCentavos } from '../config/pricing';
-import { bookingRetenidoPorUrbont, calcularReparto } from './rideMetrics';
+import { bookingRetenidoPorUrbont, calcularReparto, tasaDelCobro } from './rideMetrics';
+import { ensureComisionFresh } from './commissionConfig';
 import { impuestoDelCobro } from './rideTax';
 import { estadoConnectAlDia } from './payoutRecovery';
 import { puedeCobrar } from './connectStatus';
@@ -27,7 +28,7 @@ export interface PagoChofer {
 }
 
 /**
- * Transfiere al chofer su parte (90 %) de un PaymentIntent ya capturado y
+ * Transfiere al chofer su parte de un PaymentIntent ya capturado y
  * registra el resultado financiero en el viaje.
  *
  * Nunca lanza: un fallo de transferencia se registra y el viaje queda con
@@ -90,10 +91,16 @@ export async function pagarChoferPorViaje(opts: {
   const valetCents = centavos(fila?.valet_surcharge);
   const fareCents = Math.max(1, capturedAmountCents - taxCents);
 
+  // La comisión con la que se creó el cobro; si no la trae (Tap to Pay viejo,
+  // no-show), la del panel recién leída.
+  const tasaGuardada = tasaDelCobro(pi.metadata);
+  if (tasaGuardada === null) await ensureComisionFresh();
+
   const metrics = calcularReparto({
     fareCents,
     taxCents,
     valetCents: Math.min(valetCents, fareCents),
+    commissionRate: tasaGuardada ?? undefined,
     // Urbont se queda el 15 % y, además, los $2.50, en instantáneo y en reserva.
     // El aeropuerto y el puerto no entran en ese 15 %.
     bookingFeeCents: bookingRetenidoPorUrbont({
@@ -103,6 +110,7 @@ export async function pagarChoferPorViaje(opts: {
     accessFeeCents: accesoEnCentavos(fila?.base_fare_breakdown),
   });
   const driverPayoutUSD = metrics.driverPayoutCents / 100;
+  const parteChofer = Math.round((1 - metrics.commissionRate) * 100);
   const platformFeeUSD = metrics.applicationFeeCents / 100;
 
   let driverTransferId: string | null = null;
@@ -132,7 +140,7 @@ export async function pagarChoferPorViaje(opts: {
           currency: 'usd',
           destination: driverAccountId,
           source_transaction: latestCharge,
-          description: `Driver payout (90%) for ${concepto} ${rideId}`,
+          description: `Driver payout (${parteChofer}%) for ${concepto} ${rideId}`,
           metadata: {
             ride_id: rideId,
             driver_id: driverId,
@@ -148,7 +156,7 @@ export async function pagarChoferPorViaje(opts: {
           idempotencyKey: `driver_payout_${rideId}_${pi.id}`,
         });
         driverTransferId = transfer.id;
-        logger.info(`[PAYOUT] $${driverPayoutUSD} (90%) a ${driverAccountId} (transfer ${transfer.id}) por ${concepto} ${rideId}`);
+        logger.info(`[PAYOUT] $${driverPayoutUSD} (${parteChofer}%) a ${driverAccountId} (transfer ${transfer.id}) por ${concepto} ${rideId}`);
       } catch (transferErr: unknown) {
         logger.error(`[PAYOUT] Falló la transferencia al chofer por ${concepto} ${rideId}: ${errMsg(transferErr)}`);
       }

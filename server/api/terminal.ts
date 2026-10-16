@@ -16,6 +16,8 @@ import { getStripe } from './rides/helpers';
 import { calculateStripeTax } from './integrations';
 import { codigoPostalDelViaje } from '../services/taxLocation';
 import { decidirCobroPresencial } from '../services/tapToPay';
+import { ensureComisionFresh } from '../services/commissionConfig';
+import { getPlatformCommission } from '../config/pricing';
 import { sendEmail, isEmailConfigured } from '../services/mailer';
 import { emailShell, section, row, totalRow, badge, brand } from '../services/emailLayout';
 
@@ -93,6 +95,9 @@ terminalRouter.post('/rides/:rideId/payment-intent', requireSupabaseAuth, async 
 
     const postal = codigoPostalDelViaje(viaje as { pickup?: { address?: unknown } | null; dropoff?: { address?: unknown } | null });
     const tax = await calculateStripeTax(stripe, fareCents, `tap-${rideId}`, postal);
+    // Queda en el cobro para pagarle al chofer con la comisión de este momento,
+    // aunque el panel la cambie antes de que llegue el webhook.
+    await ensureComisionFresh();
 
     const params: Stripe.PaymentIntentCreateParams = {
       amount: tax.taxedAmountCents,
@@ -105,6 +110,7 @@ terminalRouter.post('/rides/:rideId/payment-intent', requireSupabaseAuth, async 
         driver_id: req.supabaseUid!,
         fare_cents: String(fareCents),
         tax_amount_cents: String(tax.taxAmountCents),
+        commission_rate: String(getPlatformCommission()),
         ...(tax.taxCalculationId ? { tax_calculation_id: tax.taxCalculationId } : {}),
       },
     };

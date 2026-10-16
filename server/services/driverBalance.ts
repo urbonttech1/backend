@@ -17,6 +17,8 @@
  * Reglas puras, sin base de datos ni Stripe, para poder probarlas.
  */
 
+import { getPlatformCommission } from '../config/pricing';
+
 export interface SaldoStripe {
   /** Libre en su cuenta conectada, en centavos. */
   disponibleCents: number;
@@ -132,11 +134,13 @@ export function puedeRetirar(resumen: ResumenSaldo, metodo: MetodoRetiro): Puede
  * verdad le corresponde.
  *
  * Manda `driver_earnings`, que es lo que se le apuntó al repartir. Cuando falta
- * —viajes viejos, anteriores a que se escribiera esa columna— se calcula con la
- * misma proporción, para que la cifra no se desplome y parezca que la app perdió
- * datos.
+ * —viajes viejos, anteriores a que se escribiera esa columna, o un pago que aún
+ * no corrió— se estima con la parte que deja la comisión vigente del panel, para
+ * que la cifra no se desplome y parezca que la app perdió datos.
  */
-export const PARTE_DEL_CHOFER = 0.85;
+export function parteDelChofer(): number {
+  return 1 - getPlatformCommission();
+}
 
 export function gananciaDelChofer(viaje: {
   driver_earnings?: number | string | null;
@@ -146,7 +150,7 @@ export function gananciaDelChofer(viaje: {
   if (Number.isFinite(apuntado) && apuntado > 0) return apuntado;
 
   const tarifa = Number(viaje.fare);
-  if (Number.isFinite(tarifa) && tarifa > 0) return Math.round(tarifa * PARTE_DEL_CHOFER * 100) / 100;
+  if (Number.isFinite(tarifa) && tarifa > 0) return Math.round(tarifa * parteDelChofer() * 100) / 100;
 
   return 0;
 }

@@ -21,6 +21,8 @@ import { enviarAvisoVencimientoDocumento, type FaseVencimiento } from '../servic
 import { catalogoCompleto } from '../services/docCatalogStore';
 import { audienciaDeRol, docMeta } from '../services/docCatalog';
 import { revisarParadasEnSilencio } from '../services/rideCheckRun';
+import { gananciaDelChofer } from '../services/driverBalance';
+import { ensureComisionFresh } from '../services/commissionConfig';
 
 async function anonymizeOldRides() {
   log.info('[CRON] Starting daily PII anonymization job...');
@@ -698,20 +700,22 @@ async function sendWeeklyEarningsSummary() {
 
     const { data: rides, error } = await supabaseAdmin
       .from('rides')
-      .select('driver_id, fare')
+      .select('driver_id, fare, driver_earnings')
       .eq('ride_status', 'completed')
       .gte('completed_at', lastSunday.toISOString())
       .lte('completed_at', lastSaturday.toISOString())
       .not('driver_id', 'is', null);
 
     if (error || !rides?.length) return;
+    await ensureComisionFresh();
 
     // Aggregate by driver
     const byDriver: Record<string, { earnings: number; trips: number }> = {};
-    for (const r of (rides ?? []) as Array<{ driver_id: string | null; fare: number | null }>) {
+    for (const r of (rides ?? []) as Array<{ driver_id: string | null; fare: number | null; driver_earnings: number | null }>) {
       if (!r.driver_id) continue;
       if (!byDriver[r.driver_id]) byDriver[r.driver_id] = { earnings: 0, trips: 0 };
-      byDriver[r.driver_id].earnings += Number(r.fare ?? 0) * 0.9; // 90% cut
+      // Lo apuntado al pagarle; si falta, la parte que deja la comisión vigente.
+      byDriver[r.driver_id].earnings += gananciaDelChofer(r);
       byDriver[r.driver_id].trips    += 1;
     }
 

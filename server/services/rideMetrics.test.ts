@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { bookingRetenidoPorUrbont, calcularReparto, calculateRideMetrics, gananciaSiRepartioElImpuesto } from './rideMetrics';
+import { describe, it, expect, afterEach } from 'vitest';
+import { bookingRetenidoPorUrbont, calcularReparto, calculateRideMetrics, gananciaSiRepartioElImpuesto, tasaDelCobro } from './rideMetrics';
+import { PLATFORM_COMMISSION, setPlatformCommission } from '../config/pricing';
+import { gananciaDelChofer } from './driverBalance';
 
 describe('calculateRideMetrics', () => {
   it('reparte 85/15 sobre el precio del viaje', () => {
@@ -130,5 +132,46 @@ describe('gananciaSiRepartioElImpuesto', () => {
     });
     expect(r.corregida).toBe(false);
     expect(r.ganancia).toBe(25.07);
+  });
+});
+
+describe('la comisión del panel', () => {
+  afterEach(() => setPlatformCommission(PLATFORM_COMMISSION));
+
+  it('el reparto usa la comisión vigente, no un 15 % fijo', () => {
+    setPlatformCommission(0.2);
+    const r = calcularReparto({ fareCents: 10000 });
+    expect(r.commissionRate).toBe(0.2);
+    expect(r.driverPayoutCents).toBe(8000);
+    expect(calculateRideMetrics({ totalFareUSD: 100 }).applicationFeeCents).toBe(2000);
+  });
+
+  it('un cobro ya creado se paga con su propia tasa aunque el panel cambie', () => {
+    setPlatformCommission(0.2);
+    const r = calcularReparto({ fareCents: 10000, commissionRate: tasaDelCobro({ commission_rate: '0.15' }) ?? undefined });
+    expect(r.commissionRate).toBe(0.15);
+    expect(r.driverPayoutCents).toBe(8500);
+  });
+
+  it('lee la tasa guardada en el cobro y descarta lo que no lo es', () => {
+    expect(tasaDelCobro({ commission_rate: '0.15' })).toBe(0.15);
+    expect(tasaDelCobro({ commission_rate: 0.12 })).toBe(0.12);
+    expect(tasaDelCobro({})).toBeNull();
+    expect(tasaDelCobro(null)).toBeNull();
+    expect(tasaDelCobro({ commission_rate: '2' })).toBeNull();
+    expect(tasaDelCobro({ commission_rate: 'abc' })).toBeNull();
+  });
+
+  it('la corrección de viajes viejos sigue reconociendo el reparto del 15 % de entonces', () => {
+    setPlatformCommission(0.2);
+    const r = gananciaSiRepartioElImpuesto({ fare: 29.5, locked_fare: 29.5, total_price: 31.42, driver_earnings: 26.71 });
+    expect(r.corregida).toBe(true);
+    expect(r.ganancia).toBe(25.07);
+  });
+
+  it('la estimación de un viaje sin pago sigue la comisión del panel', () => {
+    setPlatformCommission(0.2);
+    expect(gananciaDelChofer({ fare: 50 })).toBe(40);
+    expect(gananciaDelChofer({ fare: 50, driver_earnings: 41.25 })).toBe(41.25);
   });
 });
