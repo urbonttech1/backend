@@ -470,8 +470,43 @@ app.get('/.well-known/assetlinks.json', (_req, res) => {
 app.get('/', (_req: Request, res: Response) => {
   res.json({
     msg: 'URBONT API',
-    version: process.env.npm_package_version ?? '1.10.21',
+    version: process.env.npm_package_version ?? '1.10.22',
   });
+});
+
+/**
+ * Puente OAuth nativo: Supabase redirige aquí (HTTPS) con ?code=… y esta página
+ * abre urbont://oauth?code=… para que Android no pierda el código en el Intent.
+ * URL allowlistada en Supabase Auth → Redirect URLs.
+ */
+app.get('/auth/callback', (req: Request, res: Response) => {
+  const permitidos = ['code', 'state', 'error', 'error_description', 'error_code'] as const;
+  const qs = new URLSearchParams();
+  for (const clave of permitidos) {
+    const raw = req.query[clave];
+    const valor = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof valor === 'string' && valor.length > 0 && valor.length < 2048) {
+      qs.set(clave, valor);
+    }
+  }
+  const deep = `urbont://oauth${qs.toString() ? `?${qs.toString()}` : ''}`;
+  const seguro = deep
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  res.status(200).type('html').send(`<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta http-equiv="refresh" content="0;url=${seguro}"/>
+<title>Returning to URBONT</title>
+<script>location.replace(${JSON.stringify(deep)});</script>
+</head>
+<body style="font-family:system-ui;padding:2rem;text-align:center">
+<p>Returning to URBONT…</p>
+<p><a href="${seguro}">Open the app</a></p>
+</body></html>`);
 });
 
 app.get('/api/healthz', async (_req: Request, res: Response) => {
