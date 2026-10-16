@@ -30,6 +30,8 @@ import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { resumen as resumenLanzamientoTapToPay } from '../services/tapToPayLaunch';
 import { cancelarViajesDeLaCuenta } from '../services/accountRideCancellation';
+import { cuentasEliminadas } from '../services/deletedAccounts';
+import { reactivarCuenta } from '../services/accountReactivation';
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
@@ -1294,6 +1296,39 @@ adminRouter.post("/passengers/:id/reactivate", async (req: Request, res: Respons
   }
 });
 
+// ─── Cuentas eliminadas: verlas y reactivar las de borrado lógico ────────────
+// Solo el owner, como el borrado. Ver services/deletedAccounts y accountReactivation.
+const TIPOS_DE_CUENTA: Record<string, 'passenger' | 'chauffeur' | 'valet'> = {
+  passenger: 'passenger', chauffeur: 'chauffeur', driver: 'chauffeur', valet: 'valet',
+};
+const ACCION_REACTIVAR = { passenger: 'passenger.reactivate', chauffeur: 'driver.reactivate', valet: 'valet.reactivate' } as const;
+
+adminRouter.get("/deleted-accounts", requireAdminRole('owner'), async (req: Request, res: Response) => {
+  const tipo = TIPOS_DE_CUENTA[String(req.query.type ?? '')];
+  if (!tipo) return res.status(400).json({ error: 'type debe ser passenger, chauffeur o valet.' });
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ accounts: await cuentasEliminadas(tipo) });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] cuentas eliminadas');
+    res.status(500).json({ error: 'No se pudieron cargar las cuentas eliminadas.' });
+  }
+});
+
+adminRouter.post("/deleted-accounts/:id/reactivate", requireAdminRole('owner'), async (req: Request, res: Response) => {
+  const tipo = TIPOS_DE_CUENTA[String(req.body?.type ?? req.query.type ?? '')];
+  if (!tipo) return res.status(400).json({ error: 'type debe ser passenger, chauffeur o valet.' });
+  try {
+    const r = await reactivarCuenta(req.params.id, tipo);
+    if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
+    await auditar(req, ACCION_REACTIVAR[tipo], `${r.nombre ?? r.correo}${r.nombre ? ` (${r.correo})` : ''} [${req.params.id}]`);
+    res.json({ success: true, name: r.nombre, email: r.correo });
+  } catch (e) {
+    logger.error({ err: errMsg(e) }, '[admin] reactivar cuenta');
+    res.status(500).json({ error: 'No se pudo reactivar la cuenta.' });
+  }
+});
+
 // ─── Borrar pasajeros, valets y conductores ──────────────────────────────────
 // Solo el owner. `?mode=hard` elimina la cuenta y deja sus viajes sin dueño;
 // sin él, borrado lógico que anonimiza el perfil. Ver services/accountDeletion.
@@ -1309,7 +1344,7 @@ adminRouter.delete("/passengers/:id", requireAdminRole('owner'), async (req: Req
     }
     const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'passenger') : await borrarCuenta(req.params.id, 'passenger');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
-    await auditar(req, definitivo ? 'passenger.delete.hard' : 'passenger.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''}`);
+    await auditar(req, definitivo ? 'passenger.delete.hard' : 'passenger.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''} [${req.params.id}]`);
     // El correo se tomó antes de borrarlo; si no tiene, el panel lo avisa.
     const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
     res.json({ success: true, notification: aviso, cancelledRides: cancelados });
@@ -1330,7 +1365,7 @@ adminRouter.delete("/drivers/:id", requireAdminRole('owner'), async (req: Reques
     }
     const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'chauffeur') : await borrarCuenta(req.params.id, 'chauffeur');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
-    await auditar(req, definitivo ? 'driver.delete.hard' : 'driver.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''}`);
+    await auditar(req, definitivo ? 'driver.delete.hard' : 'driver.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''} [${req.params.id}]`);
     const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
     res.json({ success: true, notification: aviso, cancelledRides: cancelados });
   } catch (e) {
@@ -1360,7 +1395,7 @@ adminRouter.delete("/valets/:id", requireAdminRole('owner'), async (req: Request
     }
     const r = definitivo ? await borrarCuentaDefinitiva(id, 'valet') : await borrarCuenta(id, 'valet');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
-    await auditar(req, definitivo ? 'valet.delete.hard' : 'valet.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''}`);
+    await auditar(req, definitivo ? 'valet.delete.hard' : 'valet.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''} [${id}]`);
     const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
     res.json({ success: true, notification: aviso, cancelledRides: cancelados });
   } catch (e) {

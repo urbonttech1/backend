@@ -25,7 +25,7 @@ export const CUENTA_BORRADA = 'deleted';
 /** Dueño de los viajes de las cuentas borradas definitivamente. */
 export const DUENO_BORRADO = '00000000-0000-0000-0000-00000000dead';
 
-const NOMBRE_BORRADO = 'Deleted User';
+export const NOMBRE_BORRADO = 'Deleted User';
 
 export type ResultadoBorrado =
   /** `nombre` cae al correo o al id para la auditoría; `persona` es sólo el nombre real, para el saludo del aviso. */
