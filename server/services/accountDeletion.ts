@@ -32,9 +32,9 @@ export type ResultadoBorrado =
   | { ok: true; email: string | null; nombre: string; persona: string }
   | { ok: false; status: number; error: string; errorCode: string };
 
-type Tipo = 'passenger' | 'valet' | 'chauffeur';
+export type Tipo = 'passenger' | 'valet' | 'chauffeur';
 
-const ROLES: Record<Tipo, string[]> = {
+export const ROLES: Record<Tipo, string[]> = {
   passenger: ['passenger'],
   valet: ['valet', 'frontdesk', 'concierge'],
   chauffeur: ['chauffeur', 'driver'],
@@ -63,7 +63,7 @@ const BUCKETS = ['chauffeur-docs', 'avatars'];
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
-function filtroViajes(uid: string, tipo: Tipo): string {
+export function filtroViajes(uid: string, tipo: Tipo): string {
   if (tipo === 'valet') return `valet_user_id.eq.${uid},passenger_id.eq.${uid}`;
   if (tipo === 'chauffeur') return `driver_id.eq.${uid}`;
   return `passenger_id.eq.${uid}`;
@@ -97,7 +97,7 @@ async function validar(
     .or(filtroViajes(uid, tipo)).in('ride_status', [...ESTADOS_ACTIVOS]);
   if (errActivos) throw errActivos;
   if ((count ?? 0) > 0) {
-    return { ok: false, status: 409, error: 'Tiene un viaje activo o programado. Termínalo o cancélalo antes de borrar la cuenta.', errorCode: 'ACTIVE_RIDES' };
+    return { ok: false, status: 409, error: 'Tiene un viaje activo o programado. Márcalo para cancelarlo al borrar, o termínalo antes.', errorCode: 'ACTIVE_RIDES' };
   }
   return { perfil: perfil as Record<string, unknown> };
 }

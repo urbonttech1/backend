@@ -29,6 +29,7 @@ import { estadoDeCuenta, type CuentaConnect } from '../services/connectStatus';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
 import { loadDriverHistoryExtras, loadReleasedDrivers } from '../services/driverRideHistory';
 import { resumen as resumenLanzamientoTapToPay } from '../services/tapToPayLaunch';
+import { cancelarViajesDeLaCuenta } from '../services/accountRideCancellation';
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
@@ -1300,12 +1301,18 @@ adminRouter.post("/passengers/:id/reactivate", async (req: Request, res: Respons
 adminRouter.delete("/passengers/:id", requireAdminRole('owner'), async (req: Request, res: Response) => {
   try {
     const definitivo = req.query.mode === 'hard';
+    let cancelados = 0;
+    if (req.query.cancelRides === '1') {
+      const c = await cancelarViajesDeLaCuenta(req.params.id, 'passenger');
+      if ('errorCode' in c) return res.status(c.status).json({ error: c.error, errorCode: c.errorCode });
+      cancelados = c.cancelados;
+    }
     const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'passenger') : await borrarCuenta(req.params.id, 'passenger');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
-    await auditar(req, definitivo ? 'passenger.delete.hard' : 'passenger.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
+    await auditar(req, definitivo ? 'passenger.delete.hard' : 'passenger.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''}`);
     // El correo se tomó antes de borrarlo; si no tiene, el panel lo avisa.
     const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
-    res.json({ success: true, notification: aviso });
+    res.json({ success: true, notification: aviso, cancelledRides: cancelados });
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin] borrar pasajero');
     res.status(500).json({ error: 'No se pudo borrar el pasajero.' });
@@ -1315,11 +1322,17 @@ adminRouter.delete("/passengers/:id", requireAdminRole('owner'), async (req: Req
 adminRouter.delete("/drivers/:id", requireAdminRole('owner'), async (req: Request, res: Response) => {
   try {
     const definitivo = req.query.mode === 'hard';
+    let cancelados = 0;
+    if (req.query.cancelRides === '1') {
+      const c = await cancelarViajesDeLaCuenta(req.params.id, 'chauffeur');
+      if ('errorCode' in c) return res.status(c.status).json({ error: c.error, errorCode: c.errorCode });
+      cancelados = c.cancelados;
+    }
     const r = definitivo ? await borrarCuentaDefinitiva(req.params.id, 'chauffeur') : await borrarCuenta(req.params.id, 'chauffeur');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
-    await auditar(req, definitivo ? 'driver.delete.hard' : 'driver.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
+    await auditar(req, definitivo ? 'driver.delete.hard' : 'driver.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''}`);
     const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
-    res.json({ success: true, notification: aviso });
+    res.json({ success: true, notification: aviso, cancelledRides: cancelados });
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin] borrar conductor');
     res.status(500).json({ error: 'No se pudo borrar el conductor.' });
@@ -1339,11 +1352,17 @@ adminRouter.delete("/valets/:id", requireAdminRole('owner'), async (req: Request
       return res.json({ success: true });
     }
     const definitivo = req.query.mode === 'hard';
+    let cancelados = 0;
+    if (req.query.cancelRides === '1') {
+      const c = await cancelarViajesDeLaCuenta(id, 'valet');
+      if ('errorCode' in c) return res.status(c.status).json({ error: c.error, errorCode: c.errorCode });
+      cancelados = c.cancelados;
+    }
     const r = definitivo ? await borrarCuentaDefinitiva(id, 'valet') : await borrarCuenta(id, 'valet');
     if ('errorCode' in r) return res.status(r.status).json({ error: r.error, errorCode: r.errorCode });
-    await auditar(req, definitivo ? 'valet.delete.hard' : 'valet.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}`);
+    await auditar(req, definitivo ? 'valet.delete.hard' : 'valet.delete', `${r.nombre}${r.email ? ` (${r.email})` : ''}${cancelados ? ` · ${cancelados} viaje(s) cancelados` : ''}`);
     const aviso = await enviarAvisoCuentaEliminada({ email: r.email, name: r.persona }, definitivo);
-    res.json({ success: true, notification: aviso });
+    res.json({ success: true, notification: aviso, cancelledRides: cancelados });
   } catch (e) {
     logger.error({ err: errMsg(e) }, '[admin] borrar valet');
     res.status(500).json({ error: 'No se pudo borrar el valet.' });
