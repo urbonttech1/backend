@@ -1,6 +1,8 @@
 import { createContextLogger } from '../lib/logger';
 import { supabaseAdmin } from '../db/client';
 import { recordRideOffers } from './driverRideHistory';
+import { audienciaDelViaje, RADIO_KM } from './dispatchAudience';
+import { ensureZonesFresh, getZones, resolveZone } from './serviceZones';
 
 const log = createContextLogger('FCM');
 
@@ -242,12 +244,20 @@ export async function sendMulticast(tokens: string[], payload: PushPayload): Pro
   return { sent, failed };
 }
 
-// Notify all online drivers about a new ride request
+/**
+ * Avisa por push del viaje a los conductores de su zona.
+ *
+ * `pickupLat`/`pickupLng` son opcionales por compatibilidad: sin ellas no hay
+ * zona que comparar y sale a todos los conectados, como antes. Quién entra lo
+ * decide `services/dispatchAudience`.
+ */
 export async function notifyNearbyDrivers(
   rideId: string,
   vehicleType: string,
   pickupAddress: string,
-  radiusKm = 15,
+  pickupLat?: number | null,
+  pickupLng?: number | null,
+  radiusKm = RADIO_KM,
 ): Promise<void> {
   try {
     // Conductores conectados, sin exigir un ping de GPS reciente.
@@ -265,7 +275,7 @@ export async function notifyNearbyDrivers(
     // baja `is_online` tras 8 h sin señal.
     const { data: onlineDrivers, error } = await supabaseAdmin
       .from('driver_locations')
-      .select('driver_id')
+      .select('driver_id, lat, lng, updated_at')
       .eq('is_online', true);
 
     if (error || !onlineDrivers || onlineDrivers.length === 0) {
@@ -273,7 +283,48 @@ export async function notifyNearbyDrivers(
       return;
     }
 
-    const driverIds = (onlineDrivers as Record<string, unknown>[]).map((d) => d.driver_id as string);
+    type FilaUbicacion = { driver_id: string; lat: unknown; lng: unknown; updated_at: unknown };
+    const filas = (onlineDrivers as unknown as FilaUbicacion[]);
+    let driverIds = filas.map(d => d.driver_id);
+
+    // ── Zona (grueso) y distancia (fino). Ver services/dispatchAudience ──────
+    // Ante cualquier fallo se avisa a todos, como antes de este filtro.
+    try {
+      await ensureZonesFresh();
+      const zonaDelViaje = typeof pickupLat === 'number' && typeof pickupLng === 'number'
+        ? resolveZone(pickupLat, pickupLng)?.id ?? null
+        : null;
+
+      if (zonaDelViaje) {
+        const { data: perfiles } = await supabaseAdmin
+          .from('profiles').select('id, operating_city').in('id', driverIds);
+        const ciudadDe = new Map((perfiles ?? []).map((p: Record<string, unknown>) => [String(p.id), (p.operating_city as string) ?? null]));
+
+        const numero = (v: unknown): number | null => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : null;
+        };
+        const { avisar, motivos } = audienciaDelViaje(
+          filas.map(d => ({
+            driverId: d.driver_id,
+            lat: numero(d.lat),
+            lng: numero(d.lng),
+            updatedAt: (d.updated_at as string) ?? null,
+            operatingCity: ciudadDe.get(d.driver_id) ?? null,
+          })),
+          { zonaDelViaje, pickupLat, pickupLng, resolverZona: (la, ln) => resolveZone(la, ln)?.id ?? null, zonas: getZones(), radioKm: radiusKm },
+        );
+        log.info({ rideId, zona: zonaDelViaje, de: driverIds.length, a: avisar.length, motivos }, 'push: audiencia del viaje');
+        driverIds = avisar;
+      }
+    } catch (filtroErr: unknown) {
+      log.warn({ rideId, err: filtroErr instanceof Error ? filtroErr.message : String(filtroErr) }, 'push: no se pudo filtrar por zona; se avisa a todos');
+    }
+
+    if (driverIds.length === 0) {
+      log.info({ rideId }, 'No drivers in the ride zone to notify');
+      return;
+    }
 
     // Get their FCM tokens
     const { data: tokenRows } = await supabaseAdmin

@@ -659,6 +659,8 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         rideRecord.id,
         finalVehicleType,
         pickupAddr,
+        typeof pLat === 'number' ? pLat : null,
+        typeof pLng === 'number' ? pLng : null,
       ).catch(() => {});
 
       // Notify online drivers via Socket.IO — nearest driver first (Uber-style)

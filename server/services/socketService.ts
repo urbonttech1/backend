@@ -7,6 +7,8 @@ import { guardarUbicacion, numeroOpcional } from './driverLocation';
 import { getDriverPriorityTiers } from './driverScore';
 import { reassignRide, type ReassignReason } from './rideReassignment';
 import { recordRideOffers } from './driverRideHistory';
+import { decidirAviso, type ConductorCandidato } from './dispatchAudience';
+import { ensureZonesFresh, getZones, resolveZone } from './serviceZones';
 
 // ── Redis Adapter (optional — activate by setting REDIS_URL env var) ──────────
 // Required for multi-instance / horizontal scaling so all instances share the
@@ -1019,19 +1021,49 @@ async function dispatchByDistance(
   const connectedIds     = connectedDrivers.map(([id]) => id);
 
   const scoreMap = new Map<string, number>();
+  // `operating_city` sirve de respaldo para ubicar a quien no tiene posición.
+  const ciudadDe = new Map<string, string | null>();
   if (connectedIds.length > 0) {
     try {
       const { data: profiles } = await supabaseAdmin
         .from('profiles')
-        .select('id,priority_score,is_blocked')
+        .select('id,priority_score,is_blocked,operating_city')
         .in('id', connectedIds);
       for (const p of profiles ?? []) {
+        ciudadDe.set(p.id, (p.operating_city as string) ?? null);
         if (p.is_blocked) continue;
         scoreMap.set(p.id, parseFloat(p.priority_score ?? '1.0'));
       }
     } catch (err: any) {
       log.warn({ err: err?.message }, 'priority_score fetch failed — using default 1.0');
     }
+  }
+
+  // ── 2b) Zona del viaje: fuera de ella no se ofrece ───────────────────────
+  // El grueso del filtro; la distancia la siguen aplicando las oleadas. Ante
+  // cualquier fallo no se filtra, igual que antes. Ver services/dispatchAudience.
+  let zonaDelViaje: string | null = null;
+  const ubicaciones = new Map<string, { lat: number | null; lng: number | null; updatedAt: unknown }>(
+    nearbyRows.map(r => [r.driver_id, { lat: r.lat, lng: r.lng, updatedAt: null }]),
+  );
+  const enLaZona = (driverId: string, ciudad: string | null = null): boolean => {
+    if (!zonaDelViaje) return true;
+    const u = ubicaciones.get(driverId);
+    const c: ConductorCandidato = {
+      driverId, lat: u?.lat ?? null, lng: u?.lng ?? null,
+      // Sin fecha, la distancia no se aplica aquí: de eso se encargan las oleadas.
+      updatedAt: null, operatingCity: ciudad,
+    };
+    return decidirAviso(c, {
+      zonaDelViaje, pickupLat: null, pickupLng: null,
+      resolverZona: (la, ln) => resolveZone(la, ln)?.id ?? null, zonas: getZones(),
+    }).avisar;
+  };
+  try {
+    await ensureZonesFresh();
+    zonaDelViaje = resolveZone(pickupLat, pickupLng)?.id ?? null;
+  } catch (err: unknown) {
+    log.warn({ rideId, err: err instanceof Error ? err.message : String(err) }, 'zona del viaje no resuelta — sin filtro de zona');
   }
 
   // ── 3) Build candidate list: only connected, non-blocked drivers ─────────
@@ -1044,6 +1076,7 @@ async function dispatchByDistance(
   const candidates: Candidate[] = [];
   for (const [driverId, socketId] of connectedDrivers) {
     if (connectedIds.length > 0 && !scoreMap.has(driverId)) continue; // blocked or unknown
+    if (!enLaZona(driverId, ciudadDe.get(driverId) ?? null)) continue; // otra ciudad
     const distanceKm = nearbyMap.get(driverId) ?? 999;
     const score      = scoreMap.get(driverId) ?? 1.0;
     candidates.push({
@@ -1107,12 +1140,27 @@ async function dispatchByDistance(
     if (!io) return;
     const wave4 = candidates.filter(c => !notifiedIds.has(c.driverId));
     sendWave(wave4, '4 (all remaining)');
-    // Catch any driver who connected after dispatch started (unrouted to the
-    // socket map yet) and any category-specific subscribers we missed.
+
+    // Red de seguridad: quien se conectó después de empezar el reparto.
+    //
+    // Era un broadcast a las salas, que llega a todos los conectados y se
+    // saltaba el filtro de zona. Con zona conocida se emite uno a uno a los que
+    // están en ella; sin zona, el broadcast de siempre.
     const catRoom = vehicleCategoryRoom(vehicleType);
-    io.to(catRoom).emit('ride:new_request', payload);
-    io.to('available_drivers').emit('ride:new_request', payload);
-    log.info({ rideId, catRoom }, 'wave dispatch safety-net broadcast');
+    if (!zonaDelViaje) {
+      io.to(catRoom).emit('ride:new_request', payload);
+      io.to('available_drivers').emit('ride:new_request', payload);
+      log.info({ rideId, catRoom }, 'wave dispatch safety-net broadcast');
+      return;
+    }
+    const tardios = Array.from(driverSocketMap.entries())
+      .filter(([driverId]) => !notifiedIds.has(driverId) && enLaZona(driverId, ciudadDe.get(driverId) ?? null));
+    for (const [driverId, socketId] of tardios) {
+      io.to(socketId).emit('ride:new_request', payload);
+      io.to(`driver:${driverId}`).emit('ride:new_request', payload);
+    }
+    if (tardios.length) recordRideOffers(rideId, tardios.map(([id]) => id), 'socket');
+    log.info({ rideId, zona: zonaDelViaje, tardios: tardios.length }, 'wave dispatch safety-net (sólo la zona del viaje)');
   }, 15000);
 }
 
