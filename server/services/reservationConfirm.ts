@@ -95,17 +95,41 @@ export function admiteRelevo(r: ReservaParaConfirmar): boolean {
   return confirmacionActiva() && !!r.alarmAt && !r.confirmedAt && ESPERANDO.includes(r.rideStatus);
 }
 
+/** Zona horaria por defecto; coincide con la de la zona de servicio de Miami. */
+export const ZONA_HORARIA = 'America/New_York';
+
+/**
+ * La hora de recogida como la lee una persona, en la hora de la ciudad.
+ *
+ * Antes salía `toISOString()` —"2026-10-17T21:30:00.000Z"—, que además está en
+ * UTC: el dispatcher tenía que restar las horas de cabeza para saber si el
+ * viaje era inminente.
+ */
+export function horaLegible(iso: string | null | undefined, timeZone: string = ZONA_HORARIA): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat('es-US', {
+      timeZone, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true,
+    }).format(d);
+  } catch {
+    return d.toISOString();
+  }
+}
+
 /** Lo que lee el dispatcher en el panel. El teléfono va aquí porque es para llamar. */
 export function textoDeAlarma(d: {
   driverName?: string | null;
   driverPhone?: string | null;
   scheduledAt?: string | null;
   pickupAddress?: string | null;
+  timeZone?: string;
 }): string {
   const partes = [
     `${d.driverName || 'El chofer'} no confirmó la reserva tras ${MINUTOS_PARA_CONFIRMAR} min.`,
     d.driverPhone ? `Teléfono: ${d.driverPhone}.` : 'Sin teléfono en el perfil.',
-    d.scheduledAt ? `Recogida: ${new Date(d.scheduledAt).toISOString()}.` : null,
+    d.scheduledAt ? `Recogida: ${horaLegible(d.scheduledAt, d.timeZone) ?? d.scheduledAt}.` : null,
     d.pickupAddress ? `En: ${d.pickupAddress}.` : null,
     'La reserva se está ofreciendo a otros choferes.',
   ];

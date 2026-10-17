@@ -232,9 +232,13 @@ export const driverNotif = {
 
   reservationInOneHour(rideId: string, timeLabel: string): PushTemplate {
     return {
-      title: 'Reservation in 1 hour',
-      body: `Your reserved pickup is at ${timeLabel}. Make sure you can be there.`,
-      data: { type: 'driver_reminder_1h', ride_id: rideId, screen: 'driver_home' },
+      title: 'Reservation in 1 hour — confirm now',
+      // Pide la confirmación explícitamente: si no llega en unos minutos se
+      // avisa al dispatcher y la reserva se ofrece a otros choferes.
+      body: `Your reserved pickup is at ${timeLabel}. Tap to confirm you are taking it.`,
+      // `ride_id` lleva la app directo a esa reserva, no al tablero: el chofer
+      // tiene pocos minutos para responder.
+      data: { type: 'driver_reminder_1h', ride_id: rideId, screen: 'driver_reservation' },
     };
   },
 

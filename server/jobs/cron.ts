@@ -636,7 +636,7 @@ async function alarmarReservasSinConfirmar(): Promise<void> {
         || (typeof fila.pickup === 'string' ? fila.pickup : (fila.pickup as { address?: string } | null)?.address)
         || null;
 
-      await supabaseAdmin.from('incidents').insert({
+      const { error: errIncidente } = await supabaseAdmin.from('incidents').insert({
         ride_id: reserva.id,
         driver_id: reserva.driverId,
         passenger_id: (fila.passenger_id as string) ?? null,
@@ -653,6 +653,17 @@ async function alarmarReservasSinConfirmar(): Promise<void> {
           pickupAddress: direccion,
         }),
       });
+
+      // Sin incidente no hay alarma que ver, y la marca impediría reintentarlo:
+      // se deshace para que la siguiente pasada lo vuelva a intentar.
+      if (errIncidente) {
+        await supabaseAdmin
+          .from('rides')
+          .update({ unconfirmed_alarm_at: null, unconfirmed_alarm_driver_id: null })
+          .eq('id', reserva.id);
+        log.error({ rideId: reserva.id, err: errIncidente.message }, '[CRON] no se pudo abrir la alarma de la reserva; se reintentará');
+        continue;
+      }
 
       // En paralelo: se ofrece a otros sin quitársela al asignado. Quien
       // confirme primero se la queda (ver claimScheduledRide).

@@ -32,6 +32,7 @@ import { resumen as resumenLanzamientoTapToPay } from '../services/tapToPayLaunc
 import { cancelarViajesDeLaCuenta } from '../services/accountRideCancellation';
 import { cuentasEliminadas } from '../services/deletedAccounts';
 import { reactivarCuenta } from '../services/accountReactivation';
+import { MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA as TIPO_ALARMA_RESERVA } from '../services/reservationConfirm';
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
@@ -2455,6 +2456,50 @@ adminRouter.post('/document-catalog', async (req: Request, res: Response) => {
   }
 });
 
+// ─── Alarmas de reservas sin confirmar ───────────────────────────────────────
+// Las sondea el panel entero cada pocos segundos, así que va aparte de
+// `GET /incidents`: ése trae hasta 500 filas con tres joins y firma URLs de
+// fotos. Aquí sólo lo que el dispatcher necesita para llamar al chofer, con el
+// teléfono y las horas como campos propios y no dentro del texto.
+adminRouter.get("/incidents/reservation-alarms", requireAdminRole('owner', 'operations'), async (_req: Request, res: Response) => {
+  try {
+    const { rows } = await pgPool.query(
+      `SELECT i.id, i.ride_id, i.created_at, i.location,
+              COALESCE(NULLIF(TRIM(COALESCE(d.first_name,'') || ' ' || COALESCE(d.last_name,'')), ''), NULL) AS driver_name,
+              d.phone AS driver_phone,
+              r.scheduled_at, r.driver_confirm_requested_at
+         FROM incidents i
+         LEFT JOIN profiles d ON d.id = i.driver_id
+         LEFT JOIN rides    r ON r.id = i.ride_id
+        WHERE i.incid_type = $1 AND i.incid_status = 'open'
+        ORDER BY i.created_at ASC
+        LIMIT 50`,
+      [TIPO_ALARMA_RESERVA],
+    );
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      alarms: rows.map((r: Record<string, unknown>) => ({
+        id: r.id,
+        rideId: r.ride_id,
+        driverName: r.driver_name ?? null,
+        driverPhone: r.driver_phone ?? null,
+        pickupAddress: r.location ?? null,
+        scheduledAt: r.scheduled_at ?? null,
+        /** Cuándo se abrió la alarma. */
+        since: r.created_at ?? null,
+        /** Desde cuándo debió haber confirmado: lo que el panel muestra como tiempo transcurrido. */
+        shouldHaveConfirmedAt: r.driver_confirm_requested_at
+          ? new Date(new Date(r.driver_confirm_requested_at as string).getTime() + MINUTOS_PARA_CONFIRMAR * 60_000).toISOString()
+          : (r.created_at ?? null),
+      })),
+    });
+  } catch (err) {
+    // Columnas sin migrar o fallo de base: el panel no debe romperse por esto.
+    logger.error(`[admin/reservation-alarms] ${errMsg(err)}`);
+    res.json({ alarms: [] });
+  }
+});
+
 adminRouter.get("/incidents", async (_req: Request, res: Response) => {
   try {
     const { rows } = await pgPool.query(`
@@ -2511,13 +2556,36 @@ adminRouter.get("/incidents", async (_req: Request, res: Response) => {
   }
 });
 
+const ESTADOS_INCIDENTE = ['open', 'investigating', 'resolved'];
+
 adminRouter.post("/incidents/:id/update", async (req: Request, res: Response) => {
   const { status, notes, resolution } = req.body || {};
   try {
+    // Sólo se escriben los campos que vienen en la petición.
+    //
+    // Antes se escribían los tres siempre, con `notes || null`, así que pulsar
+    // "Investigar" —que sólo manda el estado— borraba las notas y la resolución
+    // que el dispatcher hubiera escrito antes. Y un estado ausente degradaba a
+    // 'open', reabriendo un incidente resuelto sin que nadie lo pidiera.
+    if (status !== undefined && !ESTADOS_INCIDENTE.includes(String(status))) {
+      return res.status(400).json({ error: `status debe ser ${ESTADOS_INCIDENTE.join(', ')}.` });
+    }
+    const campos: string[] = [];
+    const valores: unknown[] = [];
+    const set = (columna: string, valor: unknown) => {
+      valores.push(valor);
+      campos.push(`${columna} = $${valores.length}`);
+    };
+    if (status !== undefined) set('incid_status', String(status));
+    if (notes !== undefined) set('notes', notes || null);
+    if (resolution !== undefined) set('resolution', resolution || null);
+    if (campos.length === 0) return res.status(400).json({ error: 'Nada que actualizar.' });
+    valores.push(req.params.id);
+
     const { rows } = await pgPool.query(
-      `UPDATE incidents SET incid_status = $1, notes = $2, resolution = $3, updated_at = NOW()
-       WHERE id = $4 RETURNING *`,
-      [status || 'open', notes || null, resolution || null, req.params.id]
+      `UPDATE incidents SET ${campos.join(', ')}, updated_at = NOW()
+       WHERE id = $${valores.length} RETURNING *`,
+      valores,
     );
     if (!rows[0]) return res.status(404).json({ error: 'Incident not found' });
     const r = rows[0];

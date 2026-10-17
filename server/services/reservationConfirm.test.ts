@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   MINUTOS_PARA_CONFIRMAR, admiteRelevo, debeAlarmar, debePedirConfirmacion,
-  motivoDeCierre, textoDeAlarma, type ReservaParaConfirmar,
+  horaLegible, motivoDeCierre, textoDeAlarma, type ReservaParaConfirmar,
 } from './reservationConfirm';
 
 const AHORA = Date.parse('2026-10-17T12:00:00Z');
@@ -94,5 +94,27 @@ describe('textoDeAlarma', () => {
 
   it('lo dice cuando no hay teléfono, en vez de callarlo', () => {
     expect(textoDeAlarma({ driverName: 'Ana' })).toContain('Sin teléfono');
+  });
+});
+
+describe('horaLegible', () => {
+  it('da la hora de la ciudad, no el ISO en UTC', () => {
+    // 21:30 UTC del 17 de octubre son las 5:30 p. m. en Miami.
+    const t = horaLegible('2026-10-17T21:30:00.000Z');
+    expect(t).toMatch(/05:30/);
+    expect(t).not.toContain('T');
+    expect(t).not.toContain('Z');
+  });
+
+  it('respeta otra zona horaria y aguanta una fecha inválida', () => {
+    expect(horaLegible('2026-10-17T21:30:00.000Z', 'America/Bogota')).toMatch(/04:30/);
+    expect(horaLegible(null)).toBeNull();
+    expect(horaLegible('no es una fecha')).toBeNull();
+  });
+
+  it('la alarma muestra esa hora, no el ISO', () => {
+    const t = textoDeAlarma({ driverName: 'Ana', scheduledAt: '2026-10-17T21:30:00.000Z' });
+    expect(t).not.toContain('2026-10-17T21:30:00.000Z');
+    expect(t).toMatch(/05:30/);
   });
 });
