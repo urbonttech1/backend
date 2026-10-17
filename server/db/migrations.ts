@@ -1464,6 +1464,15 @@ export async function runMigrations() {
     await safeAlter(`CREATE INDEX IF NOT EXISTS cleaning_charges_driver_status_idx ON cleaning_charges (driver_id, status)`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cleaning_policy_accepted_at TIMESTAMPTZ`);
 
+    // Confirmación del chofer en una reserva (services/reservationConfirm).
+    // El recordatorio de 1 h le pide que confirme; si no responde en unos
+    // minutos se abre una alarma en el panel y la reserva se ofrece a otros.
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_confirm_requested_at TIMESTAMPTZ`);
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS driver_confirmed_at TIMESTAMPTZ`);
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS unconfirmed_alarm_at TIMESTAMPTZ`);
+    // El chofer que la tenía al saltar la alarma: si cambia, alguien la tomó.
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS unconfirmed_alarm_driver_id UUID`);
+
     // Campañas que se mandan una sola vez por persona y canal (hoy, el
     // lanzamiento de Tap to Pay on iPhone): repetir la orden no duplica envíos.
     await client.query(`

@@ -224,6 +224,54 @@ router.post("/:id/claim", requireSupabaseAuth, async (req: Request, res: Respons
   }
 });
 
+// ── POST /:id/confirm-reservation ───────────────────────────────────────────
+// El chofer confirma que va a tomar su reserva, tras el recordatorio. Sin esto
+// se abre una alarma en el panel a los minutos y la reserva se ofrece a otros
+// (services/reservationConfirm).
+router.post("/:id/confirm-reservation", requireSupabaseAuth, async (req: Request, res: Response) => {
+  try {
+    const role = req.supabaseRole || 'passenger';
+    if (role !== 'chauffeur' && role !== 'driver' && role !== 'admin') {
+      return res.status(403).json({ error: 'Only chauffeurs can confirm a reservation' });
+    }
+
+    // Sólo el chofer asignado, y sólo mientras la reserva siga pendiente.
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .update({ driver_confirmed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .eq('driver_id', req.supabaseUid!)
+      .in('ride_status', ['scheduled', 'confirmed'])
+      .is('driver_confirmed_at', null)
+      .select('id, driver_confirmed_at');
+
+    if (error) {
+      // Columnas aún sin migrar: no se rompe el flujo del chofer.
+      if (/column|schema cache/i.test(error.message)) return res.json({ success: true, confirmed: false });
+      throw error;
+    }
+
+    if (!data || data.length === 0) {
+      // O no es suya, o ya no está pendiente, o ya la había confirmado.
+      const { data: fila } = await supabaseAdmin
+        .from('rides').select('driver_id, ride_status, driver_confirmed_at').eq('id', req.params.id).maybeSingle();
+      if (!fila) return res.status(404).json({ error: 'Ride not found' });
+      if (String(fila.driver_id) !== req.supabaseUid) {
+        return res.status(403).json({ error: 'This reservation is not yours' });
+      }
+      if (fila.driver_confirmed_at) return res.json({ success: true, confirmed: true, alreadyConfirmed: true });
+      return res.status(409).json({ error: 'This reservation is no longer pending', currentStatus: fila.ride_status });
+    }
+
+    // La alarma, si la había, la cierra el cron en su siguiente pasada.
+    logger.info(`[RIDES] Reserva ${req.params.id} confirmada por el chofer ${req.supabaseUid}`);
+    return res.json({ success: true, confirmed: true });
+  } catch (err: unknown) {
+    logger.error(`[RIDES] confirm-reservation error:: ${err instanceof Error ? err.message : String(err)}`);
+    return res.status(500).json({ error: 'Failed to confirm the reservation' });
+  }
+});
+
 // ── GET /api/rides/driver-active — Return driver's current active ride (for app resume) ──
 
 router.post("/:id/verify-pin", requireSupabaseAuth, async (req: Request, res: Response) => {

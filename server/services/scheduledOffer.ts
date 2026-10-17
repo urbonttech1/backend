@@ -5,6 +5,7 @@ import { notifyUser, sendMulticast } from './fcm';
 import { broadcastScheduledOffer, SCHEDULED_OFFER_RADIUS_KM } from './socketService';
 import { recordRideOffers } from './driverRideHistory';
 import { driverNotif, passengerNotif } from './notificationTemplates';
+import { admiteRelevo } from './reservationConfirm';
 
 const log = createContextLogger('SCHEDULED');
 
@@ -99,7 +100,7 @@ export function claimFailed(result: ClaimResult): result is Extract<ClaimResult,
 export async function claimScheduledRide(rideId: string, driverId: string): Promise<ClaimResult> {
   const { data: row, error } = await supabaseAdmin
     .from('rides')
-    .select('id, ride_status, driver_id, scheduled_at, passenger_id, vehicle_type, pickup')
+    .select('id, ride_status, driver_id, scheduled_at, passenger_id, vehicle_type, pickup, driver_confirmed_at, unconfirmed_alarm_at')
     .eq('id', rideId)
     .maybeSingle();
 
@@ -113,6 +114,8 @@ export async function claimScheduledRide(rideId: string, driverId: string): Prom
     passenger_id: string | null;
     vehicle_type: string | null;
     pickup: { address?: string } | string | null;
+    driver_confirmed_at?: string | null;
+    unconfirmed_alarm_at?: string | null;
   };
 
   if (ride.driver_id && ride.driver_id === driverId && (ride.ride_status === 'scheduled' || ride.ride_status === 'confirmed')) {
@@ -123,8 +126,21 @@ export async function claimScheduledRide(rideId: string, driverId: string): Prom
       driver_id: driverId,
     };
   }
+  // Si no es null, esta reserva se le quita a ese chofer por no confirmar.
+  let relevoDe: string | null = null;
   if (ride.driver_id && ride.driver_id !== driverId) {
-    return { ok: false, http: 409, error: 'Another chauffeur already reserved this ride', currentStatus: ride.ride_status };
+    // Relevo: el asignado no confirmó y la alarma está abierta, así que la
+    // reserva está en juego y se la queda quien confirme primero. Fuera de ese
+    // caso sigue siendo suya. Ver services/reservationConfirm.
+    const enJuego = admiteRelevo({
+      id: ride.id, driverId: ride.driver_id, rideStatus: ride.ride_status, scheduledAt: ride.scheduled_at,
+      confirmRequestedAt: null, confirmedAt: ride.driver_confirmed_at ?? null, alarmAt: ride.unconfirmed_alarm_at ?? null,
+    });
+    if (!enJuego) {
+      return { ok: false, http: 409, error: 'Another chauffeur already reserved this ride', currentStatus: ride.ride_status };
+    }
+    relevoDe = ride.driver_id;
+    log.info({ rideId, anterior: ride.driver_id, nuevo: driverId }, 'relevo de reserva sin confirmar');
   }
   if (ride.ride_status !== 'scheduled' && ride.ride_status !== 'searching') {
     return { ok: false, http: 409, error: 'Ride is no longer available', currentStatus: ride.ride_status };
@@ -138,16 +154,20 @@ export async function claimScheduledRide(rideId: string, driverId: string): Prom
   const nextStatus = keepScheduled ? 'scheduled' : 'confirmed';
   const now = new Date().toISOString();
 
-  const { data: claimed, error: updateErr } = await supabaseAdmin
-    .from('rides')
-    .update({
-      driver_id: driverId,
-      ride_status: nextStatus,
-      accepted_at: now,
-      updated_at: now,
-    })
-    .eq('id', rideId)
-    .is('driver_id', null)
+  // Quien toma una reserva la está confirmando con el acto mismo de tomarla,
+  // así que no se le vuelve a pedir ni se le abre alarma.
+  const cambios = {
+    driver_id: driverId,
+    ride_status: nextStatus,
+    accepted_at: now,
+    updated_at: now,
+    driver_confirmed_at: now,
+    unconfirmed_alarm_at: null,
+    unconfirmed_alarm_driver_id: null,
+  };
+  const base = supabaseAdmin.from('rides').update(cambios).eq('id', rideId);
+  // En un relevo el guardia es el chofer anterior: si ya cambió, se perdió la carrera.
+  const { data: claimed, error: updateErr } = await (relevoDe ? base.eq('driver_id', relevoDe) : base.is('driver_id', null))
     .in('ride_status', ['scheduled', 'searching'])
     .select('id, ride_status, driver_id');
 
@@ -157,6 +177,14 @@ export async function claimScheduledRide(rideId: string, driverId: string): Prom
   }
   if (!claimed || claimed.length === 0) {
     return { ok: false, http: 409, error: 'Another chauffeur already reserved this ride', currentStatus: ride.ride_status };
+  }
+
+  if (relevoDe) {
+    notifyUser(relevoDe, {
+      title: 'Reservation reassigned',
+      body: 'You did not confirm your reservation in time, so another chauffeur took it.',
+      data: { type: 'ride_cancelled', ride_id: rideId, screen: 'driver_home' },
+    }).catch(() => {});
   }
 
   if (ride.passenger_id) {

@@ -23,6 +23,10 @@ import { audienciaDeRol, docMeta } from '../services/docCatalog';
 import { revisarParadasEnSilencio } from '../services/rideCheckRun';
 import { gananciaDelChofer } from '../services/driverBalance';
 import { ensureComisionFresh } from '../services/commissionConfig';
+import {
+  MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA, confirmacionActiva, debeAlarmar, motivoDeCierre,
+  textoDeAlarma, type ReservaParaConfirmar,
+} from '../services/reservationConfirm';
 
 async function anonymizeOldRides() {
   log.info('[CRON] Starting daily PII anonymization job...');
@@ -543,12 +547,172 @@ async function dispatchScheduledRides() {
         body: `Your reserved ride is in ${minutesUntil} min. Start toward the pickup.`,
         data: { type: 'scheduled_depart', ride_id: ride.id, screen: 'driver_home' },
       }).catch(() => {});
+      // Una reserva hecha con menos de 1 h de antelación nunca recibe el
+      // recordatorio de 1 h: éste es su único momento para pedir confirmación.
+      await pedirConfirmacionAlChofer(ride.id);
       if (ride.passenger_id) {
         notifyUser(ride.passenger_id, passengerNotif.scheduled15min(ride.id, minutesUntil)).catch(() => {});
       }
     }
   } catch (err: any) {
     log.error({ err: err }, '[CRON] dispatchScheduledRides error');
+  }
+}
+
+// ── Confirmación del chofer en una reserva ───────────────────────────────────
+// El recordatorio le pide confirmar; si no responde en unos minutos se abre una
+// alarma en el panel y la reserva se ofrece a otros choferes en paralelo. Las
+// reglas están en services/reservationConfirm.
+
+/** Marca que se le pidió confirmar. Una sola vez por reserva. */
+async function pedirConfirmacionAlChofer(rideId: string): Promise<void> {
+  if (!confirmacionActiva()) return;
+  try {
+    await supabaseAdmin
+      .from('rides')
+      .update({ driver_confirm_requested_at: new Date().toISOString() })
+      .eq('id', rideId)
+      .is('driver_confirm_requested_at', null)
+      .not('driver_id', 'is', null);
+  } catch (err: any) {
+    log.warn({ rideId, err: err?.message }, '[CRON] no se pudo pedir confirmación al chofer');
+  }
+}
+
+const filaAReserva = (r: Record<string, unknown>): ReservaParaConfirmar => ({
+  id: String(r.id),
+  driverId: (r.driver_id as string) ?? null,
+  rideStatus: String(r.ride_status ?? ''),
+  scheduledAt: (r.scheduled_at as string) ?? null,
+  confirmRequestedAt: (r.driver_confirm_requested_at as string) ?? null,
+  confirmedAt: (r.driver_confirmed_at as string) ?? null,
+  alarmAt: (r.unconfirmed_alarm_at as string) ?? null,
+});
+
+const COLUMNAS_CONFIRMACION =
+  'id, driver_id, passenger_id, ride_status, scheduled_at, vehicle_type, pickup, pickup_address, pickup_lat, pickup_lng, ' +
+  'driver_confirm_requested_at, driver_confirmed_at, unconfirmed_alarm_at, unconfirmed_alarm_driver_id';
+
+/** Abre la alarma de las reservas que el chofer no confirmó a tiempo. */
+async function alarmarReservasSinConfirmar(): Promise<void> {
+  if (!confirmacionActiva()) return;
+  try {
+    const ahora = Date.now();
+    const limite = new Date(ahora - MINUTOS_PARA_CONFIRMAR * 60_000).toISOString();
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .select(COLUMNAS_CONFIRMACION)
+      .in('ride_status', ['scheduled', 'confirmed'])
+      .not('driver_id', 'is', null)
+      .not('driver_confirm_requested_at', 'is', null)
+      .is('driver_confirmed_at', null)
+      .is('unconfirmed_alarm_at', null)
+      .lte('driver_confirm_requested_at', limite)
+      .limit(20);
+
+    if (error) {
+      // Columnas aún sin migrar: el servidor sigue, la reserva no se rompe.
+      if (!/column|schema cache/i.test(error.message)) log.error({ err: error.message }, '[CRON] alarmas de reserva: consulta');
+      return;
+    }
+
+    for (const fila of (data ?? []) as unknown as Record<string, unknown>[]) {
+      const reserva = filaAReserva(fila);
+      if (!debeAlarmar(reserva, ahora)) continue;
+
+      // Reserva atómica de la alarma: dos instancias del cron no la duplican.
+      const { data: marcada } = await supabaseAdmin
+        .from('rides')
+        .update({ unconfirmed_alarm_at: new Date().toISOString(), unconfirmed_alarm_driver_id: reserva.driverId })
+        .eq('id', reserva.id)
+        .is('unconfirmed_alarm_at', null)
+        .select('id');
+      if (!marcada || marcada.length === 0) continue;
+
+      const { data: chofer } = await supabaseAdmin
+        .from('profiles').select('first_name, last_name, phone').eq('id', reserva.driverId!).maybeSingle();
+      const nombre = [chofer?.first_name, chofer?.last_name].filter(Boolean).join(' ') || null;
+      const direccion = (fila.pickup_address as string)
+        || (typeof fila.pickup === 'string' ? fila.pickup : (fila.pickup as { address?: string } | null)?.address)
+        || null;
+
+      await supabaseAdmin.from('incidents').insert({
+        ride_id: reserva.id,
+        driver_id: reserva.driverId,
+        passenger_id: (fila.passenger_id as string) ?? null,
+        reporter_role: 'system',
+        reporter_name: 'URBONT',
+        incid_type: TIPO_ALARMA,
+        severity: 'high',
+        incid_status: 'open',
+        location: direccion,
+        description: textoDeAlarma({
+          driverName: nombre,
+          driverPhone: (chofer?.phone as string) ?? null,
+          scheduledAt: (fila.scheduled_at as string) ?? null,
+          pickupAddress: direccion,
+        }),
+      });
+
+      // En paralelo: se ofrece a otros sin quitársela al asignado. Quien
+      // confirme primero se la queda (ver claimScheduledRide).
+      offerScheduledRide({
+        rideId: reserva.id,
+        vehicleType: (fila.vehicle_type as string) || 'executive',
+        pickupAddress: direccion || 'Miami, FL',
+        pickupLat: (fila.pickup_lat as number) ?? null,
+        pickupLng: (fila.pickup_lng as number) ?? null,
+        scheduledAt: (fila.scheduled_at as string) || new Date().toISOString(),
+      }).catch(() => {});
+
+      log.warn({ rideId: reserva.id, driverId: reserva.driverId }, '[CRON] reserva sin confirmar: alarma abierta y ofrecida a otros');
+    }
+  } catch (err: any) {
+    log.error({ err: err?.message }, '[CRON] alarmarReservasSinConfirmar');
+  }
+}
+
+/** Cierra las alarmas que ya no tienen sentido: confirmó, la tomó otro o se canceló. */
+async function cerrarAlarmasDeReserva(): Promise<void> {
+  if (!confirmacionActiva()) return;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('rides')
+      .select(COLUMNAS_CONFIRMACION)
+      .not('unconfirmed_alarm_at', 'is', null)
+      .limit(50);
+    if (error) {
+      if (!/column|schema cache/i.test(error.message)) log.error({ err: error.message }, '[CRON] cierre de alarmas: consulta');
+      return;
+    }
+
+    for (const fila of (data ?? []) as unknown as Record<string, unknown>[]) {
+      const reserva = filaAReserva(fila);
+      const motivo = motivoDeCierre(reserva, (fila.unconfirmed_alarm_driver_id as string) ?? null);
+      if (!motivo) continue;
+
+      const { data: cerrada } = await supabaseAdmin
+        .from('rides')
+        .update({ unconfirmed_alarm_at: null, unconfirmed_alarm_driver_id: null })
+        .eq('id', reserva.id)
+        .not('unconfirmed_alarm_at', 'is', null)
+        .select('id');
+      if (!cerrada || cerrada.length === 0) continue;
+
+      const RESUELTO: Record<string, string> = {
+        'confirmada': 'El chofer confirmó la reserva.',
+        'otro-chofer': 'Otro chofer tomó la reserva.',
+        'ya-no-espera': 'La reserva ya no está pendiente (empezó o se canceló).',
+      };
+      await supabaseAdmin.from('incidents')
+        .update({ incid_status: 'resolved', resolution: RESUELTO[motivo], updated_at: new Date().toISOString() })
+        .eq('ride_id', reserva.id)
+        .eq('incid_type', TIPO_ALARMA)
+        .eq('incid_status', 'open');
+      log.info({ rideId: reserva.id, motivo }, '[CRON] alarma de reserva cerrada');
+    }
+  } catch (err: any) {
+    log.error({ err: err?.message }, '[CRON] cerrarAlarmasDeReserva');
   }
 }
 
@@ -628,6 +792,9 @@ async function sendScheduledRideReminders() {
       notifyUser(String(ride.passenger_id), passengerNotif.scheduled1h(ride.id, timeLabel)).catch(() => {});
       if (ride.driver_id) {
         notifyUser(String(ride.driver_id), driverNotif.reservationInOneHour(ride.id, timeLabel)).catch(() => {});
+        // A partir de aquí corre el plazo para que confirme; si no, salta la
+        // alarma en el panel. Ver services/reservationConfirm.
+        await pedirConfirmacionAlChofer(ride.id);
       }
     }
 
@@ -1006,6 +1173,14 @@ export async function startCronJobs() {
     sendScheduledRideReminders();
   });
   log.info('[CRON] Scheduled ride reminder job running every 5 minutes.');
+
+  // Reservas que el chofer no confirmó: alarma en el panel y oferta en paralelo.
+  // Cada 2 min, no cada 5: el plazo es de 10 y así la alarma no se retrasa tanto.
+  cron.schedule('*/2 * * * *', () => {
+    alarmarReservasSinConfirmar();
+    cerrarAlarmasDeReserva();
+  });
+  log.info('[CRON] Reservation confirmation alarms running every 2 minutes.');
 
   // Rate reminders: 2h after completed rides with no rating
   cron.schedule('*/30 * * * *', () => {
