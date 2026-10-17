@@ -430,6 +430,17 @@ integrationsRouter.post("/stripe/create-payment-intent", optionalSupabaseAuth, v
       try { customerId = await getOrCreateStripeCustomer(stripe, req.supabaseUid); } catch { /* non-blocking */ }
     }
 
+    // ── Guardar la tarjeta para la próxima vez ───────────────────────────────
+    // Sólo si el pasajero marcó la casilla. Antes el cobro se asociaba al
+    // cliente de Stripe pero sin `setup_future_usage`, que es lo único que hace
+    // que Stripe la conserve: la tarjeta se cobraba y se perdía, así que había
+    // que volver a escribirla en cada viaje.
+    //
+    // 'off_session' y no 'on_session' porque Urbont cobra después sin el
+    // pasajero delante: la captura al terminar el viaje, el no-show de una
+    // reserva y el cargo de limpieza.
+    const guardarTarjeta = req.body?.saveCard === true && !!customerId && !attachedPmId;
+
     const taxResult = await calculateStripeTax(
       stripe, amount, `payment-${req.supabaseUid || 'anon'}`,
       codigoPostalDeDirecciones(req.body?.postalCode, req.body?.dropoff),
@@ -461,10 +472,13 @@ integrationsRouter.post("/stripe/create-payment-intent", optionalSupabaseAuth, v
         ...(taxResult.taxCalculationId ? { tax_calculation_id: taxResult.taxCalculationId } : {}),
       },
       ...(customerId ? { customer: customerId } : {}),
+      ...(guardarTarjeta ? { setup_future_usage: 'off_session' as const } : {}),
       // Attach the saved PM upfront so Stripe validates it before confirm
       ...(attachedPmId ? { payment_method: attachedPmId } : {}),
     }, checkoutToken ? {
-      idempotencyKey: `checkout_${req.supabaseUid || 'anon'}_${checkoutToken}`,
+      // La elección de guardar entra en la clave: si el pasajero la cambia y
+      // reintenta, Stripe devolvería el cobro anterior y se perdería su decisión.
+      idempotencyKey: `checkout_${req.supabaseUid || 'anon'}_${checkoutToken}${guardarTarjeta ? '_save' : ''}`,
     } : undefined);
 
     res.json({
