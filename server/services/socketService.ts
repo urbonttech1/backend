@@ -1066,6 +1066,32 @@ async function dispatchByDistance(
     log.warn({ rideId, err: err instanceof Error ? err.message : String(err) }, 'zona del viaje no resuelta — sin filtro de zona');
   }
 
+  // Posiciones de TODOS los conectados, por viejas que sean.
+  //
+  // `nearbyRows` sólo trae las de los últimos 5 minutos, que es lo que hace
+  // falta para medir distancia. Para la zona no: con la app en segundo plano
+  // iOS deja de mandar posición, y sin esto un chofer de Barranquilla con el
+  // GPS de hace una hora quedaba como 'zona desconocida' y recibía viajes de
+  // Miami. La ciudad no cambia entre viajes, así que una posición vieja ubica
+  // igual de bien.
+  if (zonaDelViaje) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT driver_id, lat, lng FROM driver_locations WHERE is_online = true`,
+      );
+      for (const r of rows) {
+        const lat = parseFloat(r.lat);
+        const lng = parseFloat(r.lng);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          ubicaciones.set(String(r.driver_id), { lat, lng, updatedAt: null });
+        }
+      }
+    } catch (err: unknown) {
+      // Quedan las posiciones frescas de `nearbyRows`; al resto se le avisa.
+      log.warn({ rideId, err: err instanceof Error ? err.message : String(err) }, 'posiciones para la zona no leídas — sólo se filtra a quien tenga GPS reciente');
+    }
+  }
+
   // ── 3) Build candidate list: only connected, non-blocked drivers ─────────
   // effectiveScore (lower = better): distance penalty minus score reward.
   // A top driver (score 1.5) gets a 0.5 km "bonus" over a normal driver
