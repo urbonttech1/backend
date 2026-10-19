@@ -22,6 +22,7 @@ import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory }
 import { recordDriverRelease } from "../../services/driverRideHistory";
 import { liberarCobro } from "../../services/rideRefund";
 import { quienCancela } from "../../services/cancelActor";
+import { registrarPenalidad } from "../../services/cancellationPenaltyStore";
 import { offerScheduledRide } from "../../services/scheduledOffer";
 import { sendSmsTwilio } from "../../services/twilio";
 import { checkRideDeviation } from "../../services/rideCheck";
@@ -118,6 +119,18 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
 
       recordDriverRelease(req.params.id, driverIdStr, 'driver_cancelled', reason || 'driver_released_reservation');
 
+      // La penalidad se calcula DESPUÉS de que la liberación haya ido bien —si
+      // devolvió 409 no hubo cancelación que penalizar— y con el `accepted_at`
+      // leído al principio, porque el UPDATE de arriba acaba de ponerlo a null.
+      const penalidad = await registrarPenalidad({
+        rideId: req.params.id,
+        driverId: driverIdStr,
+        acceptedAt: (ride as any).accepted_at,
+        scheduledAt: (ride as any).scheduled_at,
+        valorReserva: (ride as any).locked_fare ?? (ride as any).fare,
+        nota: typeof reason === 'string' ? reason : null,
+      });
+
       const fila = liberada as {
         vehicle_type: string | null; pickup: { address?: string } | string | null; pickup_address: string | null;
         pickup_lat: number | null; pickup_lng: number | null; scheduled_at: string | null; passenger_id: string | null;
@@ -150,8 +163,20 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
         }).catch((err: unknown) => logger.error(`[RIDES] re-offer of released reservation ${req.params.id} failed: ${errMsg(err)}`));
       }
 
-      logger.info(`[RIDES] Driver ${driverIdStr} released reservation ${req.params.id} — open again for other chauffeurs`);
-      return res.json({ success: true, released: true, cancellationFee: 0 });
+      logger.info(
+        `[RIDES] Driver ${driverIdStr} released reservation ${req.params.id} — open again for other chauffeurs`
+        + (penalidad && penalidad.importe > 0 ? ` · penalidad $${penalidad.importe} (${penalidad.motivo})` : ''),
+      );
+      // `cancellationFee` es lo que paga el PASAJERO y sigue siendo cero; la
+      // penalidad del chofer viaja aparte para que la app no las confunda.
+      return res.json({
+        success: true,
+        released: true,
+        cancellationFee: 0,
+        driverPenalty: penalidad
+          ? { amount: penalidad.importe, percentage: penalidad.porcentaje, reason: penalidad.motivo }
+          : null,
+      });
     }
 
     // ── Driver-initiated cancellation: reassign to searching ─────────────────
@@ -177,6 +202,21 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
       // El viaje acaba de perder su driver_id: se guarda para que el conductor
       // lo siga viendo como cancelado en su historial.
       recordDriverRelease(req.params.id, driverIdStr, 'driver_cancelled', reason || 'driver_cancelled');
+
+      // Una reserva que el chofer ya había confirmado pasa por aquí, no por el
+      // bloque de arriba, y soltarla tarde hace el mismo daño. Se penaliza sólo
+      // si hay hora programada: un viaje a demanda no es una reserva y la
+      // política no habla de él.
+      const penalidadConfirmada = (ride as any).scheduled_at
+        ? await registrarPenalidad({
+            rideId: req.params.id,
+            driverId: driverIdStr,
+            acceptedAt: (ride as any).accepted_at,
+            scheduledAt: (ride as any).scheduled_at,
+            valorReserva: (ride as any).locked_fare ?? (ride as any).fare,
+            nota: typeof reason === 'string' ? reason : null,
+          })
+        : null;
 
       // Notify passenger via socket: driver cancelled but we're searching again
       broadcastRideStatus(req.params.id, 'searching', {
@@ -204,8 +244,18 @@ router.post("/cancel/:id", requireSupabaseAuth, async (req: Request, res: Respon
         );
       } catch {}
 
-      logger.info(`[RIDES] Driver ${driverIdStr} cancelled ride ${req.params.id} — reset to searching for reassignment`);
-      return res.json({ success: true, reassigning: true, cancellationFee: 0 });
+      logger.info(
+        `[RIDES] Driver ${driverIdStr} cancelled ride ${req.params.id} — reset to searching for reassignment`
+        + (penalidadConfirmada && penalidadConfirmada.importe > 0 ? ` · penalidad $${penalidadConfirmada.importe} (${penalidadConfirmada.motivo})` : ''),
+      );
+      return res.json({
+        success: true,
+        reassigning: true,
+        cancellationFee: 0,
+        driverPenalty: penalidadConfirmada
+          ? { amount: penalidadConfirmada.importe, percentage: penalidadConfirmada.porcentaje, reason: penalidadConfirmada.motivo }
+          : null,
+      });
     }
 
     const stripe = getStripe();

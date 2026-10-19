@@ -1557,6 +1557,44 @@ export async function runMigrations() {
     `);
     await safeAlter(`CREATE INDEX IF NOT EXISTS valet_agreement_user_idx ON valet_agreement_acceptances (user_id, accepted_at DESC)`);
 
+    // Penalidad al chofer que suelta una reserva que ya había aceptado.
+    //
+    // Se guarda la foto completa del momento —cuándo aceptó, cuándo canceló,
+    // cuánto faltaba y sobre qué importe se calculó— y no sólo el resultado: el
+    // panel tiene que poder explicarle al chofer por qué se le cobró eso sin
+    // recalcular nada, y las reglas pueden cambiar después de la cancelación.
+    //
+    // El índice único por (reserva, chofer) es lo que impide cobrar dos veces la
+    // misma cancelación, igual que en driver_ride_events.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS driver_cancellation_penalties (
+        id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        ride_id              UUID NOT NULL REFERENCES rides(id) ON DELETE CASCADE,
+        driver_id            UUID NOT NULL,
+        accepted_at          TIMESTAMPTZ,
+        cancelled_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        scheduled_at         TIMESTAMPTZ,
+        minutes_to_service   NUMERIC(10,2),
+        minutes_since_accept NUMERIC(10,2),
+        ride_value           NUMERIC(10,2) NOT NULL DEFAULT 0,
+        percentage           NUMERIC(5,4)  NOT NULL DEFAULT 0,
+        amount               NUMERIC(10,2) NOT NULL DEFAULT 0,
+        reason               VARCHAR(40)   NOT NULL,
+        status               VARCHAR(20)   NOT NULL DEFAULT 'recorded'
+                             CHECK (status IN ('recorded', 'charged', 'disputed', 'waived')),
+        /** Qué viaje saldó la deuda, cuando se descuenta de sus ganancias. */
+        settled_ride_id      UUID,
+        settled_at           TIMESTAMPTZ,
+        notes                TEXT,
+        created_at           TIMESTAMPTZ DEFAULT NOW(),
+        updated_at           TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS uq_driver_cancellation_penalty ON driver_cancellation_penalties (ride_id, driver_id)`);
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_cancellation_penalty_driver ON driver_cancellation_penalties (driver_id, created_at DESC)`);
+    // El cobro busca justo por aquí: lo pendiente de un chofer, lo más viejo primero.
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_cancellation_penalty_pendiente ON driver_cancellation_penalties (driver_id, created_at) WHERE status = 'recorded'`);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

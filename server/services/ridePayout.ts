@@ -17,6 +17,8 @@ import { ensureComisionFresh } from './commissionConfig';
 import { impuestoDelCobro } from './rideTax';
 import { estadoConnectAlDia } from './payoutRecovery';
 import { puedeCobrar } from './connectStatus';
+import { descontarDeGanancia } from './cancellationPenalty';
+import { marcarCobradas, penalidadesPendientes } from './cancellationPenaltyStore';
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 
@@ -109,7 +111,15 @@ export async function pagarChoferPorViaje(opts: {
     }),
     accessFeeCents: accesoEnCentavos(fila?.base_fare_breakdown),
   });
-  const driverPayoutUSD = metrics.driverPayoutCents / 100;
+  // Las penalidades que el chofer debe por soltar reservas se le descuentan de
+  // lo que gana, que es la única vía de cobro que existe: hay maquinaria para
+  // pagarle, ninguna para girarle un cargo. Se saldan las que caben enteras y
+  // sólo cuando de verdad se le transfiere; ver `descontarDeGanancia`.
+  const deudas = driverId ? await penalidadesPendientes(driverId) : [];
+  const cobro = descontarDeGanancia(metrics.driverPayoutCents, deudas);
+  const payoutCents = cobro.gananciaFinalCentavos;
+
+  const driverPayoutUSD = payoutCents / 100;
   const parteChofer = Math.round((1 - metrics.commissionRate) * 100);
   const platformFeeUSD = metrics.applicationFeeCents / 100;
 
@@ -136,7 +146,7 @@ export async function pagarChoferPorViaje(opts: {
       try {
         const latestCharge = typeof pi.latest_charge === 'string' ? pi.latest_charge : undefined;
         const transfer = await stripe.transfers.create({
-          amount: metrics.driverPayoutCents,
+          amount: payoutCents,
           currency: 'usd',
           destination: driverAccountId,
           source_transaction: latestCharge,
@@ -156,14 +166,26 @@ export async function pagarChoferPorViaje(opts: {
           idempotencyKey: `driver_payout_${rideId}_${pi.id}`,
         });
         driverTransferId = transfer.id;
+        // Sólo aquí, con la transferencia hecha: marcarlas antes dejaría la
+        // deuda saldada sin que el descuento hubiera llegado a aplicarse.
+        if (cobro.idsSaldados.length > 0) {
+          await marcarCobradas(cobro.idsSaldados, rideId);
+          logger.info(`[PAYOUT] descontados $${cobro.descuentoCentavos / 100} en penalidades a ${driverId} (${cobro.idsSaldados.length}) en ${rideId}`);
+        }
         logger.info(`[PAYOUT] $${driverPayoutUSD} (${parteChofer}%) a ${driverAccountId} (transfer ${transfer.id}) por ${concepto} ${rideId}`);
       } catch (transferErr: unknown) {
         logger.error(`[PAYOUT] Falló la transferencia al chofer por ${concepto} ${rideId}: ${errMsg(transferErr)}`);
       }
     } else {
-      logger.warn(`[PAYOUT] Chofer ${driverId} sin Stripe Connect activo (${estadoConnect}). Pago de $${driverPayoutUSD} queda pendiente.`);
+      logger.warn(`[PAYOUT] Chofer ${driverId} sin Stripe Connect activo (${estadoConnect}). Pago de $${metrics.driverPayoutCents / 100} queda pendiente.`);
     }
   }
+
+  // El descuento sólo cuenta si la transferencia se hizo. Si no se hizo, se
+  // apunta la ganancia ENTERA y las penalidades siguen pendientes: apuntar lo
+  // descontado sin descontarlo se lo habría cobrado dos veces, una aquí y otra
+  // cuando `pendingPayouts` recupere el viaje.
+  const earningsCents = driverTransferId ? payoutCents : metrics.driverPayoutCents;
 
   // Siempre se registra el desglose y la transferencia.
   //
@@ -180,7 +202,7 @@ export async function pagarChoferPorViaje(opts: {
     payment_status: 'paid',
     total_price: Math.round(fareUSD * 100) / 100,
     platform_fee_amount: platformFeeUSD,
-    driver_earnings: driverPayoutUSD,
+    driver_earnings: earningsCents / 100,
     // Si el checkout no dejó el impuesto en el viaje, se apunta ahora: el
     // historial y un reintento de pago tienen que ver el mismo número.
     ...(taxCents > 0 && impuestoGuardado === 0 ? {

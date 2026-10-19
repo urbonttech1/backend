@@ -3806,3 +3806,106 @@ adminRouter.get("/tap-to-pay/launch", requireAdminRole('owner', 'operations'), a
     res.status(500).json({ error: 'No se pudo cargar el lanzamiento de Tap to Pay.' });
   }
 });
+
+// ─── Penalidades por soltar una reserva ───────────────────────────────────────
+//
+// Lo que el panel necesita para el punto 5 de la política: la reserva, el
+// chofer responsable, las dos horas, el tiempo que faltaba, el porcentaje, el
+// importe y el estado. Todo sale de la fila tal como se guardó al cancelar: no
+// se recalcula nada, porque la escalera puede haber cambiado desde entonces.
+
+/** Estados que un admin puede poner a mano. `charged` lo pone el cobro, no una persona. */
+const ESTADOS_MANUALES = ['disputed', 'waived', 'recorded'] as const;
+
+adminRouter.get("/penalties", async (req: Request, res: Response) => {
+  try {
+    const { driverId, status, limit } = req.query as { driverId?: string; status?: string; limit?: string };
+    const tope = Math.min(Math.max(parseInt(String(limit ?? '200'), 10) || 200, 1), 500);
+
+    let q = supabaseAdmin
+      .from('driver_cancellation_penalties')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(tope);
+    if (driverId) q = q.eq('driver_id', driverId);
+    if (status)   q = q.eq('status', status);
+
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const filas = data ?? [];
+
+    // El nombre del chofer se resuelve aparte: la tabla guarda el id, y el panel
+    // enseña personas. Una sola consulta para todos los de la página.
+    const ids = [...new Set(filas.map(f => String(f.driver_id)).filter(Boolean))];
+    const nombres = new Map<string, string>();
+    if (ids.length > 0) {
+      const { data: perfiles } = await supabaseAdmin
+        .from('profiles').select('id, first_name, last_name').in('id', ids);
+      for (const p of perfiles ?? []) {
+        nombres.set(String(p.id), [p.first_name, p.last_name].filter(Boolean).join(' ').trim());
+      }
+    }
+
+    const pendiente = filas
+      .filter(f => f.status === 'recorded')
+      .reduce((t, f) => t + (Number(f.amount) || 0), 0);
+
+    return res.json({
+      success: true,
+      total: filas.length,
+      totalPendiente: Math.round(pendiente * 100) / 100,
+      penalties: filas.map(f => ({
+        id: f.id,
+        rideId: f.ride_id,
+        driverId: f.driver_id,
+        driverName: nombres.get(String(f.driver_id)) || null,
+        acceptedAt: f.accepted_at,
+        cancelledAt: f.cancelled_at,
+        scheduledAt: f.scheduled_at,
+        minutesToService: f.minutes_to_service === null ? null : Number(f.minutes_to_service),
+        rideValue: Number(f.ride_value) || 0,
+        percentage: Number(f.percentage) || 0,
+        amount: Number(f.amount) || 0,
+        reason: f.reason,
+        status: f.status,
+        settledRideId: f.settled_ride_id,
+        settledAt: f.settled_at,
+        notes: f.notes,
+      })),
+    });
+  } catch (err) {
+    logger.error(`[admin/penalties] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudieron cargar las penalidades.' });
+  }
+});
+
+adminRouter.patch("/penalties/:id", async (req: Request, res: Response) => {
+  try {
+    const { status, notes } = req.body as { status?: string; notes?: string };
+    if (!status || !(ESTADOS_MANUALES as readonly string[]).includes(status)) {
+      return res.status(400).json({ error: `status debe ser uno de: ${ESTADOS_MANUALES.join(', ')}.` });
+    }
+
+    // Una penalidad ya cobrada no se toca desde aquí: el dinero ya se descontó
+    // de un viaje y cambiarle el estado dejaría la cuenta descuadrada. Para
+    // devolverlo hay que hacerlo por Stripe, no cambiando una fila.
+    const { data, error } = await supabaseAdmin
+      .from('driver_cancellation_penalties')
+      .update({ status, ...(notes === undefined ? {} : { notes }), updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .neq('status', 'charged')
+      .select('id, status, amount, driver_id')
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    if (!data) {
+      return res.status(409).json({ error: 'No existe, o ya está cobrada y no se puede cambiar desde el panel.' });
+    }
+
+    logger.info(`[admin/penalties] ${req.params.id} -> ${status}`);
+    return res.json({ success: true, penalty: data });
+  } catch (err) {
+    logger.error(`[admin/penalties/:id] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudo actualizar la penalidad.' });
+  }
+});

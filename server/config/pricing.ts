@@ -10,6 +10,7 @@
  */
 
 import { getReglasValet } from '../services/valetCommission';
+import { politicaDePenalidad } from '../services/cancellationPenalty';
 
 // ── Plataforma ───────────────────────────────────────────────────────────────
 /**
@@ -603,6 +604,15 @@ export function getPricingPolicy() {
     valetCommission: { minimumUsd: getReglasValet().minimo, thresholdUsd: getReglasValet().umbral, percent: Math.round(getReglasValet().porcentaje * 1e6) / 1e4 },
     longPickupFee: LONG_PICKUP_FEE,
     longPickupThresholdMinutes: LONG_PICKUP_THRESHOLD_MINS,
+    /**
+     * Lo que paga el CHOFER por soltar una reserva aceptada. No confundir con
+     * `scheduledCancellation`, que es lo que paga el pasajero.
+     *
+     * Viaja hasta la app para que el aviso de «esto te costará» salga de aquí y
+     * no de unos porcentajes escritos a mano en el teléfono, que se quedarían
+     * viejos el día que cambie la política.
+     */
+    driverCancellationPenalty: politicaDePenalidad(),
   };
 }
 
