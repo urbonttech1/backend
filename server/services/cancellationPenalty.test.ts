@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   EXENCION_TRAS_ACEPTAR_MINUTOS, PORCENTAJE, TRAMO_INMINENTE_MINUTOS,
-  calcularPenalidad, penalizacionActiva, politicaDePenalidad, porcentajePenalidad,
+  calcularPenalidad, descontarDeGanancia, penalizacionActiva, politicaDePenalidad, porcentajePenalidad,
   type CancelacionDeReserva,
 } from './cancellationPenalty';
 
@@ -153,6 +153,55 @@ describe('interruptor de despliegue', () => {
     expect(penalizacionActiva({})).toBe(true);
     expect(penalizacionActiva({ CANCELLATION_PENALTY: 'OFF' })).toBe(false);
     expect(penalizacionActiva({ CANCELLATION_PENALTY: 'on' })).toBe(true);
+  });
+});
+
+describe('descuento de lo que el chofer gana', () => {
+  const deuda = (id: string, amount: number) => ({ id, amount });
+
+  it('salda las deudas que caben, de la más vieja a la más nueva', () => {
+    const r = descontarDeGanancia(10_000, [deuda('a', 20), deuda('b', 40)]);
+    expect(r.idsSaldados).toEqual(['a', 'b']);
+    expect(r.descuentoCentavos).toBe(6_000);
+    expect(r.gananciaFinalCentavos).toBe(4_000);
+  });
+
+  it('una deuda que no cabe se salta, pero las siguientes que quepan sí se cobran', () => {
+    const r = descontarDeGanancia(5_000, [deuda('cara', 100), deuda('barata', 20)]);
+    expect(r.idsSaldados).toEqual(['barata']);
+    expect(r.gananciaFinalCentavos).toBe(3_000);
+  });
+
+  it('nunca deja la ganancia en negativo', () => {
+    const r = descontarDeGanancia(1_000, [deuda('a', 60), deuda('b', 60)]);
+    expect(r.gananciaFinalCentavos).toBeGreaterThanOrEqual(0);
+    expect(r.idsSaldados).toEqual([]);
+    expect(r.descuentoCentavos).toBe(0);
+  });
+
+  it('sin deudas no toca nada', () => {
+    const r = descontarDeGanancia(7_500, []);
+    expect(r).toEqual({ descuentoCentavos: 0, gananciaFinalCentavos: 7_500, idsSaldados: [] });
+  });
+
+  it('una ganancia nula o negativa no cobra nada', () => {
+    for (const g of [0, -500, NaN]) {
+      const r = descontarDeGanancia(g, [deuda('a', 20)]);
+      expect(r.descuentoCentavos).toBe(0);
+      expect(r.idsSaldados).toEqual([]);
+    }
+  });
+
+  it('una deuda de importe cero o absurdo se ignora sin saldarse', () => {
+    const r = descontarDeGanancia(5_000, [deuda('cero', 0), deuda('negativa', -10), deuda('buena', 10)]);
+    expect(r.idsSaldados).toEqual(['buena']);
+    expect(r.descuentoCentavos).toBe(1_000);
+  });
+
+  it('una deuda que cabe justa la deja a cero', () => {
+    const r = descontarDeGanancia(2_000, [deuda('a', 20)]);
+    expect(r.gananciaFinalCentavos).toBe(0);
+    expect(r.idsSaldados).toEqual(['a']);
   });
 });
 

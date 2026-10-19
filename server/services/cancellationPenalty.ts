@@ -157,6 +157,49 @@ export function calcularPenalidad(c: CancelacionDeReserva, valorReserva: number 
   };
 }
 
+/** Una penalidad pendiente de cobro, tal como sale de la tabla. */
+export interface DeudaPendiente {
+  id: string;
+  /** En la moneda de la reserva, no en centavos. */
+  amount: number;
+}
+
+/**
+ * Cuánto se le descuenta a un chofer de lo que acaba de ganar.
+ *
+ * Se saldan las deudas más viejas primero y **sólo las que caben enteras**. Una
+ * penalidad no se parte: cobrar media deja la fila a medio pagar y obliga a
+ * llevar la cuenta de lo ya descontado, que es justo donde se cuelan los
+ * errores de dinero.
+ *
+ * El efecto conocido: una penalidad mayor que lo que el chofer gana en un solo
+ * viaje no se cobra sola y se queda esperando a que un viaje la cubra o a que
+ * el admin la gestione. Está documentado y es deliberado.
+ *
+ * Nunca deja la ganancia en negativo.
+ */
+export function descontarDeGanancia(
+  gananciaCentavos: number,
+  pendientes: DeudaPendiente[],
+): { descuentoCentavos: number; gananciaFinalCentavos: number; idsSaldados: string[] } {
+  const disponibleInicial = Number.isFinite(gananciaCentavos) && gananciaCentavos > 0 ? Math.floor(gananciaCentavos) : 0;
+  let disponible = disponibleInicial;
+  const idsSaldados: string[] = [];
+
+  for (const deuda of pendientes) {
+    const centavos = Math.round((Number(deuda.amount) || 0) * 100);
+    if (centavos <= 0 || centavos > disponible) continue;
+    disponible -= centavos;
+    idsSaldados.push(deuda.id);
+  }
+
+  return {
+    descuentoCentavos: disponibleInicial - disponible,
+    gananciaFinalCentavos: disponible,
+    idsSaldados,
+  };
+}
+
 /**
  * La escalera tal como se le enseña al chofer y al panel.
  *
