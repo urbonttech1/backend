@@ -2022,6 +2022,11 @@ adminRouter.get("/rides", async (req: Request, res: Response) => {
         paymentMethod: row.payment_method,
         cancelReason:  row.cancel_reason,
         date:          row.created_at,
+        // El panel los lee en camelCase; `...row` sólo trae los snake_case y la
+        // fecha del viaje salía vacía en la tabla.
+        createdAt:     row.created_at,
+        completedAt:   row.completed_at,
+        cancelledAt:   row.cancelled_at,
         // null = el perfil no tiene nombre; el panel decide si cae al teléfono.
         passenger:      nombre(row.passenger),
         passengerName:  nombre(row.passenger),
@@ -2126,6 +2131,9 @@ adminRouter.get("/rides/:id", async (req: Request, res: Response) => {
         dropoffAddress: direccion(row.dropoff, row.dropoff_address),
         passengerName: nombre(row.passenger),
         driverName: nombre(row.driver),
+        createdAt: row.created_at,
+        completedAt: row.completed_at,
+        cancelledAt: row.cancelled_at,
       },
       money: desgloseDeDinero(row),
     });
