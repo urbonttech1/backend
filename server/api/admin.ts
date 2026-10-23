@@ -3089,6 +3089,38 @@ adminRouter.post("/complaints/:id/investigate", async (req: Request, res: Respon
 
 // ─── Support Tickets (connected to real DB) ───────────────────────────────────
 
+/**
+ * Cuantos tickets hay sin mirar, para el contador del menu.
+ *
+ * Endpoint aparte y deliberadamente barato: el panel lo sondea cada minuto
+ * desde CUALQUIER pagina, y `/support` trae hasta 500 filas con join a
+ * profiles. Aqui solo se cuentan.
+ *
+ * `since` es la ultima vez que ese admin abrio Soporte, y lo guarda su propio
+ * navegador: no hay marca de leido compartida, asi que dos admins llevan su
+ * cuenta por separado. Sin `since` —la primera vez— se cuentan los abiertos,
+ * que es lo que esa persona todavia no ha visto.
+ */
+adminRouter.get("/support/unseen", requireAdminRole('owner', 'support'), async (req: Request, res: Response) => {
+  try {
+    const desde = typeof req.query.since === 'string' ? Date.parse(req.query.since) : NaN;
+
+    const { rows } = Number.isNaN(desde)
+      ? await pgPool.query(`SELECT COUNT(*)::int AS n FROM support_tickets WHERE COALESCE(status, 'open') = 'open'`)
+      : await pgPool.query(`SELECT COUNT(*)::int AS n FROM support_tickets WHERE created_at > $1`, [new Date(desde).toISOString()]);
+
+    const { rows: abiertos } = await pgPool.query(
+      `SELECT COUNT(*)::int AS n FROM support_tickets WHERE COALESCE(status, 'open') = 'open'`,
+    );
+
+    res.json({ nuevos: rows[0]?.n ?? 0, abiertos: abiertos[0]?.n ?? 0 });
+  } catch (err: any) {
+    logger.error(`[admin/support/unseen] ${errMsg(err)}`);
+    // Un contador que falla no puede romper el menu de todo el panel.
+    res.json({ nuevos: 0, abiertos: 0 });
+  }
+});
+
 adminRouter.get("/support", async (_req: Request, res: Response) => {
   try {
     const { rows } = await pgPool.query(`
