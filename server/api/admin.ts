@@ -36,7 +36,7 @@ import { MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA as TIPO_ALARMA_RESERVA } from '../s
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { eventoDesdeReembolso, registrarEvento, esCobrado } from '../services/paymentEvents';
-import { diagnosticar, contrastar } from '../services/webhookHealth';
+import { diagnosticar, contrastar, cruzar } from '../services/webhookHealth';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
@@ -2265,18 +2265,33 @@ adminRouter.get("/webhooks", async (_req: Request, res: Response) => {
     const desdeIso = new Date(Date.now() - DIAS * 86400_000).toISOString();
 
     const [reembolsosStripe, disputasStripe, registrados] = await Promise.all([
-      stripe.refunds.list({ created: { gte: desde }, limit: 100 }).then(r => r.data.length).catch(() => null),
-      stripe.disputes.list({ created: { gte: desde }, limit: 100 }).then(r => r.data.length).catch(() => null),
+      stripe.refunds.list({ created: { gte: desde }, limit: 100 })
+        .then(r => r.data.map(x => ({ id: x.id, importe: x.amount / 100, creado: x.created })))
+        .catch(() => null),
+      stripe.disputes.list({ created: { gte: desde }, limit: 100 })
+        .then(r => r.data.map(x => ({ id: x.id, importe: x.amount / 100, creado: x.created })))
+        .catch(() => null),
       supabaseAdmin.from('payment_events')
-        .select('kind, origin, created_at')
+        .select('kind, origin, created_at, stripe_object_id')
         .gte('created_at', desdeIso)
         .then(r => (r.data ?? []) as Array<Record<string, unknown>>, () => []),
     ]);
 
-    const cuenta = (kind: string) => registrados.filter(m => m.kind === kind).length;
+    // Se cruza por id y no por cantidad: contar daria "17 de 17" aunque los
+    // registrados fueran otros, y no diria CUAL falta.
+    const idsDe = (kind: string) =>
+      new Set(registrados.filter(m => m.kind === kind).map(m => String(m.stripe_object_id)));
+
+    const armar = (etiqueta: string, nombre: string, kind: string, items: Array<{ id: string; importe: number; creado: number }> | null) => {
+      if (items == null) return null;
+      const detalle = cruzar(items, idsDe(kind));
+      const ok = detalle.filter(d => d.registrado).length;
+      return { etiqueta, ...contrastar(items.length, ok, nombre), detalle };
+    };
+
     const contrastes = [
-      reembolsosStripe != null ? { etiqueta: 'Reembolsos', ...contrastar(reembolsosStripe, cuenta('refund'), 'reembolsos') } : null,
-      disputasStripe   != null ? { etiqueta: 'Contracargos', ...contrastar(disputasStripe, cuenta('chargeback'), 'contracargos') } : null,
+      armar('Reembolsos', 'reembolsos', 'refund', reembolsosStripe),
+      armar('Contracargos', 'contracargos', 'chargeback', disputasStripe),
     ].filter(Boolean);
 
     // El ultimo evento que de verdad entro por webhook. Si hubo movimientos y

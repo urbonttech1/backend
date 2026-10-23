@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  diagnosticar, contrastar, EVENTOS_MANEJADOS,
+  diagnosticar, contrastar, cruzar, EVENTOS_MANEJADOS,
   type EndpointStripe,
 } from './webhookHealth';
 
@@ -126,5 +126,39 @@ describe('contrastar — lo que Stripe tiene contra lo que guardamos', () => {
     const c = contrastar(2, 7, 'reembolsos');
     expect(c.tono).toBe('ok');
     expect(c.faltan).toBe(0);
+  });
+});
+
+describe('cruzar — uno a uno', () => {
+  const items = [
+    { id: 're_viejo', importe: 25, creado: 1_700_000_000 },
+    { id: 're_nuevo', importe: 38.5, creado: 1_700_100_000 },
+    { id: 're_falta', importe: 10, creado: 1_700_050_000 },
+  ];
+
+  it('marca cuál está registrado y cuál falta, por id', () => {
+    const r = cruzar(items, new Set(['re_viejo', 're_nuevo']));
+    expect(r.find(x => x.id === 're_falta')!.registrado).toBe(false);
+    expect(r.filter(x => x.registrado).map(x => x.id).sort()).toEqual(['re_nuevo', 're_viejo']);
+  });
+
+  it('lo más reciente primero', () => {
+    expect(cruzar(items, new Set()).map(x => x.id)).toEqual(['re_nuevo', 're_falta', 're_viejo']);
+  });
+
+  it('lleva el importe y la fecha en ISO', () => {
+    const r = cruzar(items, new Set())[0];
+    expect(r.importe).toBe(38.5);
+    expect(r.fecha).toBe(new Date(1_700_100_000 * 1000).toISOString());
+  });
+
+  it('tener registrados de más no cuenta: importa el id, no la cantidad', () => {
+    // Con 3 en Stripe y 3 registrados pero ninguno el mismo, no hay nada cubierto.
+    const r = cruzar(items, new Set(['re_otro1', 're_otro2', 're_otro3']));
+    expect(r.every(x => !x.registrado)).toBe(true);
+  });
+
+  it('sin nada en Stripe, lista vacía', () => {
+    expect(cruzar([], new Set(['re_x']))).toEqual([]);
   });
 });

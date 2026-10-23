@@ -142,6 +142,41 @@ export function diagnosticar(
   return { tono, resumen, endpoints: revisados, sinSuscribir, sinSuscribirCriticos, secretos };
 }
 
+/** Un reembolso o una disputa tal como Stripe lo tiene. */
+export interface ItemStripe {
+  id: string;
+  /** Dólares. */
+  importe: number;
+  /** Segundos desde epoch, como lo manda Stripe. */
+  creado: number;
+}
+
+export interface ItemContraste {
+  id: string;
+  importe: number;
+  fecha: string;
+  /** Si ese mismo id ya está en `payment_events`. */
+  registrado: boolean;
+}
+
+/**
+ * Cruza uno a uno lo que Stripe tiene contra lo que quedó registrado.
+ *
+ * Se compara por id y no por cantidad: contar solo daría "17 de 17" aunque los
+ * registrados fueran otros, y no diría CUÁL falta, que es lo que hace falta
+ * saber para ir a mirarlo. Lo más reciente va primero.
+ */
+export function cruzar(items: ItemStripe[], idsRegistrados: ReadonlySet<string>): ItemContraste[] {
+  return items
+    .map(i => ({
+      id: i.id,
+      importe: i.importe,
+      fecha: new Date(i.creado * 1000).toISOString(),
+      registrado: idsRegistrados.has(i.id),
+    }))
+    .sort((a, b) => b.fecha.localeCompare(a.fecha));
+}
+
 export interface Contraste {
   /** Lo que Stripe dice que pasó en la ventana. */
   enStripe: number;
