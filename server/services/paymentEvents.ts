@@ -182,6 +182,19 @@ export function eventoDesdeCobroFallido(
   };
 }
 
+/**
+ * Si el cobro de un viaje entró, para contarlo como ingreso.
+ *
+ * 'refunded' cuenta como cobrado: el dinero entró y después se devolvió, que no
+ * es lo mismo que no haberlo cobrado nunca. Si se tratara como no cobrado, un
+ * viaje reembolsado se contaría dos veces en el panel —en "No cobrado" y en
+ * "Devuelto"— y las dos cifras se contradirían.
+ */
+export function esCobrado(paymentStatus: unknown): boolean {
+  const e = String(paymentStatus ?? '');
+  return e === 'paid' || e === 'refunded';
+}
+
 /** Lo que el panel pone abajo, bajo el separador de resueltos. */
 export function esResuelto(evento: Pick<EventoDePago, 'resolved_at'>): boolean {
   return evento.resolved_at != null;

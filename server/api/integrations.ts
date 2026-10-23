@@ -308,10 +308,23 @@ integrationsRouter.post(
         // Stripe sólo llega por aquí. El upsert por (kind, re_…) hace que la
         // doble escritura actualice la fila en vez de duplicar el dinero.
         case 'charge.refunded':
+        case 'refund.created':
         case 'refund.updated': {
-          const refunds: Stripe.Refund[] = event.type === 'refund.updated'
-            ? [event.data.object as Stripe.Refund]
-            : ((event.data.object as Stripe.Charge).refunds?.data ?? []);
+          // Desde las versiones nuevas de la API, el Charge de `charge.refunded`
+          // NO trae `refunds` embebido (comprobado contra la cuenta: llega
+          // ausente, no vacío). Leerlo de ahí registraba cero reembolsos sin
+          // error ninguno, así que cuando falta se piden a la API.
+          let refunds: Stripe.Refund[];
+          if (event.type === 'charge.refunded') {
+            const cargo = event.data.object as Stripe.Charge;
+            refunds = cargo.refunds?.data ?? [];
+            if (refunds.length === 0) {
+              const lista = await stripe.refunds.list({ charge: cargo.id, limit: 100 });
+              refunds = lista.data;
+            }
+          } else {
+            refunds = [event.data.object as Stripe.Refund];
+          }
 
           for (const refund of refunds) {
             const piId = typeof refund.payment_intent === 'string' ? refund.payment_intent : refund.payment_intent?.id ?? null;

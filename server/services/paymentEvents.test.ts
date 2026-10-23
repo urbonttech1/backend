@@ -10,6 +10,7 @@ import {
   eventoDesdeDisputa,
   eventoDesdeCobroFallido,
   esResuelto,
+  esCobrado,
 } from './paymentEvents';
 
 const reembolso = (extra: Partial<Stripe.Refund> = {}) => ({
@@ -168,5 +169,18 @@ describe('eventoDesdeCobroFallido', () => {
     const sinError = { id: 'pi_3', amount: 100, currency: 'usd' } as Stripe.PaymentIntent;
     expect(eventoDesdeCobroFallido(sinError, { motivo: 'Sin método de pago' }).reason).toBe('Sin método de pago');
     expect(eventoDesdeCobroFallido(sinError).reason).toBeNull();
+  });
+});
+
+describe('esCobrado', () => {
+  it('pagado y reembolsado cuentan como cobrado', () => {
+    // El reembolsado también: el dinero entró y luego salió. Contarlo como no
+    // cobrado lo sumaría dos veces en el panel, en "No cobrado" y en "Devuelto".
+    expect(esCobrado('paid')).toBe(true);
+    expect(esCobrado('refunded')).toBe(true);
+  });
+
+  it('lo que nunca entró, no', () => {
+    for (const e of ['pending', 'failed', null, undefined, '']) expect(esCobrado(e)).toBe(false);
   });
 });

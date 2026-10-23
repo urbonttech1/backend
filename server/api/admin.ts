@@ -35,7 +35,7 @@ import { reactivarCuenta } from '../services/accountReactivation';
 import { MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA as TIPO_ALARMA_RESERVA } from '../services/reservationConfirm';
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
-import { eventoDesdeReembolso, registrarEvento } from '../services/paymentEvents';
+import { eventoDesdeReembolso, registrarEvento, esCobrado } from '../services/paymentEvents';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
@@ -2378,8 +2378,14 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
     // Un viaje completado no es un viaje cobrado: solo cuenta como cobrado si
     // `payment_status` llegó a 'paid'. Antes todo lo completado se reportaba como
     // ingreso, de modo que un cobro no confirmado inflaba las cifras del panel.
-    const collected = completed.filter(r => r.payment_status === 'paid');
-    const uncollected = completed.filter(r => r.payment_status !== 'paid');
+    //
+    // 'refunded' cuenta como cobrado: el dinero entró y después se devolvió,
+    // que no es lo mismo que no haberlo cobrado nunca. Dejarlo en `uncollected`
+    // lo contaría dos veces —ahí y en `refundedAllTime`— y las dos cifras del
+    // panel se contradirían. Antes no hacía falta porque nadie escribía
+    // 'refunded': el UPDATE que lo intentaba fallaba en silencio.
+    const collected = completed.filter(r => esCobrado(r.payment_status));
+    const uncollected = completed.filter(r => !esCobrado(r.payment_status));
 
     // El dinero que volvió al pasajero: reembolsos que salieron y contracargos
     // perdidos. Las disputas abiertas se cuentan aparte porque todavía se
