@@ -36,6 +36,7 @@ import { MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA as TIPO_ALARMA_RESERVA } from '../s
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { eventoDesdeReembolso, registrarEvento, esCobrado } from '../services/paymentEvents';
+import { diagnosticar, contrastar } from '../services/webhookHealth';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
@@ -2218,6 +2219,87 @@ adminRouter.post("/rides/:id/refund", async (req: Request, res: Response) => {
 // Lo que el panel enseña en la pestaña de Pagos, dentro de Incidentes. Se
 // devuelven los 200 más recientes con el nombre del pasajero resuelto, porque
 // un contracargo sin saber de quién es no se puede trabajar.
+// ─── Salud de los webhooks de Stripe ─────────────────────────────────────────
+//
+// Existe por lo de `account.updated`: el codigo lo atendia y el endpoint de
+// Stripe nunca estuvo suscrito a ese evento. Un webhook al que no estas
+// suscrito no falla, simplemente no llega, y durante meses hubo choferes sin
+// cobrar sin que nada en el panel lo delatara.
+//
+// Se revisan dos cosas distintas: la CONFIGURACION (lo que el codigo atiende
+// contra lo que Stripe envia) y la REALIDAD (lo que Stripe tiene contra lo que
+// quedo registrado). Un endpoint bien suscrito pero caido pasa la primera y
+// falla la segunda.
+adminRouter.get("/webhooks", async (_req: Request, res: Response) => {
+  try {
+    const stripe = getStripeAdmin();
+    if (!stripe) {
+      return res.json({
+        disponible: false,
+        motivo: 'Stripe no esta configurado en este servidor.',
+      });
+    }
+
+    const secretos = {
+      principal: !!process.env.STRIPE_WEBHOOK_SECRET,
+      connect:   !!process.env.STRIPE_WEBHOOK_SECRET_CONNECT,
+    };
+
+    const lista = await stripe.webhookEndpoints.list({ limit: 30 });
+    const diagnostico = diagnosticar(
+      lista.data.map(e => ({
+        id: e.id,
+        url: e.url,
+        status: e.status,
+        enabled_events: e.enabled_events,
+        application: e.application,
+        description: e.description,
+        api_version: e.api_version,
+      })),
+      secretos,
+    );
+
+    // La prueba de verdad, sobre los ultimos 7 dias.
+    const DIAS = 7;
+    const desde = Math.floor((Date.now() - DIAS * 86400_000) / 1000);
+    const desdeIso = new Date(Date.now() - DIAS * 86400_000).toISOString();
+
+    const [reembolsosStripe, disputasStripe, registrados] = await Promise.all([
+      stripe.refunds.list({ created: { gte: desde }, limit: 100 }).then(r => r.data.length).catch(() => null),
+      stripe.disputes.list({ created: { gte: desde }, limit: 100 }).then(r => r.data.length).catch(() => null),
+      supabaseAdmin.from('payment_events')
+        .select('kind, origin, created_at')
+        .gte('created_at', desdeIso)
+        .then(r => (r.data ?? []) as Array<Record<string, unknown>>, () => []),
+    ]);
+
+    const cuenta = (kind: string) => registrados.filter(m => m.kind === kind).length;
+    const contrastes = [
+      reembolsosStripe != null ? { etiqueta: 'Reembolsos', ...contrastar(reembolsosStripe, cuenta('refund'), 'reembolsos') } : null,
+      disputasStripe   != null ? { etiqueta: 'Contracargos', ...contrastar(disputasStripe, cuenta('chargeback'), 'contracargos') } : null,
+    ].filter(Boolean);
+
+    // El ultimo evento que de verdad entro por webhook. Si hubo movimientos y
+    // esto esta vacio, no esta llegando nada aunque la configuracion luzca bien.
+    const porStripe = registrados
+      .filter(m => m.origin === 'stripe')
+      .map(m => String(m.created_at))
+      .sort();
+
+    res.json({
+      disponible: true,
+      ...diagnostico,
+      ventanaDias: DIAS,
+      contrastes,
+      ultimoRecibido: porStripe.length ? porStripe[porStripe.length - 1] : null,
+      recibidosEnVentana: porStripe.length,
+    });
+  } catch (err: any) {
+    logger.error(`[admin/webhooks] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudo consultar el estado de los webhooks' });
+  }
+});
+
 adminRouter.get("/payment-events", async (req: Request, res: Response) => {
   try {
     const { kind, abiertos } = req.query;
