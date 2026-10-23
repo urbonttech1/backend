@@ -20,6 +20,7 @@ import { resolveZone, ensureZonesFresh } from "../../services/serviceZones";
 import { broadcastRideStatus, notifyAvailableDrivers, normalizeVehicleCategory } from "../../services/socketService";
 import { offerScheduledRide } from "../../services/scheduledOffer";
 import { esReservaConTiempo, leerSillas, textoSillas } from "../../services/childSeats";
+import { citaAUtc } from "../../services/scheduledAt";
 import { devolverCobroDelViaje } from "../../services/rideRefund";
 import { impuestoDelCobro } from "../../services/rideTax";
 import { sendSmsTwilio } from "../../services/twilio";
@@ -339,14 +340,14 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       }
     }
 
-    // ── scheduled_at validation: must be in the future (min 15 min from now) ─────
-      const rawScheduledAt = scheduledAt || scheduled_at;
-      if (rawScheduledAt) {
-        const scheduledMs = new Date(rawScheduledAt).getTime();
-        if (isNaN(scheduledMs)) {
-          return res.status(400).json({ error: 'Invalid scheduled_at: not a valid date.' });
-        }
-        const minsFromNow = (scheduledMs - Date.now()) / 60000;
+    // ── scheduled_at: hora de Miami si viene sin zona; instante si ya trae offset ─
+      const crudoCita = scheduledAt || scheduled_at;
+      const cita = crudoCita ? citaAUtc(crudoCita) : null;
+      if (crudoCita && !cita) {
+        return res.status(400).json({ error: 'Invalid scheduled_at: not a valid date.' });
+      }
+      if (cita) {
+        const minsFromNow = (Date.parse(cita) - Date.now()) / 60000;
         if (minsFromNow < -1) {
           return res.status(400).json({ error: 'Scheduled pickup time must be in the future.' });
         }
@@ -359,7 +360,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
           errorCode: 'CHILD_SEATS_INVALID',
         });
       }
-      if (sillas.seats && !esReservaConTiempo(rawScheduledAt)) {
+      if (sillas.seats && !esReservaConTiempo(cita)) {
         return res.status(400).json({
           error: 'Child seats can only be requested on a reservation more than 30 minutes ahead.',
           errorCode: 'CHILD_SEATS_SCHEDULED_ONLY',
@@ -404,15 +405,13 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       // (línea ~541); éste no lo hacía.
       payment_method:  normalizePaymentMethod(paymentMethod || payment_method),
       notes:           notes || null,
-      scheduled_at:    scheduledAt || scheduled_at || null,
+      scheduled_at:    cita,
       // Uber/Lyft model: rides booked >30 min ahead get status 'scheduled'
       // (not 'searching'). The cron job dispatches them at T-30 min before pickup.
       // Immediate rides (no scheduledAt or <30 min away) go straight to 'searching'.
       ride_status: (() => {
-        const sa = scheduledAt || scheduled_at;
-        if (!sa) return 'searching';
-        const saDate = new Date(sa);
-        const minsUntil = isNaN(saDate.getTime()) ? 0 : (saDate.getTime() - Date.now()) / 60000;
+        if (!cita) return 'searching';
+        const minsUntil = (Date.parse(cita) - Date.now()) / 60000;
         return minsUntil > 30 ? 'scheduled' : 'searching';
       })(),
       created_at:      new Date().toISOString(),
@@ -458,8 +457,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     // La reserva sólo la paga un viaje programado, y eso lo decide el servidor
     // por `scheduled_at` —ya validado arriba como fecha futura—, no el
     // `booking_type` que manda el cliente, que podría omitirlo para no pagarla.
-    const fechaReserva = scheduledAt || scheduled_at;
-    const esReserva = !!fechaReserva && !isNaN(new Date(fechaReserva).getTime());
+    const esReserva = !!cita;
     const bookingTypeTarifa = esReserva ? 'scheduled' : 'now';
     const requestedHours = Number(hourly_hours ?? hourlyHoursBody);
 

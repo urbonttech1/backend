@@ -5,6 +5,7 @@ import { pool } from "../../db/pool";
 import { sendRideReceipt } from "../../services/email";
 import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
 import { esReservaConTiempo, leerSillas } from "../../services/childSeats";
+import { citaAUtc } from "../../services/scheduledAt";
 import { driverNotif } from "../../services/notificationTemplates";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
 import {
@@ -213,7 +214,11 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
         errorCode: 'CHILD_SEATS_INVALID',
       });
     }
-    if (sillas.seats && !esReservaConTiempo(scheduledAt)) {
+    const cita = scheduledAt ? citaAUtc(scheduledAt) : null;
+    if (scheduledAt && !cita) {
+      return res.status(400).json({ error: 'Invalid scheduled_at: not a valid date.' });
+    }
+    if (sillas.seats && !esReservaConTiempo(cita)) {
       return res.status(400).json({
         error: 'Child seats can only be requested on a reservation more than 30 minutes ahead.',
         errorCode: 'CHILD_SEATS_SCHEDULED_ONLY',
@@ -255,7 +260,7 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
           vehicleType,
           distanceMiles: valetMiles,
           durationMinutes: valetDuration,
-          bookingType: scheduledAt ? 'scheduled' : 'on_demand',
+          bookingType: cita ? 'scheduled' : 'on_demand',
           surgeMultiplier,
         })
       : null;
@@ -300,7 +305,7 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
       platform_fee_amount:  platformFee || null,
       payment_method:       pmMethod,
       notes:                notes || null,
-      scheduled_at:         scheduledAt || null,
+      scheduled_at:         cita,
       ...(sillas.seats ? { child_seats: sillas.seats } : {}),
       ride_status:          'searching',
       pickup_pin:           pin,
@@ -332,7 +337,7 @@ router.post("/valet-dispatch", requireSupabaseAuth, async (req: Request, res: Re
         pickup: pickupPayload,
         dropoff: dropoffPayload,
         fare: totalFare, payment_method: pmMethod, notes: notes || null,
-        scheduled_at: scheduledAt || null, ride_status: 'searching', pickup_pin: pin,
+        scheduled_at: cita, ride_status: 'searching', pickup_pin: pin,
         dispatched_by_valet: true, valet_booking_ref: bookingRef, guest_name: guestName || null,
         pickup_lat: gpsLat, pickup_lng: gpsLng,
         dropoff_lat: gpsDstLat, dropoff_lng: gpsDstLng,
