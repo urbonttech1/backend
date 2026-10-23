@@ -40,6 +40,7 @@ import { diagnosticar, contrastar, cruzar } from '../services/webhookHealth';
 import { esAudiencia } from '../services/announcements';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
+import { urlFirmadaDocumento, urlesFirmadas } from '../services/driverDocUrl';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
 import { invalidateFares, parseStoredFares } from '../services/fareConfig';
 import { invalidateZones } from '../services/serviceZones';
@@ -310,7 +311,11 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
     }
     type Docs = { aprobados: number; pendientes: number; rechazados: number; total: number; lista: DocumentoPanel[] };
     const documentos = new Map<string, Docs>();
-    for (const x of (docsRes.data ?? []) as Record<string, unknown>[]) {
+    // Firmadas de una vez, antes del bucle: `chauffeur-docs` servía URLs
+    // públicas y con la clave anónima se podían descargar licencias y seguros.
+    const filasDoc = (docsRes.data ?? []) as Record<string, unknown>[];
+    const urlesDoc = await urlesFirmadas(filasDoc.map(x => x.storage_url as string | null));
+    for (const [iDoc, x] of filasDoc.entries()) {
       const id = String(x.driver_id);
       const d = documentos.get(id) ?? { aprobados: 0, pendientes: 0, rechazados: 0, total: 0, lista: [] };
       d.total += 1;
@@ -324,7 +329,7 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
         state: estado,
         rawStatus: String(x.status),
         fileName: (x.file_name as string) || null,
-        url: (x.storage_url as string) || null,
+        url: urlesDoc[iDoc] ?? null,
         uploadedAt: x.created_at,
         updatedAt: x.updated_at,
         required: ACCEPTED_DOC_KEYS.includes(String(x.doc_key)),
@@ -878,8 +883,10 @@ adminRouter.get("/valets", async (_req: Request, res: Response) => {
         : 'active';
       const s = stats.get(p.id) ?? { dispatched: 0, completed: 0, cancelled: 0, commission: 0, commissionPending: 0, commissionCash: 0, lastRideAt: null };
       const documents = await Promise.all((docsPorValet.get(String(p.id)) ?? []).map(async (d) => {
+        // Todos firmados, no solo el W-9. `chauffeur-docs` servía URLs públicas
+        // y cualquiera con la clave anónima podía descargar licencias y seguros.
         const esW9 = String(d.doc_key) === 'w9';
-        const url = esW9 ? await urlFirmadaW9(d.storage_url) : (d.storage_url ?? null);
+        const url = esW9 ? await urlFirmadaW9(d.storage_url) : await urlFirmadaDocumento(d.storage_url);
         return {
           id: d.id, key: d.doc_key, label: etiqueta.get(String(d.doc_key)) ?? String(d.doc_key),
           state: normalizarEstadoDoc(d.status), url, fileName: d.file_name ?? null,
@@ -1468,7 +1475,11 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
       }
     }
 
-    const docs = filas.map((d: Record<string, unknown>) => {
+    // Se firman todas de una vez, no una a una: el panel lista decenas de
+    // documentos por pantalla y en serie sería una ida y vuelta por cada uno.
+    const urlesDocs = await urlesFirmadas(filas.map((d: Record<string, unknown>) => d.storage_url as string | null));
+
+    const docs = filas.map((d: Record<string, unknown>, i: number) => {
       const perfil = perfiles.get(String(d.driver_id || ''));
       return {
       id: d.id,
@@ -1481,7 +1492,7 @@ adminRouter.get("/documents", async (_req: Request, res: Response) => {
       type: d.doc_key || d.document_type || 'document',
       fileName: d.file_name || 'document',
       status: d.status || 'pending',
-      imageUrl: d.storage_url || null,
+      imageUrl: urlesDocs[i] ?? null,
       uploadDate: d.created_at,
       updatedAt: d.updated_at,
       expiryDate: d.expiry_date ?? null,

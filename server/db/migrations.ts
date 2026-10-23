@@ -1687,6 +1687,73 @@ export async function runMigrations() {
     // escaneo de toda la tabla en cada disputa.
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_rides_payment_intent ON rides (payment_intent_id)`);
 
+    // ── Cerrar la base a la clave pública ────────────────────────────────────
+    //
+    // La clave anónima va dentro de la app y cualquiera la extrae. Sin RLS, esa
+    // clave LEÍA y ESCRIBÍA todas las tablas: se comprobó que permitía UPDATE y
+    // DELETE sobre `admin_users`, es decir, cambiar el hash de una contraseña y
+    // entrar al panel como owner. También quedaban expuestos los viajes con sus
+    // teléfonos y direcciones, los pagos y los tickets de soporte.
+    //
+    // Con RLS activo y SIN políticas, Postgres deniega todo a `anon` y
+    // `authenticated`: cero filas al leer, cero al escribir, rechazo al
+    // insertar. No hace falta escribir políticas para cerrar, y escribirlas mal
+    // reabriría la tabla sin que nadie se entere.
+    //
+    // El backend no se entera, y está comprobado contra la base real:
+    //   · `supabaseAdmin` usa la clave de servicio, que tiene bypassrls. Sobre
+    //     `profiles`, que ya tenía RLS, la clave anónima ve 0 filas y la de
+    //     servicio las 38.
+    //   · `pool` conecta como `postgres`, que también lo ignora. La prueba es
+    //     que la consulta de `valet-history` lee `profiles` —con RLS— y devuelve
+    //     datos en producción.
+    //
+    // Lo que sí cambia: Supabase Realtime deja de entregar eventos de `rides` y
+    // `driver_locations` a la app. Es la TERCERA capa de respaldo, detrás de
+    // Socket.IO y de un sondeo HTTP cada 2-8 s, así que se pierde redundancia,
+    // no funcionalidad. Decidido a sabiendas.
+    //
+    // Cada tabla va en su propio bloque: si una falla —una que no sea nuestra,
+    // una heredada de una extensión— se registra y se sigue, en vez de abortar
+    // la migración entera y dejar el resto sin cerrar.
+    try {
+      await client.query(`
+        DO $$
+        DECLARE t text;
+        BEGIN
+          FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+          LOOP
+            BEGIN
+              EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
+            EXCEPTION WHEN OTHERS THEN
+              RAISE NOTICE 'RLS no aplicado a %: %', t, SQLERRM;
+            END;
+          END LOOP;
+        END $$;
+      `);
+
+      // Se comprueba el resultado en vez de darlo por hecho: una tabla que se
+      // quede fuera sigue siendo legible con la clave pública, y eso tiene que
+      // verse en el arranque, no descubrirse en la siguiente auditoría.
+      const { rows } = await client.query<{ abiertas: number }>(
+        `SELECT COUNT(*)::int AS abiertas
+           FROM pg_tables t
+           JOIN pg_class c ON c.relname = t.tablename
+           JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+          WHERE t.schemaname = 'public' AND NOT c.relrowsecurity`,
+      );
+      const abiertas = Number(rows[0]?.abiertas ?? 0);
+      if (abiertas > 0) {
+        logger.error(`[Migrations] ⚠ ${abiertas} tabla(s) de public siguen SIN RLS — la clave pública puede leerlas.`);
+      } else {
+        logger.info('[Migrations] ✓ RLS activo en todas las tablas de public.');
+      }
+    } catch (err) {
+      // Que el servidor no arranque por esto sería peor que el agujero: se
+      // registra bien alto y se sigue.
+      logger.error({ err: errMsg(err) }, '[Migrations] no se pudo activar RLS');
+    }
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

@@ -8,6 +8,7 @@ import { notifyNearbyDrivers, notifyUser } from "../../services/fcm";
 import { driverNotif } from "../../services/notificationTemplates";
 import { notifyRidePassenger } from "../../services/valetNotifications";
 import { validateTransition, ACTIVE_STATUSES, type RideStatus, type UserRole } from "../../services/stateMachine";
+import { urlFirmadaDocumento } from "../../services/driverDocUrl";
 import {
   calculateFareFromRules,
   calcularCargoEspera,
@@ -143,7 +144,11 @@ router.get("/:id", (req: Request, _res: Response, next: (deferToNext?: 'route') 
         (ride as Record<string, unknown>).driver_vehicle_year   = dv.year   ?? null;
         (ride as Record<string, unknown>).driver_vehicle_color  = dv.color  ?? null;
         (ride as Record<string, unknown>).driver_vehicle_plate  = dv.plate  ?? null;
-        (ride as Record<string, unknown>).driver_vehicle_photo  = dv.vehicle_photo_url ?? null;
+        // Firmada: hay fotos de vehículo guardadas en `chauffeur-docs`, el mismo
+        // bucket que las licencias. Sin esto, cerrar ese bucket dejaría al
+        // pasajero sin ver el coche que le va a recoger.
+        (ride as Record<string, unknown>).driver_vehicle_photo  =
+          await urlFirmadaDocumento(dv.vehicle_photo_url as string | null);
       }
     }
 

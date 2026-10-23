@@ -6,6 +6,7 @@ import { nombreDeConductor, type PerfilConductor } from '../services/driverName'
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
 import { pool } from '../db/pool';
 import { requireSupabaseAuth } from '../middleware';
+import { urlFirmadaDocumento } from '../services/driverDocUrl';
 import { logger } from '../lib/logger';
 import {
   recalcularVerificacion,
@@ -544,7 +545,10 @@ chauffeurDocsRouter.get('/verification-status', requireSupabaseAuth, async (req:
       if (!existing || doc.updated_at > existing.updatedAt!) {
         uploadedDocs[doc.doc_key] = {
           status:     doc.status,
-          url:        doc.storage_url || doc.image_url,
+          // Firmada, no pública: el conductor ve su documento, pero el enlace
+          // caduca en una hora y el bucket puede quedar cerrado a la clave
+          // anónima, que es con la que se podían descargar los de cualquiera.
+          url:        await urlFirmadaDocumento(doc.storage_url || doc.image_url),
           fileName:   doc.file_name,
           uploadedAt: doc.created_at,
           updatedAt:  doc.updated_at,
