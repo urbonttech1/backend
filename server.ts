@@ -52,7 +52,7 @@ import { errorsRouter } from "./server/api/errors";
 import { supabaseAdmin } from "./server/db/client";
 import { verifySupabaseSchema } from "./server/db/schemaCheck";
 import { pool } from "./server/db/pool";
-import { startCronJobs } from "./server/jobs/cron";
+import { startCronJobs, reconciliarMovimientosDePago } from "./server/jobs/cron";
 import { sanitizeBody } from "./server/middleware";
 import { runMigrations } from "./server/db/migrations";
 import { loadFares } from "./server/services/fareConfig";
@@ -1076,6 +1076,14 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
     // Área de servicio desde service_zones. Nunca lanza: si falla se opera
     // con el círculo de Miami por defecto.
     .then(() => loadZones(true))
+    // Reembolsos y contracargos que Stripe tiene y aqui faltan. Va despues de
+    // las migraciones por la misma razon: la tabla tiene que existir, y si no
+    // existe `registrarEvento` solo lo loguea y no se escribiria nada, en
+    // silencio. No se espera —son llamadas a Stripe y no deben retrasar el
+    // resto del arranque—, y es seguro con varias instancias: el upsert va por
+    // (kind, stripe_object_id), asi que dos tasks escribiendo lo mismo dan una
+    // sola fila. Sin esto, lo anterior al despliegue esperaba al cron de las 6 h.
+    .then(() => { void reconciliarMovimientosDePago().catch(() => {}); })
     // Ambas ramas resuelven a void. Antes una devolvía la tupla de
     // Promise.allSettled y la otra un array vacío, y esa unión rompía la
     // inferencia de la cadena — el valor no se usa en ningún caso.

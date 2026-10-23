@@ -1098,7 +1098,7 @@ async function retranscribirNotasPendientes() {
  *
  * `RECONCILE_DAYS` amplía la ventana para el repaso inicial de lo histórico.
  */
-async function reconciliarMovimientosDePago(): Promise<void> {
+export async function reconciliarMovimientosDePago(): Promise<void> {
   const stripe = getStripe();
   if (!stripe) return;
 
