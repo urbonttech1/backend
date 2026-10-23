@@ -11,6 +11,7 @@ import { reasignacionesVencidas, MINUTOS_PARA_REEMPLAZO, type ViajeEnReasignacio
 import { getStripe } from '../api/rides/helpers';
 import { devolverCobroDelViaje } from '../services/rideRefund';
 import { pagarViajesPendientes } from '../services/payoutRecovery';
+import { eventoDesdeReembolso, eventoDesdeDisputa, registrarEvento, viajeDelPago } from '../services/paymentEvents';
 import { pagarComisionesValetPendientes } from '../services/valetPayout';
 import { notifyUser, sendMulticast } from '../services/fcm';
 import { notifyRidePassenger } from '../services/valetNotifications';
@@ -1082,6 +1083,55 @@ async function retranscribirNotasPendientes() {
   }
 }
 
+
+/**
+ * Trae de Stripe los reembolsos y contracargos que no llegaron por webhook.
+ *
+ * Existe por lo que ya pasó una vez: `account.updated` estaba programado en el
+ * código pero el endpoint de Stripe nunca estuvo suscrito a ese evento, y
+ * durante meses hubo choferes a los que no se les transfirió nada. Un webhook
+ * al que no estás suscrito no falla: calla. Esto hace que el registro funcione
+ * aunque la suscripción del Dashboard esté mal puesta.
+ *
+ * Idempotente: `registrarEvento` hace upsert por (kind, stripe_object_id), así
+ * que volver a traer lo mismo no duplica filas.
+ *
+ * `RECONCILE_DAYS` amplía la ventana para el repaso inicial de lo histórico.
+ */
+async function reconciliarMovimientosDePago(): Promise<void> {
+  const stripe = getStripe();
+  if (!stripe) return;
+
+  const dias = Number(process.env.RECONCILE_DAYS ?? 7) || 7;
+  const desde = Math.floor((Date.now() - dias * 86400_000) / 1000);
+  let reembolsos = 0;
+  let disputas = 0;
+
+  try {
+    for await (const refund of stripe.refunds.list({ created: { gte: desde }, limit: 100 })) {
+      const piId = typeof refund.payment_intent === 'string' ? refund.payment_intent : refund.payment_intent?.id ?? null;
+      await registrarEvento(eventoDesdeReembolso(refund), await viajeDelPago(piId));
+      reembolsos++;
+    }
+  } catch (err: unknown) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, '[CRON] no se pudieron reconciliar los reembolsos');
+  }
+
+  try {
+    for await (const dispute of stripe.disputes.list({ created: { gte: desde }, limit: 100 })) {
+      const piId = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : dispute.payment_intent?.id ?? null;
+      await registrarEvento(eventoDesdeDisputa(dispute), await viajeDelPago(piId));
+      disputas++;
+    }
+  } catch (err: unknown) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, '[CRON] no se pudieron reconciliar los contracargos');
+  }
+
+  if (reembolsos || disputas) {
+    log.info(`[CRON] Movimientos de pago reconciliados: ${reembolsos} reembolso(s), ${disputas} contracargo(s) en ${dias} día(s).`);
+  }
+}
+
 export async function startCronJobs() {
   // ── Leader Election for Horizontal Scaling (Google Cloud Run 1..10 instances) ──
   // Acquire a PostgreSQL session-level advisory lock (id: 72728).
@@ -1192,6 +1242,12 @@ export async function startCronJobs() {
     cerrarAlarmasDeReserva();
   });
   log.info('[CRON] Reservation confirmation alarms running every 2 minutes.');
+
+  // Reembolsos y contracargos que no llegaron por webhook. Cada 6 h.
+  cron.schedule('17 */6 * * *', () => {
+    reconciliarMovimientosDePago().catch(() => {});
+  });
+  log.info('[CRON] Payment event reconciliation scheduled every 6 hours.');
 
   // Rate reminders: 2h after completed rides with no rating
   cron.schedule('*/30 * * * *', () => {

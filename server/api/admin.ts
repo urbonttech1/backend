@@ -35,6 +35,7 @@ import { reactivarCuenta } from '../services/accountReactivation';
 import { MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA as TIPO_ALARMA_RESERVA } from '../services/reservationConfirm';
 import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml } from '../services/tapToPayLaunchEmail';
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
+import { eventoDesdeReembolso, registrarEvento } from '../services/paymentEvents';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
@@ -2020,6 +2021,10 @@ adminRouter.get("/rides", async (req: Request, res: Response) => {
         duration:      minutos != null ? `${minutos} min` : null,
         vehicleClass:  row.vehicle_type,
         paymentMethod: row.payment_method,
+        // En camelCase porque el panel lee así: sin esto la tabla no podía
+        // distinguir un viaje cobrado de uno reembolsado o con la tarjeta
+        // rechazada, y los tres salían iguales.
+        paymentStatus: row.payment_status,
         cancelReason:  row.cancel_reason,
         date:          row.created_at,
         // El panel los lee en camelCase; `...row` sólo trae los snake_case y la
@@ -2123,6 +2128,18 @@ adminRouter.get("/rides/:id", async (req: Request, res: Response) => {
       return (texto as string) || null;
     };
 
+    // Lo devuelto de este viaje: reembolsos que salieron y contracargos que se
+    // perdieron. Una disputa abierta todavía no es dinero perdido, así que no
+    // suma hasta que se cierre en contra.
+    const { data: movimientos } = await supabaseAdmin
+      .from('payment_events')
+      .select('kind, status, amount_usd')
+      .eq('ride_id', req.params.id);
+
+    const reembolsado = ((movimientos ?? []) as Array<Record<string, unknown>>)
+      .filter(m => (m.kind === 'refund' && m.status === 'succeeded') || (m.kind === 'chargeback' && m.status === 'lost'))
+      .reduce((s, m) => s + (Number(m.amount_usd) || 0), 0);
+
     res.json({
       ride: {
         ...row,
@@ -2135,7 +2152,7 @@ adminRouter.get("/rides/:id", async (req: Request, res: Response) => {
         completedAt: row.completed_at,
         cancelledAt: row.cancelled_at,
       },
-      money: desgloseDeDinero(row),
+      money: desgloseDeDinero(row, reembolsado),
     });
   } catch (err: any) {
     logger.error(`[admin/rides/:id] ${errMsg(err)}`);
@@ -2168,11 +2185,106 @@ adminRouter.post("/rides/:id/refund", async (req: Request, res: Response) => {
       refundParams.amount = Math.round(parseFloat(String(amount)) * 100);
     }
     const refund = await stripe.refunds.create(refundParams);
-    await supabaseAdmin.from('rides').update({ ride_status: 'refunded', updated_at: new Date().toISOString() }).eq('id', req.params.id);
+
+    // Se marca `payment_status`, no `ride_status`. Antes se escribía
+    // `ride_status: 'refunded'`, que el CHECK de esa columna no admite: el
+    // UPDATE se rechazaba, nadie miraba el error y el reembolso salía de Stripe
+    // sin dejar rastro en la base. Un viaje reembolsado sigue siendo un viaje
+    // completado o cancelado; lo que cambia es el estado del pago.
+    const { error: errEstado } = await supabaseAdmin.from('rides')
+      .update({ payment_status: 'refunded', updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+    if (errEstado) logger.error(`[admin/refund] no se pudo marcar el viaje ${req.params.id}: ${errEstado.message}`);
+
+    await registrarEvento(
+      eventoDesdeReembolso(refund, {
+        origin: 'panel',
+        createdBy: req.adminUser?.name || req.adminUser?.email || 'desconocido',
+        reasonOverride: reason ? String(reason) : null,
+      }),
+      req.params.id,
+    );
+    await auditar(req, 'ride.refund', `$${(refund.amount / 100).toFixed(2)}${reason ? ` · ${reason}` : ''} [${req.params.id}]`);
+
     res.json({ success: true, refundId: refund.id, amount: refund.amount / 100, status: refund.status, rideId: req.params.id });
   } catch (err: any) {
     logger.error(`[admin/refund] ${errMsg(err)}`);
     res.status(500).json({ error: `Refund failed: ${errMsg(err)}` });
+  }
+});
+
+// ─── Movimientos de pago: reembolsos, contracargos y cobros rechazados ───────
+//
+// Lo que el panel enseña en la pestaña de Pagos, dentro de Incidentes. Se
+// devuelven los 200 más recientes con el nombre del pasajero resuelto, porque
+// un contracargo sin saber de quién es no se puede trabajar.
+adminRouter.get("/payment-events", async (req: Request, res: Response) => {
+  try {
+    const { kind, abiertos } = req.query;
+
+    let q = supabaseAdmin
+      .from('payment_events')
+      .select('id, ride_id, kind, status, amount_usd, currency, reason, stripe_object_id, payment_intent_id, origin, created_by, metadata, opened_at, resolved_at, created_at')
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (kind && typeof kind === 'string') q = q.eq('kind', kind);
+    if (abiertos === 'true') q = q.is('resolved_at', null);
+
+    const { data, error } = await q;
+    if (error) throw error;
+
+    const eventos = (data ?? []) as Array<Record<string, unknown>>;
+
+    // El pasajero y la referencia del viaje, en una sola consulta por lote.
+    const rideIds = [...new Set(eventos.map(e => e.ride_id).filter(Boolean))] as string[];
+    const viajes = new Map<string, Record<string, unknown>>();
+    if (rideIds.length > 0) {
+      const { data: filas } = await supabaseAdmin
+        .from('rides')
+        .select('id, passenger_id, valet_booking_ref, ride_status, payment_status')
+        .in('id', rideIds);
+      for (const f of (filas ?? []) as Array<Record<string, unknown>>) viajes.set(String(f.id), f);
+    }
+
+    const pasajeroIds = [...new Set([...viajes.values()].map(v => v.passenger_id).filter(Boolean))] as string[];
+    const nombres = new Map<string, string>();
+    if (pasajeroIds.length > 0) {
+      const { data: perfiles } = await supabaseAdmin
+        .from('profiles')
+        .select('id, first_name, last_name')
+        .in('id', pasajeroIds);
+      for (const p of (perfiles ?? []) as Array<Record<string, unknown>>) {
+        nombres.set(String(p.id), [p.first_name, p.last_name].filter(Boolean).join(' ') || '—');
+      }
+    }
+
+    res.json({
+      events: eventos.map(e => {
+        const viaje = e.ride_id ? viajes.get(String(e.ride_id)) : undefined;
+        return {
+          id:              e.id,
+          rideId:          e.ride_id,
+          kind:            e.kind,
+          status:          e.status,
+          amountUsd:       Number(e.amount_usd) || 0,
+          currency:        e.currency,
+          reason:          e.reason,
+          stripeObjectId:  e.stripe_object_id,
+          origin:          e.origin,
+          createdBy:       e.created_by,
+          metadata:        e.metadata ?? {},
+          openedAt:        e.opened_at,
+          resolvedAt:      e.resolved_at,
+          createdAt:       e.created_at,
+          passengerName:   viaje?.passenger_id ? nombres.get(String(viaje.passenger_id)) ?? '—' : null,
+          rideStatus:      viaje?.ride_status ?? null,
+        };
+      }),
+    });
+  } catch (err: any) {
+    logger.error(`[admin/payment-events] ${errMsg(err)}`);
+    res.status(500).json({ error: 'Failed to load payment events' });
   }
 });
 
@@ -2269,6 +2381,27 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
     const collected = completed.filter(r => r.payment_status === 'paid');
     const uncollected = completed.filter(r => r.payment_status !== 'paid');
 
+    // El dinero que volvió al pasajero: reembolsos que salieron y contracargos
+    // perdidos. Las disputas abiertas se cuentan aparte porque todavía se
+    // pueden ganar, pero tienen plazo y conviene verlas.
+    const devuelto = await (async () => {
+      try {
+        const { data } = await supabaseAdmin.from('payment_events').select('kind, status, amount_usd');
+        const filas = (data ?? []) as Array<Record<string, unknown>>;
+        const salido = filas.filter(m =>
+          (m.kind === 'refund' && m.status === 'succeeded') || (m.kind === 'chargeback' && m.status === 'lost'));
+        return {
+          total: Math.round(salido.reduce((s, m) => s + (Number(m.amount_usd) || 0), 0) * 100) / 100,
+          cuenta: salido.length,
+          disputasAbiertas: filas.filter(m => m.kind === 'chargeback' && m.status === 'pending').length,
+        };
+      } catch {
+        // La tabla puede no existir todavía si el panel va por delante del
+        // despliegue del backend: mejor un cero que tumbar toda la página.
+        return { total: 0, cuenta: 0, disputasAbiertas: 0 };
+      }
+    })();
+
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
     const yesterdayStart = new Date(todayStart.getTime() - 86400000);
     const weekStart = new Date(Date.now() - 7 * 86400000);
@@ -2361,6 +2494,11 @@ adminRouter.get("/revenue", async (_req: Request, res: Response) => {
       collectedAllTime: Math.round(sum(collected) * 100) / 100,
       uncollectedAllTime: Math.round(sum(uncollected) * 100) / 100,
       uncollectedRides: uncollected.length,
+      // El dinero que salió después de cobrado. No se resta de `collectedAllTime`
+      // para no cambiar lo que el panel ya venía enseñando: se muestra aparte.
+      refundedAllTime: devuelto.total,
+      refundedCount: devuelto.cuenta,
+      chargebacksOpen: devuelto.disputasAbiertas,
       byVehicleClass,
       dailyRevenue,
       hourlyRevenue,

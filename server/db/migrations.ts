@@ -1595,6 +1595,62 @@ export async function runMigrations() {
     // El cobro busca justo por aquí: lo pendiente de un chofer, lo más viejo primero.
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_cancellation_penalty_pendiente ON driver_cancellation_penalties (driver_id, created_at) WHERE status = 'recorded'`);
 
+    // El dinero que sale: reembolsos, contracargos y cobros rechazados.
+    //
+    // Antes no se guardaba ninguno de los tres. El reembolso del panel devolvía
+    // la plata en Stripe y marcaba `rides.ride_status = 'refunded'`, un valor
+    // que el CHECK de esa columna no admite: el UPDATE se rechazaba y nadie
+    // comprobaba el error, así que el dinero salía sin dejar rastro. Los
+    // contracargos no se escuchaban siquiera, y los cobros rechazados vivían
+    // sólo en el viaje, donde el panel nunca los enseñaba.
+    //
+    // Una sola tabla para los tres porque la pregunta operativa es una sola
+    // —qué dinero salió y por qué—. Que el contracargo tenga ciclo de vida y el
+    // reembolso no lo resuelven `status` y `resolved_at`.
+    //
+    // `ride_id` admite nulos a propósito: un contracargo que no se consigue
+    // atar a un viaje sigue siendo dinero que se fue, y perderlo por no saber
+    // de quién es sería el mismo error de antes.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS payment_events (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        ride_id           UUID REFERENCES rides(id) ON DELETE SET NULL,
+        kind              VARCHAR(20) NOT NULL
+                          CHECK (kind IN ('refund', 'chargeback', 'payment_failed')),
+        status            VARCHAR(20) NOT NULL
+                          CHECK (status IN ('pending', 'succeeded', 'failed', 'won', 'lost', 'warning_closed')),
+        amount_usd        NUMERIC(10,2) NOT NULL DEFAULT 0,
+        currency          VARCHAR(10)   NOT NULL DEFAULT 'usd',
+        reason            TEXT,
+        /** re_… para reembolsos, dp_… para disputas, pi_… para cobros rechazados. */
+        stripe_object_id  TEXT NOT NULL,
+        payment_intent_id TEXT,
+        charge_id         TEXT,
+        origin            VARCHAR(20) NOT NULL
+                          CHECK (origin IN ('panel', 'stripe', 'auto')),
+        /** Nombre del admin que lo hizo, o 'sistema' cuando lo hizo el servidor. */
+        created_by        TEXT,
+        metadata          JSONB       NOT NULL DEFAULT '{}',
+        opened_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved_at       TIMESTAMPTZ,
+        created_at        TIMESTAMPTZ DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    // La clave de la idempotencia: el panel crea el reembolso y además llega el
+    // webhook `charge.refunded` por el mismo `re_…`. Sin este índice habría dos
+    // filas del mismo dinero; con él, la segunda escritura actualiza la primera.
+    await safeIndex(`CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_events_objeto ON payment_events (kind, stripe_object_id)`);
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_payment_events_recientes ON payment_events (created_at DESC)`);
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_payment_events_ride ON payment_events (ride_id)`);
+    // Lo que el panel pone arriba del todo: lo que sigue abierto.
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_payment_events_abiertos ON payment_events (created_at) WHERE resolved_at IS NULL`);
+
+    // Un contracargo llega con un charge, no con el PaymentIntent, así que hay
+    // que buscar el viaje por `payment_intent_id`. Sin índice eso era un
+    // escaneo de toda la tabla en cada disputa.
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_rides_payment_intent ON rides (payment_intent_id)`);
+
     // Reload PostgREST schema cache so Supabase JS client sees the new tables and functions
     try {
       await client.query(`NOTIFY pgrst, 'reload schema'`);

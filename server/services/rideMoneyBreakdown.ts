@@ -74,6 +74,15 @@ export interface DesgloseDeDinero {
   cargoEspera: number;
   cargoNoShow: number;
   descuentoPromo: number;
+  /**
+   * Lo devuelto al pasajero, sumando reembolsos y contracargos perdidos.
+   *
+   * Va aparte del reparto a propósito: el reparto dice cómo se dividió el
+   * cobro cuando se hizo, y eso no cambia porque después se devuelva el
+   * dinero. Restarlo ahí haría que las tres partes dejaran de sumar lo
+   * cobrado y la barra del panel mentiría.
+   */
+  reembolsado: number;
   /** Lo que se queda Urbont: su 15 % y el impuesto. Sin la comisión del valet. */
   comisionUrbont: number;
   /**
@@ -138,7 +147,12 @@ function esperaDentroDeFare(fare: number, lockedFare: number, espera: number): b
   return Math.abs(fare - (lockedFare + espera)) < 0.01;
 }
 
-export function desgloseDeDinero(viaje: FilaDeViaje): DesgloseDeDinero {
+/**
+ * `reembolsado` llega aparte porque no vive en `rides`: son las filas de
+ * `payment_events` de ese viaje. Se pasa como argumento para que esta función
+ * siga siendo pura y se pueda probar sin base de datos.
+ */
+export function desgloseDeDinero(viaje: FilaDeViaje, reembolsado = 0): DesgloseDeDinero {
   const bookingFee = bookingFeeDelBreakdown(viaje.base_fare_breakdown);
   const impuesto = numero(viaje.tax_amount);
   const comisionValet = numero(viaje.valet_surcharge);
@@ -226,6 +240,7 @@ export function desgloseDeDinero(viaje: FilaDeViaje): DesgloseDeDinero {
     cargoEspera,
     cargoNoShow: numero(viaje.no_show_fee),
     descuentoPromo: numero(viaje.promo_discount),
+    reembolsado: Math.round(numero(reembolsado) * 100) / 100,
     comisionUrbont,
     gananciaChoferViaje,
     gananciaChofer,

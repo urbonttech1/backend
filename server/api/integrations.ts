@@ -13,6 +13,11 @@ import { codigoPostalDeDirecciones, codigoPostalDelViaje } from '../services/tax
 import { notifyUser } from '../services/fcm';
 import { passengerNotif } from '../services/notificationTemplates';
 import { pagarChoferPorViaje } from '../services/ridePayout';
+import {
+  eventoDesdeReembolso, eventoDesdeDisputa, eventoDesdeCobroFallido,
+  registrarEvento, viajeDelPago,
+} from '../services/paymentEvents';
+import { avisarContracargo } from '../services/chargebackEmail';
 
 const log = createContextLogger('INTEGRATIONS');
 
@@ -221,6 +226,13 @@ integrationsRouter.post(
         case 'payment_intent.payment_failed': {
           const pi = event.data.object as Stripe.PaymentIntent;
           const rideId = pi.metadata?.ride_id;
+
+          // El cobro rechazado se registra siempre, también el de Tap to Pay,
+          // que antes sólo mandaba un push al chofer y no dejaba nada: sin
+          // fila, un pasajero al que la tarjeta le falla una y otra vez era
+          // invisible para el panel.
+          await registrarEvento(eventoDesdeCobroFallido(pi), rideId ?? null);
+
           // Tap to Pay: lo cobra el chofer, así que el aviso es para él. Apple
           // exige avisar aunque haya cerrado la app antes de ver el resultado.
           if (rideId && pi.metadata?.type === 'tap_to_pay') {
@@ -286,6 +298,74 @@ integrationsRouter.post(
         case 'payout.paid': {
           const payout = event.data.object as Stripe.Payout;
           log.info(`[STRIPE_WEBHOOK] Payout ${payout.id} sent â $${payout.amount / 100}`);
+          break;
+        }
+
+        // ── Dinero devuelto — lo reembolsemos nosotros o desde el panel de Stripe ──
+        //
+        // Esta es la red de seguridad: los sitios del código que crean
+        // reembolsos ya registran el suyo, pero el que alguien haga a mano en
+        // Stripe sólo llega por aquí. El upsert por (kind, re_…) hace que la
+        // doble escritura actualice la fila en vez de duplicar el dinero.
+        case 'charge.refunded':
+        case 'refund.updated': {
+          const refunds: Stripe.Refund[] = event.type === 'refund.updated'
+            ? [event.data.object as Stripe.Refund]
+            : ((event.data.object as Stripe.Charge).refunds?.data ?? []);
+
+          for (const refund of refunds) {
+            const piId = typeof refund.payment_intent === 'string' ? refund.payment_intent : refund.payment_intent?.id ?? null;
+            const rideId = await viajeDelPago(piId);
+            await registrarEvento(eventoDesdeReembolso(refund), rideId);
+
+            // Sólo el reembolso total cambia el estado del pago: en uno parcial
+            // —una cancelación que cobra la penalidad y devuelve el resto— el
+            // viaje sigue cobrado, y decir lo contrario descuadraría los ingresos.
+            if (rideId && refund.status === 'succeeded' && event.type === 'charge.refunded') {
+              const cargo = event.data.object as Stripe.Charge;
+              if (cargo.amount_refunded >= cargo.amount) {
+                await supabaseAdmin.from('rides')
+                  .update({ payment_status: 'refunded', updated_at: new Date().toISOString() })
+                  .eq('id', rideId);
+              }
+            }
+          }
+          log.info(`[STRIPE_WEBHOOK] ${event.type}: ${refunds.length} reembolso(s) registrado(s)`);
+          break;
+        }
+
+        // ── Contracargo ───────────────────────────────────────────────────────
+        //
+        // Sólo se registra y se avisa: no se revierte la transferencia al
+        // chofer. Esa decisión es de un humano, y automatizarla dejaría al
+        // chofer en negativo sin que nadie se lo haya explicado.
+        case 'charge.dispute.created':
+        case 'charge.dispute.updated':
+        case 'charge.dispute.funds_withdrawn':
+        case 'charge.dispute.funds_reinstated':
+        case 'charge.dispute.closed': {
+          const dispute = event.data.object as Stripe.Dispute;
+          const piId = typeof dispute.payment_intent === 'string' ? dispute.payment_intent : dispute.payment_intent?.id ?? null;
+          const rideId = await viajeDelPago(piId);
+          const evento = eventoDesdeDisputa(dispute);
+          if (event.type === 'charge.dispute.funds_withdrawn') evento.metadata.funds_withdrawn = true;
+          await registrarEvento(evento, rideId);
+
+          log.warn(`[STRIPE_WEBHOOK] ${event.type} ${dispute.id}: $${(dispute.amount / 100).toFixed(2)} · ${dispute.reason} · viaje ${rideId ?? 'sin identificar'}`);
+
+          // Se avisa al abrirse y al cerrarse; los movimientos intermedios no
+          // merecen un correo cada uno.
+          if (event.type === 'charge.dispute.created' || event.type === 'charge.dispute.closed') {
+            void avisarContracargo({
+              disputeId:  dispute.id,
+              amountUsd:  dispute.amount / 100,
+              motivo:     dispute.reason,
+              estado:     dispute.status,
+              rideId,
+              abierto:    event.type === 'charge.dispute.created',
+              dueBy:      dispute.evidence_details?.due_by ? new Date(dispute.evidence_details.due_by * 1000) : null,
+            });
+          }
           break;
         }
 
