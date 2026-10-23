@@ -37,6 +37,7 @@ import { ASUNTO as ASUNTO_TAP_TO_PAY, PUSH as PUSH_TAP_TO_PAY, launchEmailHtml }
 import { desgloseDeDinero } from '../services/rideMoneyBreakdown';
 import { eventoDesdeReembolso, registrarEvento, esCobrado } from '../services/paymentEvents';
 import { diagnosticar, contrastar, cruzar } from '../services/webhookHealth';
+import { esAudiencia } from '../services/announcements';
 import { enviarAvisoSuspension, enviarAvisoReactivacion, enviarAvisoAprobacionValet, enviarAvisoRechazoValet, enviarAvisoDocumentoValet, enviarAvisoCambioContrasena, enviarAvisoCuentaEliminada } from '../services/accountEmails';
 import { documentacionDe, faltantesParaActivar, urlFirmadaW9, type DocumentacionValet } from '../services/valetDocumentation';
 import { borrarCuenta, borrarCuentaDefinitiva } from '../services/accountDeletion';
@@ -2219,6 +2220,144 @@ adminRouter.post("/rides/:id/refund", async (req: Request, res: Response) => {
 // Lo que el panel enseña en la pestaña de Pagos, dentro de Incidentes. Se
 // devuelven los 200 más recientes con el nombre del pasajero resuelto, porque
 // un contracargo sin saber de quién es no se puede trabajar.
+// ─── Avisos fijados ──────────────────────────────────────────────────────────
+//
+// El tablon que queda arriba del buzon de la app hasta que caduca. No es el
+// push: el push llega al instante y se va al leerlo; esto permanece.
+//
+// Se audita todo lo que cambia, porque es texto que leen TODOS los usuarios y
+// no hay forma de corregirlo rapido una vez fuera.
+
+/** Lo que se acepta del panel, ya saneado. Nunca se confia en el cuerpo tal cual. */
+function avisoDelCuerpo(body: Record<string, unknown>): Record<string, unknown> | { error: string } {
+  const contenido = body.contenido;
+  if (!contenido || typeof contenido !== 'object') return { error: 'Falta el contenido del aviso.' };
+
+  // El ingles es obligatorio: es el respaldo cuando falta la traduccion, y sin
+  // el un usuario en frances no veria nada.
+  const en = (contenido as Record<string, { title?: unknown }>).en;
+  if (!en || typeof en.title !== 'string' || !en.title.trim()) {
+    return { error: 'El titulo en ingles es obligatorio: es el respaldo cuando falta una traduccion.' };
+  }
+
+  const audiencia = esAudiencia(body.audiencia) ? body.audiencia : 'all';
+  const tipo = ['promo', 'system', 'news'].includes(String(body.tipo)) ? String(body.tipo) : 'news';
+  const fecha = (v: unknown): string | null => {
+    if (!v) return null;
+    const t = Date.parse(String(v));
+    return Number.isNaN(t) ? null : new Date(t).toISOString();
+  };
+  const txt = (v: unknown, max: number): string | null => {
+    const x = typeof v === 'string' ? v.trim() : '';
+    return x ? x.slice(0, max) : null;
+  };
+
+  return {
+    contenido,
+    audiencia,
+    tipo,
+    icono: txt(body.icono, 20) ?? 'newspaper',
+    etiqueta: txt(body.etiqueta, 40),
+    enlace: txt(body.enlace, 200),
+    publicado: body.publicado === true,
+    desde: fecha(body.desde) ?? new Date().toISOString(),
+    hasta: fecha(body.hasta),
+  };
+}
+
+adminRouter.get("/announcements", async (_req: Request, res: Response) => {
+  try {
+    // Aqui SI salen los borradores y los caducados: el panel tiene que poder
+    // gestionarlos, al reves que el endpoint publico.
+    const { data, error } = await supabaseAdmin
+      .from('announcements')
+      .select('*')
+      .order('desde', { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    res.json({ announcements: data ?? [] });
+  } catch (err: any) {
+    logger.error(`[admin/announcements] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudieron cargar los avisos' });
+  }
+});
+
+adminRouter.post("/announcements", async (req: Request, res: Response) => {
+  try {
+    const campos = avisoDelCuerpo(req.body || {});
+    if ('error' in campos) return res.status(400).json(campos);
+
+    const { data, error } = await supabaseAdmin
+      .from('announcements')
+      .insert({ ...campos, creado_por: req.adminUser?.name || req.adminUser?.email || 'desconocido' })
+      .select()
+      .single();
+    if (error) throw error;
+
+    const fila = data as Record<string, unknown>;
+    await auditar(req, campos.publicado ? 'announcement.publish' : 'announcement.create',
+      `${tituloIngles(campos.contenido)} [${fila.id}]`);
+    res.json({ announcement: fila });
+  } catch (err: any) {
+    logger.error(`[admin/announcements:create] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudo crear el aviso' });
+  }
+});
+
+adminRouter.patch("/announcements/:id", async (req: Request, res: Response) => {
+  try {
+    // Publicar y despublicar es lo que mas se usa, y no deberia obligar a
+    // reenviar el aviso entero: con `publicado` solo basta.
+    const soloEstado = Object.keys(req.body || {}).length === 1 && typeof req.body?.publicado === 'boolean';
+    const campos = soloEstado
+      ? { publicado: req.body.publicado as boolean }
+      : avisoDelCuerpo(req.body || {});
+    if ('error' in campos) return res.status(400).json(campos);
+
+    const { data, error } = await supabaseAdmin
+      .from('announcements')
+      .update({ ...campos, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw error;
+    if (!data) return res.status(404).json({ error: 'Aviso no encontrado' });
+
+    const accion = soloEstado
+      ? (campos.publicado ? 'announcement.publish' : 'announcement.unpublish')
+      : 'announcement.update';
+    await auditar(req, accion, `${tituloIngles((data as Record<string, unknown>).contenido)} [${req.params.id}]`);
+    res.json({ announcement: data });
+  } catch (err: any) {
+    logger.error(`[admin/announcements:update] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudo actualizar el aviso' });
+  }
+});
+
+adminRouter.delete("/announcements/:id", async (req: Request, res: Response) => {
+  try {
+    const { data } = await supabaseAdmin.from('announcements').select('contenido').eq('id', req.params.id).maybeSingle();
+    const { error } = await supabaseAdmin.from('announcements').delete().eq('id', req.params.id);
+    if (error) throw error;
+    await auditar(req, 'announcement.delete', `${tituloIngles((data as Record<string, unknown> | null)?.contenido)} [${req.params.id}]`);
+    res.json({ success: true });
+  } catch (err: any) {
+    logger.error(`[admin/announcements:delete] ${errMsg(err)}`);
+    res.status(500).json({ error: 'No se pudo borrar el aviso' });
+  }
+});
+
+/** El titulo en ingles, para que la auditoria diga QUE aviso se toco. */
+function tituloIngles(contenido: unknown): string {
+  try {
+    const c = typeof contenido === 'string' ? JSON.parse(contenido) : contenido;
+    const t = (c as Record<string, { title?: unknown }>)?.en?.title;
+    return typeof t === 'string' && t.trim() ? t.trim().slice(0, 60) : 'sin titulo';
+  } catch {
+    return 'sin titulo';
+  }
+}
+
 // ─── Salud de los webhooks de Stripe ─────────────────────────────────────────
 //
 // Existe por lo de `account.updated`: el codigo lo atendia y el endpoint de

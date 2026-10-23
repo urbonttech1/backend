@@ -1646,6 +1646,42 @@ export async function runMigrations() {
     // Lo que el panel pone arriba del todo: lo que sigue abierto.
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_payment_events_abiertos ON payment_events (created_at) WHERE resolved_at IS NULL`);
 
+    // Avisos que quedan fijados arriba del buzon de la app hasta que caducan.
+    //
+    // No sustituyen al push: el push llega al instante y se va al leerlo; esto
+    // es un tablon que permanece ("nueva tarifa de aeropuerto", "operamos el
+    // 1 de enero") y que el usuario ve cuando abre la app.
+    //
+    // Las traducciones van en la MISMA fila, no una fila por idioma: un anuncio
+    // es una sola cosa, y partirlo en cuatro obligaria a mantener su caducidad
+    // y su estado sincronizados a mano. El servidor devuelve el idioma pedido
+    // con `en` de respaldo, porque un anuncio sin traducir debe verse.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS announcements (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        /** { "en": { "title": …, "description": …, "cta": … }, "es": { … } } */
+        contenido   JSONB       NOT NULL DEFAULT '{}',
+        audiencia   VARCHAR(20) NOT NULL DEFAULT 'all'
+                    CHECK (audiencia IN ('all', 'passenger', 'driver', 'concierge')),
+        tipo        VARCHAR(20) NOT NULL DEFAULT 'news'
+                    CHECK (tipo IN ('promo', 'system', 'news')),
+        icono       VARCHAR(20) NOT NULL DEFAULT 'newspaper',
+        /** La etiqueta de la tarjeta: "Nuevo", "Aviso"… */
+        etiqueta    TEXT,
+        /** Pantalla interna a la que lleva al tocarlo. */
+        enlace      TEXT,
+        publicado   BOOLEAN     NOT NULL DEFAULT false,
+        desde       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        /** Nulo = sin caducidad. */
+        hasta       TIMESTAMPTZ,
+        creado_por  TEXT,
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        updated_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    // Lo que pide la app en cada arranque: lo vigente, lo mas nuevo arriba.
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_announcements_vigentes ON announcements (desde DESC) WHERE publicado`);
+
     // Un contracargo llega con un charge, no con el PaymentIntent, así que hay
     // que buscar el viaje por `payment_intent_id`. Sin índice eso era un
     // escaneo de toda la tabla en cada disputa.

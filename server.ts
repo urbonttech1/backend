@@ -52,6 +52,7 @@ import { errorsRouter } from "./server/api/errors";
 import { supabaseAdmin } from "./server/db/client";
 import { verifySupabaseSchema } from "./server/db/schemaCheck";
 import { pool } from "./server/db/pool";
+import { announcementsRouter } from "./server/api/announcements";
 import { startCronJobs, reconciliarMovimientosDePago } from "./server/jobs/cron";
 import { sanitizeBody } from "./server/middleware";
 import { runMigrations } from "./server/db/migrations";
@@ -571,6 +572,7 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
   app.use("/api/drivers", driverRouter);
   app.use("/api/drivers", driverIncidentsRouter);
   app.use("/api/notifications", notificationsRouter);
+  app.use("/api/announcements", announcementsRouter);
   app.use("/api/support", supportRouter);
   app.use("/api/config", configRouter);
   app.use("/api/translation", translationRouter);
