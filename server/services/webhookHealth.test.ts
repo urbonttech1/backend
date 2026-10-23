@@ -89,6 +89,12 @@ describe('diagnosticar', () => {
     expect(d.resumen).toContain('STRIPE_WEBHOOK_SECRET');
   });
 
+  it('lleva la lista completa de eventos para el detalle, ordenada', () => {
+    const d = diagnosticar([ep({ enabled_events: ['payout.paid', 'account.updated', 'charge.refunded'] })], SECRETOS_OK);
+    expect(d.endpoints[0].eventos).toEqual(['account.updated', 'charge.refunded', 'payout.paid']);
+    expect(d.endpoints[0].totalEventos).toBe(3);
+  });
+
   it('informa de cada endpoint sin perder ninguno', () => {
     const d = diagnosticar([ep({ id: 'a' }), ep({ id: 'b', status: 'disabled' })], SECRETOS_OK);
     expect(d.endpoints.map(e => e.id)).toEqual(['a', 'b']);

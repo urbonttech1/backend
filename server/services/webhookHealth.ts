@@ -70,6 +70,11 @@ export interface EndpointRevisado {
   totalEventos: number;
   /** Los que atiende el código y este endpoint sí trae. */
   manejados: string[];
+  /**
+   * Todo lo que el endpoint entrega, para el detalle al pasar el cursor.
+   * Con el comodín `*` viene esa sola entrada, que es justo lo que hay que ver.
+   */
+  eventos: string[];
 }
 
 export interface DiagnosticoWebhooks {
@@ -112,6 +117,7 @@ export function diagnosticar(
     apiVersion: e.api_version ?? null,
     totalEventos: e.enabled_events.length,
     manejados: manejados.filter(ev => entrega(e, ev)),
+    eventos: [...e.enabled_events].sort(),
   }));
 
   let tono: Tono = 'ok';
