@@ -87,10 +87,10 @@ driverRouter.post(
       return res.status(403).json({ error: 'Only drivers can update location' });
     }
 
-    const { lat, lng, heading, speed, harshBrake } = req.body;
+    const { lat, lng, heading, speed, harshBrake, accuracy } = req.body;
 
     try {
-      await guardarUbicacion({ driverId: driver_id, lat, lng, heading, speed });
+      await guardarUbicacion({ driverId: driver_id, lat, lng, heading, speed, accuracy });
       const speedMps = typeof speed === 'number' && Number.isFinite(speed) ? speed : null;
       void revisarPing({
         driverId: String(driver_id),

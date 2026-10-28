@@ -12,7 +12,11 @@ import {
   LONG_PICKUP_FEE, LONG_PICKUP_THRESHOLD_MINS,
   CONSECUTIVE_TRIP_BONUS,
   normalizePaymentMethod,
+  getFareClass,
 } from "../../config/pricing";
+import { errorDeHoras, terminosDeReserva, validarHoras } from "../../services/hourlyBooking";
+import { adjuntarPorHora } from "../../services/hourlyTracking";
+import { extrasPendientesDe } from "../../services/hourlyExtrasPayment";
 import { getEffectiveSurge } from "../config";
 import { surgeSilencioso } from "../../services/surgeConfig";
 import { ensureFaresFresh } from "../../services/fareConfig";
@@ -88,6 +92,23 @@ router.get('/calculate-fare', requireSupabaseAuth, async (req: Request, res: Res
       const hours = parseFloat(req.query.hours as string);
       if (isNaN(hours) || hours <= 0) {
         return res.status(400).json({ error: 'hours must be a positive number when bookingType=hourly.' });
+      }
+      // Las mismas reglas que al reservar, pero aquí, antes de cobrar: el pago
+      // de la reserva se hace antes de crear el viaje, y rechazarla después
+      // dejaría al pasajero cobrado sin servicio.
+      const regla = getFareClass(vehicleType);
+      if (regla) {
+        const horasOk = validarHoras(regla, hours);
+        if (!horasOk.ok) return res.status(400).json(errorDeHoras(horasOk));
+      }
+      const deuda = await extrasPendientesDe(String(req.supabaseUid));
+      if (deuda) {
+        return res.status(402).json({
+          error: 'There is an unpaid charge from a previous hourly booking.',
+          errorCode: 'OUTSTANDING_HOURLY_EXTRAS',
+          rideId: deuda.rideId,
+          amount: deuda.amount,
+        });
       }
       // `scheduled=true` cotiza con la reserva incluida: sólo la paga lo programado.
       const hourly = calculateHourlyFare({
@@ -301,7 +322,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
     // desde que entra en la ventana previa (pasa a searching) o tiene chofer en camino.
     const { data: existing } = await supabaseAdmin
       .from('rides')
-      .select('id, ride_status, created_at, updated_at, scheduled_at, payment_intent_id')
+      .select('id, ride_status, created_at, updated_at, scheduled_at, payment_intent_id, booking_type')
       .eq('passenger_id', passenger_id)
       .in('ride_status', ACTIVE_STATUSES.filter((st) => st !== 'scheduled'))
       .order('created_at', { ascending: false })
@@ -315,7 +336,10 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       // Una reserva cuya hora aún no llegó no está abandonada, por vieja que sea
       // la fila: antes se cancelaba en silencio al pedir cualquier otro viaje.
       const reservaFutura = !!existing.scheduled_at && new Date(existing.scheduled_at).getTime() > Date.now();
-      if (ageHours > 6 && !reservaFutura) {
+      // Un servicio por hora puede durar 12 horas sin que la fila cambie.
+      const servicioPorHora = (existing as { booking_type?: string }).booking_type === 'hourly'
+        && existing.ride_status === 'in_progress';
+      if (ageHours > 6 && !reservaFutura && !servicioPorHora) {
         logger.warn(`[RIDES] Stale active ride ${existing.id} (${existing.ride_status}, age: ${ageHours.toFixed(1)}h) auto-cancelled for passenger ${passenger_id}`);
         await supabaseAdmin
           .from('rides')
@@ -351,6 +375,30 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         if (minsFromNow < -1) {
           return res.status(400).json({ error: 'Scheduled pickup time must be in the future.' });
         }
+      }
+
+      // ── Reserva por hora: siempre programada, con tarjeta y horas válidas ──
+      const esPorHora = (booking_type || bookingTypeBody) === 'hourly';
+      let horasPorHora: number | null = null;
+      if (esPorHora) {
+        if (!cita) {
+          return res.status(400).json({
+            error: 'An hourly booking needs a pickup date and time.',
+            errorCode: 'HOURLY_REQUIRES_SCHEDULE',
+          });
+        }
+        if (normalizePaymentMethod(paymentMethod || payment_method) === 'cash') {
+          return res.status(400).json({
+            error: 'Hourly bookings are paid by card: extra time and miles are charged at the end.',
+            errorCode: 'HOURLY_CARD_ONLY',
+          });
+        }
+        await ensureFaresFresh();
+        const regla = getFareClass(finalVehicleType);
+        if (!regla) return res.status(400).json({ error: `Unknown vehicleType: ${finalVehicleType}` });
+        const horasOk = validarHoras(regla, hourly_hours ?? hourlyHoursBody);
+        if (!horasOk.ok) return res.status(400).json(errorDeHoras(horasOk));
+        horasPorHora = (horasOk as { hours: number }).hours;
       }
 
       const sillas = leerSillas(childSeats ?? childSeatsAlt);
@@ -518,6 +566,13 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       distance_miles:        finalDistanceMiles,
       ...(childSeatRow ? { child_seats: childSeatRow } : {}),
     };
+
+    // Las condiciones de la reserva por hora quedan congeladas con el viaje,
+    // como `locked_fare`: millas incluidas, milla extra y hora extra.
+    if (esPorHora && horasPorHora !== null) {
+      const regla = getFareClass(finalVehicleType);
+      if (regla) extendedPayload.hourly_terms = terminosDeReserva(regla, horasPorHora, surgeMultiplier);
+    }
 
     // ── Server-side fare guard: override client fare when server has enough data ──
     // Prevents a malicious client sending fare=0.01 to underpay for the ride.
@@ -704,7 +759,8 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
       }
 
       // Return ride + PIN so the passenger can share it with the driver
-      res.json({ ...ride, verification_pin: verificationPin });
+      const [conHoras] = await adjuntarPorHora([ride as Record<string, unknown>]);
+      res.json({ ...conHoras, verification_pin: verificationPin });
   } catch (err: any) {
     logger.error(`[RIDES] create error:: ${err?.message || err}`);
     res.status(500).json({ error: err?.message || 'Failed to create ride' });

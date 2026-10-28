@@ -68,6 +68,12 @@ function normalizeClass(key: string, raw: Record<string, unknown>): FareClass {
     serviceFee:   num(raw.serviceFee, base.serviceFee),
     perHour:      num(raw.perHour, base.perHour),
     minHours:     num(raw.minHours, base.minHours),
+    maxHours:     num(raw.maxHours, base.maxHours),
+    milesPerHour: num(raw.milesPerHour, base.milesPerHour),
+    extraMileFee: num(raw.extraMileFee, base.extraMileFee),
+    // Sólo un `false` explícito la apaga: una config guardada antes de que
+    // existiera el interruptor no trae el campo y debe seguir ofreciéndola.
+    hourlyEnabled: raw.hourlyEnabled === false || raw.hourlyEnabled === 'false' ? false : base.hourlyEnabled,
   };
 }
 

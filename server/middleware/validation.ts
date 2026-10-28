@@ -68,6 +68,9 @@ export const schemas = {
     heading: z.coerce.number().min(0).max(360).nullable().optional(),
     speed: z.coerce.number().min(0).nullable().optional(),
     harshBrake: z.boolean().optional(),
+    // Opcional, para medir las millas de la reserva por hora: descarta los
+    // puntos imprecisos. Un valor raro se ignora en vez de rechazar la posición.
+    accuracy: z.coerce.number().min(0).nullable().optional().catch(null),
   }),
 
   driverStatus: z.object({

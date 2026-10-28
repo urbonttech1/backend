@@ -14,6 +14,7 @@
  */
 import { pool } from '../db/pool';
 import { logger } from '../lib/logger';
+import { registrarPuntoPorHora } from './hourlyTracking';
 
 /**
  * Un número que puede no venir. Devuelve `null` en vez de 0 cuando el GPS no
@@ -31,6 +32,8 @@ export interface UbicacionChofer {
   /** null = el dispositivo no lo reportó; se conserva el último conocido. */
   heading?: number | null;
   speed?: number | null;
+  /** Precisión en metros. Sólo la usa la medición de la reserva por hora. */
+  accuracy?: number | null;
 }
 
 /** Se apaga al primer fallo por falta de PostGIS, para no reintentarlo cada segundo. */
@@ -62,6 +65,12 @@ const SIN_GEOGRAFIA = `
 /** Guarda la posición. `updated_at` es siempre hora del servidor de base de datos. */
 export async function guardarUbicacion(p: UbicacionChofer): Promise<void> {
   const valores = [p.driverId, p.lat, p.lng, numeroOpcional(p.heading), numeroOpcional(p.speed)];
+  // Las millas de una reserva por hora. No espera ni lanza: la posición se
+  // guarda igual aunque la medición falle.
+  void registrarPuntoPorHora({
+    driverId: p.driverId, lat: p.lat, lng: p.lng,
+    accuracy: numeroOpcional(p.accuracy),
+  });
   const client = await pool.connect();
   try {
     if (hayPostGIS) {

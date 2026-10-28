@@ -27,6 +27,8 @@ import type { PickupDropoff, RideRow, DriverStats } from './types';
 import { loadDriverHistoryExtras } from '../../services/driverRideHistory';
 import { mergeDriverHistory } from '../../services/driverHistoryView';
 import { cobrarPropina, fueRechazada } from '../../services/rideTip';
+import { adjuntarPorHora, cargarServiciosPorHora } from '../../services/hourlyTracking';
+import { vistaPorHora } from '../../services/hourlyBooking';
 
 export function registerStatsRoutes(router: Router): void {
 router.get("/", requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -152,7 +154,7 @@ router.get("/my", requireSupabaseAuth, async (req: Request, res: Response) => {
     }
 
     res.json({
-      rides,
+      rides: await adjuntarPorHora(rides),
       total: count ?? 0,
       page,
       limit,
@@ -266,7 +268,7 @@ router.get("/driver-history", requireSupabaseAuth, async (req: Request, res: Res
       passenger_name: passengerMap[String(r.passenger_id)] || 'Passenger',
     }));
     res.json({
-      rides: enriched,
+      rides: await adjuntarPorHora(enriched),
       total,
       page,
       limit,
@@ -324,7 +326,8 @@ router.get("/driver-active", requireSupabaseAuth, async (req: Request, res: Resp
         r.passenger_trip_count = count ?? 0;
       } catch { r.passenger_trip_count = 0; }
     }
-    res.json(r);
+    const [conHoras] = await adjuntarPorHora([r]);
+    res.json(conHoras);
   } catch (err: any) {
     logger.error(`[RIDES] driver-active error:: ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch active ride' });
@@ -406,7 +409,7 @@ router.get('/:id/earnings-breakdown', requireSupabaseAuth, async (req: Request, 
   try {
     let { data: ride, error } = await supabaseAdmin
       .from('rides')
-      .select('id, fare, locked_fare, wait_fee, tip_amount, surge_multiplier, base_fare_breakdown, driver_id, ride_status, completed_at, distance_miles, duration_minutes')
+      .select('id, fare, locked_fare, wait_fee, tip_amount, surge_multiplier, base_fare_breakdown, driver_id, ride_status, completed_at, distance_miles, duration_minutes, booking_type')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -414,7 +417,7 @@ router.get('/:id/earnings-breakdown', requireSupabaseAuth, async (req: Request, 
       // Column missing — retry without it
       const fallback = await supabaseAdmin
         .from('rides')
-        .select('id, fare, locked_fare, wait_fee, tip_amount, surge_multiplier, driver_id, ride_status, completed_at, distance_miles, duration_minutes')
+        .select('id, fare, locked_fare, wait_fee, tip_amount, surge_multiplier, driver_id, ride_status, completed_at, distance_miles, duration_minutes, booking_type')
         .eq('id', req.params.id)
         .maybeSingle();
       ride = fallback.data ? { ...fallback.data, base_fare_breakdown: null } : null;
@@ -439,7 +442,20 @@ router.get('/:id/earnings-breakdown', requireSupabaseAuth, async (req: Request, 
     // URBONT se queda su comisión, contenida en el precio; el chofer cobra el
     // resto, sin contar la propina. El porcentaje vive en config/pricing.ts.
     const driverBase  = Math.round((lockedFare + waitFee) * (1 - PLATFORM_COMMISSION) * 100) / 100;
-    const driverTotal = Math.round((driverBase + tipAmount) * 100) / 100;
+
+    // Reserva por hora: la parte del chofer en el tiempo y las millas extra. Cuenta
+    // cuando el extra se cobró; mientras no, se informa pero no se suma.
+    let hourly: Record<string, unknown> | null = null;
+    let hourlyExtrasEarnings = 0;
+    if (r.booking_type === 'hourly') {
+      const s = (await cargarServiciosPorHora([req.params.id])).get(req.params.id);
+      const resumen = (s?.hourly_extras ?? null) as { driver_share?: number } | null;
+      if (s) {
+        hourly = vistaPorHora(s.terminos, s);
+        if (s.hourly_extras_status === 'charged') hourlyExtrasEarnings = Number(resumen?.driver_share ?? 0);
+      }
+    }
+    const driverTotal = Math.round((driverBase + tipAmount + hourlyExtrasEarnings) * 100) / 100;
 
     return res.json({
       ride_id:        req.params.id,
@@ -464,8 +480,10 @@ router.get('/:id/earnings-breakdown', requireSupabaseAuth, async (req: Request, 
       driver_earnings: {
         base:          driverBase,
         tip:           tipAmount,
+        ...(hourly ? { hourly_extras_earnings: hourlyExtrasEarnings } : {}),
         total:         driverTotal,
       },
+      ...(hourly ? { hourly } : {}),
     });
   } catch (err: any) {
     logger.error(`[RIDES] earnings-breakdown error:: ${err.message}`);

@@ -22,6 +22,9 @@ import { enviarAvisoVencimientoDocumento, type FaseVencimiento } from '../servic
 import { catalogoCompleto } from '../services/docCatalogStore';
 import { audienciaDeRol, docMeta } from '../services/docCatalog';
 import { revisarParadasEnSilencio } from '../services/rideCheckRun';
+import { cargarServiciosPorHora, iniciarSeguimientoPorHora, marcarAviso } from '../services/hourlyTracking';
+import { precioBloqueExtra, usoEnVivo } from '../services/hourlyBooking';
+import { HOURLY_ENDING_SOON_MINUTES } from '../config/pricing';
 import { gananciaDelChofer } from '../services/driverBalance';
 import { ensureComisionFresh } from '../services/commissionConfig';
 import {
@@ -276,6 +279,49 @@ async function pagarChoferesPendientes() {
     log.info(`[CRON] Watchdog: ${reassigned}/${toProcess.length} rides reassigned.`);
   } catch (err: any) {
     log.error({ err: err }, '[CRON] Watchdog error');
+  }
+}
+
+/**
+ * Reserva por hora, cada minuto: el contador de tiempo y millas a las apps, y
+ * los avisos de que se acaba el tiempo, empieza el extra o se agotan las millas.
+ * Cada aviso se marca en la base antes de enviarse, así sale una sola vez.
+ */
+async function serviciosPorHora() {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id FROM rides WHERE booking_type = 'hourly' AND ride_status = 'in_progress'`,
+    );
+    if (!rows.length) return;
+    const servicios = await cargarServiciosPorHora(rows.map((r: { id: string }) => String(r.id)));
+    const io = getIo();
+    for (const s of servicios.values()) {
+      // Un servicio que empezó por un camino que no abrió la medición.
+      if (s.meters === null && s.driver_id) await iniciarSeguimientoPorHora(s.id, s.driver_id);
+
+      const uso = usoEnVivo(s.id, s.terminos, s);
+      io?.to([`ride:${s.id}`, ...(s.driver_id ? [`driver:${s.driver_id}`] : [])]).emit('ride:hourly_usage', uso);
+
+      const restantes = uso.remaining_minutes;
+      if (restantes !== null && restantes > 0 && restantes <= HOURLY_ENDING_SOON_MINUTES
+        && await marcarAviso(s.id, 'ending_soon')) {
+        if (s.passenger_id) notifyUser(s.passenger_id, passengerNotif.hourlyEndingSoon(s.id, restantes)).catch(() => {});
+        if (s.driver_id) notifyUser(s.driver_id, driverNotif.hourlyEndingSoon(s.id, restantes)).catch(() => {});
+      }
+      if ((uso.overtime_increments ?? 0) > 0 && s.passenger_id && await marcarAviso(s.id, 'overtime')) {
+        notifyUser(s.passenger_id, passengerNotif.hourlyOvertimeStarted(
+          s.id, precioBloqueExtra(s.terminos), s.terminos.overtime_increment_minutes,
+        )).catch(() => {});
+      }
+      if (uso.miles_used !== null && uso.included_miles > 0 && uso.miles_used >= uso.included_miles
+        && s.passenger_id && await marcarAviso(s.id, 'miles')) {
+        notifyUser(s.passenger_id, passengerNotif.hourlyMilesReached(
+          s.id, uso.included_miles, s.terminos.extra_mile_fee,
+        )).catch(() => {});
+      }
+    }
+  } catch (err: unknown) {
+    log.warn({ err: (err as Error)?.message }, '[CRON] servicios por hora');
   }
 }
 
@@ -1206,6 +1252,7 @@ export async function startCronJobs() {
   cron.schedule('* * * * *', () => {
     cancelarReasignacionesVencidas();
     revisarParadasEnSilencio().catch((err: unknown) => log.warn({ err: (err as Error)?.message }, '[CRON] ride check failed'));
+    serviciosPorHora();
   });
   log.info(`[CRON] Reassignment timeout check scheduled every minute (${MINUTOS_PARA_REEMPLAZO} min).`);
 

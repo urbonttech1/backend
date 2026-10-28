@@ -1687,6 +1687,44 @@ export async function runMigrations() {
     // escaneo de toda la tabla en cada disputa.
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_rides_payment_intent ON rides (payment_intent_id)`);
 
+    // ── Reserva por hora ─────────────────────────────────────────────────────
+    //
+    // `hourly_terms`: las condiciones con las que se reservó (precio por hora,
+    // millas por hora, milla extra, recargo). Congeladas como `locked_fare`: si
+    // el admin cambia la tabla, la reserva se cobra como se vendió.
+    // `hourly_extras`: lo que se calculó al terminar. El extra se cobra aparte
+    // del bloque, así que su estado y su cobro van en columnas propias.
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS hourly_terms JSONB`);
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS hourly_extras JSONB`);
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS hourly_extras_status VARCHAR(20)`);
+    await safeAlter(`ALTER TABLE rides ADD COLUMN IF NOT EXISTS hourly_extras_payment_intent_id TEXT`);
+    await safeIndex(`CREATE INDEX IF NOT EXISTS idx_rides_hourly_extras_pendientes ON rides (passenger_id) WHERE hourly_extras_status IN ('failed', 'requires_action')`);
+
+    // Las millas del servicio, medidas con el GPS del chofer. Va en su propia
+    // tabla y no en `rides` porque se escribe cada pocos segundos, y `rides`
+    // está en la publicación de Realtime: cada punto le llegaría al pasajero.
+    // `last_ms` en milisegundos, no TIMESTAMPTZ: sirve de candado optimista
+    // entre instancias y tiene que compararse exacto.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ride_hourly_tracking (
+        ride_id          UUID PRIMARY KEY REFERENCES rides(id) ON DELETE CASCADE,
+        driver_id        UUID NOT NULL,
+        meters           NUMERIC(12,1) NOT NULL DEFAULT 0,
+        last_lat         DOUBLE PRECISION,
+        last_lng         DOUBLE PRECISION,
+        last_ms          BIGINT,
+        points           INTEGER NOT NULL DEFAULT 0,
+        discarded        INTEGER NOT NULL DEFAULT 0,
+        max_gap_seconds  INTEGER NOT NULL DEFAULT 0,
+        degraded         BOOLEAN NOT NULL DEFAULT false,
+        /** Avisos ya enviados: { "ending_soon": true, … }. */
+        notified         JSONB NOT NULL DEFAULT '{}',
+        created_at       TIMESTAMPTZ DEFAULT NOW(),
+        closed_at        TIMESTAMPTZ,
+        updated_at       TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
     // ── Cerrar la base a la clave pública ────────────────────────────────────
     //
     // La clave anónima va dentro de la app y cualquiera la extrae. Sin RLS, esa

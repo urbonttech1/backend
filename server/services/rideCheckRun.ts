@@ -38,7 +38,16 @@ type Viaje = {
   pickup_lng: number | null;
   dropoff_lat: number | null;
   dropoff_lng: number | null;
+  booking_type?: string | null;
 };
+
+/**
+ * En una reserva por hora el pasajero para donde quiere y no hay destino: la
+ * parada larga y el desvío son el servicio, no una alarma. El frenazo sí.
+ */
+function aplicaEnServicio(viaje: Viaje, kind: string): boolean {
+  return viaje.booking_type !== 'hourly' || kind === 'harsh_brake';
+}
 
 function punto(lat: number | null, lng: number | null): Punto | null {
   if (typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
@@ -61,7 +70,7 @@ function aEstado(fila: FilaEstado | null): EstadoChequeo {
 async function viajeEnCurso(driverId: string): Promise<Viaje | null> {
   const { data, error } = await supabaseAdmin
     .from('rides')
-    .select('id, passenger_id, driver_id, ride_status, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng')
+    .select('id, passenger_id, driver_id, ride_status, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, booking_type')
     .eq('driver_id', driverId)
     .eq('ride_status', 'in_progress')
     .order('started_at', { ascending: false })
@@ -146,7 +155,7 @@ export async function revisarPing(opts: {
     bloqueado,
   });
   await guardarEstado(viaje.id, estado);
-  if (anomalia) await abrirChequeo(viaje, anomalia, opts.lat, opts.lng);
+  if (anomalia && aplicaEnServicio(viaje, anomalia)) await abrirChequeo(viaje, anomalia, opts.lat, opts.lng);
 }
 
 /** Cada minuto: la parada cumplió 5 minutos y no llegó otro ping. */
@@ -163,11 +172,12 @@ export async function revisarParadasEnSilencio(ahora = Date.now()): Promise<void
     const estado = aEstado(cruda);
     const { data: viaje } = await supabaseAdmin
       .from('rides')
-      .select('id, passenger_id, driver_id, ride_status, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng')
+      .select('id, passenger_id, driver_id, ride_status, pickup_lat, pickup_lng, dropoff_lat, dropoff_lng, booking_type')
       .eq('id', cruda.ride_id)
       .maybeSingle();
     const r = viaje as Viaje | null;
     if (!r || r.ride_status !== 'in_progress') continue;
+    if (!aplicaEnServicio(r, 'long_stop')) continue;
     if (await hayAbierto(r.id)) continue;
     if (!paradaVencidaEnSilencio(estado, punto(r.dropoff_lat, r.dropoff_lng), ahora)) continue;
     const marcado: EstadoChequeo = { ...estado, lastAlertAt: ahora, lastAlertKind: 'long_stop' };

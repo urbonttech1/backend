@@ -69,6 +69,15 @@ function categoriasVehiculo() {
     perMin:      tarifas[clave]?.perMin ?? null,
     /** Reserva: sólo la pagan los viajes programados. */
     serviceFee:  tarifas[clave]?.serviceFee ?? null,
+    /** Reserva por hora. `perHour` y `minHours` siguen arriba para la app actual. */
+    hourly: tarifas[clave] ? {
+      enabled:      tarifas[clave].hourlyEnabled,
+      perHour:      tarifas[clave].perHour,
+      milesPerHour: tarifas[clave].milesPerHour,
+      extraMileFee: tarifas[clave].extraMileFee,
+      minHours:     tarifas[clave].minHours,
+      maxHours:     Math.max(tarifas[clave].minHours, tarifas[clave].maxHours),
+    } : null,
   }));
 }
 

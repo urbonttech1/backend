@@ -150,6 +150,14 @@ export const SCHEDULED_CANCEL_FREE_HOURS = 2;
 /** Con al menos estas horas (y menos que las gratis), se cobra el 50 %. Por debajo, el 100 %. */
 export const SCHEDULED_CANCEL_HALF_HOURS = 1;
 
+// ── Reserva por hora ─────────────────────────────────────────────────────────
+/** El tiempo que pasa de las horas reservadas se cobra por bloques de estos minutos. */
+export const HOURLY_OVERTIME_INCREMENT_MINUTES = 15;
+/** Exceso que no se cobra. Pasado esto, cuenta cada bloque empezado. */
+export const HOURLY_OVERTIME_GRACE_MINUTES = 5;
+/** Cuánto antes del final se avisa al pasajero y al chofer. */
+export const HOURLY_ENDING_SOON_MINUTES = 15;
+
 // ── Otros cargos que se mantienen ────────────────────────────────────────────
 export const LONG_PICKUP_FEE        = 5.00;  // Added when driver is >15 min away from pickup
 export const LONG_PICKUP_THRESHOLD_MINS = 15; // Minutes threshold for long pickup fee
@@ -249,16 +257,29 @@ export interface FareClass {
   waitPerMin:      number;
   /** Reserva. Sólo la pagan los viajes programados y nunca lleva recargo. */
   serviceFee:      number;
-  /** Chofer a disposición: precio por hora y bloque mínimo. */
+  /** Reserva por hora: precio por hora y bloque mínimo. */
   perHour:         number;
   minHours:        number;
+  /** Lo más que se puede reservar de una vez. */
+  maxHours:        number;
+  /** Millas incluidas por cada hora reservada. */
+  milesPerHour:    number;
+  /** Cada milla recorrida por encima de las incluidas. */
+  extraMileFee:    number;
+  /** Si la clase ofrece reserva por hora. */
+  hourlyEnabled:   boolean;
 }
 
-/** Valores por defecto. Los pisa `fares_config` cuando existe en la base. */
+/**
+ * Valores por defecto. Los pisa `fares_config` cuando existe en la base.
+ *
+ * Las millas por hora y la milla extra de la reserva por hora son semilla: el
+ * cliente las fija desde el panel. La milla extra arranca en la del tramo largo.
+ */
 export const DEFAULT_FARE_CLASSES: Record<string, FareClass> = {
-  sedan: { name: 'Standard (Sedan)', minFare: 17.00, perMileTier1: 2.90, perMileTier2: 3.00, perMileTier3: 2.50, perMin: 1.00, waitPerMin: 0.75, serviceFee: 10.00, perHour: 110.00, minHours: 2 },
-  suv:   { name: 'Premier (SUV)',    minFare: 22.00, perMileTier1: 3.50, perMileTier2: 3.50, perMileTier3: 3.00, perMin: 1.25, waitPerMin: 1.00, serviceFee: 15.00, perHour: 145.00, minHours: 2 },
-  van:   { name: 'Executive Van',    minFare: 27.00, perMileTier1: 3.75, perMileTier2: 4.00, perMileTier3: 3.50, perMin: 1.75, waitPerMin: 1.25, serviceFee: 20.00, perHour: 185.00, minHours: 2 },
+  sedan: { name: 'Standard (Sedan)', minFare: 17.00, perMileTier1: 2.90, perMileTier2: 3.00, perMileTier3: 2.50, perMin: 1.00, waitPerMin: 0.75, serviceFee: 10.00, perHour: 110.00, minHours: 2, maxHours: 12, milesPerHour: 25, extraMileFee: 2.50, hourlyEnabled: true },
+  suv:   { name: 'Premier (SUV)',    minFare: 22.00, perMileTier1: 3.50, perMileTier2: 3.50, perMileTier3: 3.00, perMin: 1.25, waitPerMin: 1.00, serviceFee: 15.00, perHour: 145.00, minHours: 2, maxHours: 12, milesPerHour: 25, extraMileFee: 3.00, hourlyEnabled: true },
+  van:   { name: 'Executive Van',    minFare: 27.00, perMileTier1: 3.75, perMileTier2: 4.00, perMileTier3: 3.50, perMin: 1.75, waitPerMin: 1.25, serviceFee: 20.00, perHour: 185.00, minHours: 2, maxHours: 12, milesPerHour: 25, extraMileFee: 3.50, hourlyEnabled: true },
 };
 
 /**
@@ -462,6 +483,15 @@ export interface HourlyFareBreakdown {
   requested_hours:  number;
   per_hour:         number;
   min_hours:        number;
+  max_hours:        number;
+  miles_per_hour:   number;
+  /** Horas cobradas × millas por hora. */
+  included_miles:   number;
+  extra_mile_fee:   number;
+  overtime_increment_minutes: number;
+  overtime_grace_minutes:     number;
+  /** Lo que cuesta cada bloque de tiempo extra, con el recargo de la reserva. */
+  overtime_increment_price:   number;
   currency:         string;
 }
 
@@ -506,6 +536,13 @@ export function calculateHourlyFare(opts: {
     requested_hours:  opts.hours,
     per_hour:         rule.perHour,
     min_hours:        rule.minHours,
+    max_hours:        rule.maxHours,
+    miles_per_hour:   rule.milesPerHour,
+    included_miles:   r2(billedHours * rule.milesPerHour),
+    extra_mile_fee:   rule.extraMileFee,
+    overtime_increment_minutes: HOURLY_OVERTIME_INCREMENT_MINUTES,
+    overtime_grace_minutes:     HOURLY_OVERTIME_GRACE_MINUTES,
+    overtime_increment_price:   r2(rule.perHour * surge * HOURLY_OVERTIME_INCREMENT_MINUTES / 60),
     currency: 'USD',
   };
 }
@@ -613,6 +650,14 @@ export function getPricingPolicy() {
      * viejos el día que cambie la política.
      */
     driverCancellationPenalty: politicaDePenalidad(),
+    /** Reserva por hora. Las tarifas por clase viajan en `vehicle-categories`. */
+    hourly: {
+      scheduledOnly: true,
+      cardOnly: true,
+      overtimeIncrementMinutes: HOURLY_OVERTIME_INCREMENT_MINUTES,
+      overtimeGraceMinutes: HOURLY_OVERTIME_GRACE_MINUTES,
+      endingSoonMinutes: HOURLY_ENDING_SOON_MINUTES,
+    },
   };
 }
 

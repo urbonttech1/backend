@@ -6,6 +6,7 @@ import { registerCheckinRoutes } from "./checkin";
 import { registerStatusRoutes } from "./status";
 import { registerValetRoutes } from "./valet";
 import { registerStatsRoutes } from "./stats";
+import { registerHourlyRoutes } from "./hourly";
 
 export type { PickupDropoff, RideRow, DriverStats } from "./types";
 export { getStripe, updateDriverStreak, pinAttemptTracker, errMsg } from "./helpers";
@@ -14,6 +15,8 @@ export const rideRouter = Router();
 
 // Mount all modularized route handlers
 registerCreateRoutes(rideRouter);
+// Antes que el resto: `/hourly-extras/outstanding` no es un id de viaje.
+registerHourlyRoutes(rideRouter);
 registerAcceptRoutes(rideRouter);
 registerCancelRoutes(rideRouter);
 registerCheckinRoutes(rideRouter);

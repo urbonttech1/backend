@@ -4,6 +4,7 @@ import { createContextLogger } from '../lib/logger';
 import { supabaseAdmin } from '../db/client';
 import { pool } from '../db/pool';
 import { guardarUbicacion, numeroOpcional } from './driverLocation';
+import { esServicioPorHoraEnCurso } from './hourlyTracking';
 import { getDriverPriorityTiers } from './driverScore';
 import { reassignRide, type ReassignReason } from './rideReassignment';
 import { recordRideOffers } from './driverRideHistory';
@@ -420,6 +421,8 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
       /** Marca del dispositivo, para que el pasajero descarte posiciones viejas. */
       ts?: number;
       rideStatus?: string;
+      /** Precisión en metros: la medición de la reserva por hora descarta los puntos malos. */
+      accuracy?: number | null;
     }) => {
       if (!userId || !payload.lat || !payload.lng) return;
 
@@ -444,7 +447,10 @@ export function initSocketIO(httpServer: HttpServer): SocketIOServer {
         });
 
         // ── T014: Stop detection during in_progress rides ────────────────────
-        if (payload.rideStatus === 'in_progress' || payload.rideStatus === 'in-progress') {
+        // Un servicio por hora no tiene destino y para cuanto quiera el pasajero:
+        // ni la parada larga ni el desvío son una alarma ahí.
+        if ((payload.rideStatus === 'in_progress' || payload.rideStatus === 'in-progress')
+          && !esServicioPorHoraEnCurso(payload.rideId)) {
           const loc = { lat: payload.lat, lng: payload.lng, ts: Date.now() };
           checkStopDetection(userId, payload.rideId, loc);
           // ── T022: Route deviation detection ────────────────────────────────
@@ -1242,11 +1248,14 @@ function dispatchByScore(rideId: string, payload: object) {
 
 // ── Persist driver location to DB (fire-and-forget) ─────────────────────────
 
-async function persistDriverLocation(driverId: string, pos: { lat: number; lng: number; heading?: number | null; speed?: number | null }) {
+async function persistDriverLocation(driverId: string, pos: { lat: number; lng: number; heading?: number | null; speed?: number | null; accuracy?: number | null }) {
   // El mismo camino que POST /api/drivers/location: conserva el último rumbo
   // conocido cuando el dispositivo no lo reporta y no depende de PostGIS.
   // Antes esta vía usaba un RPC cuyo error el cliente de Supabase DEVUELVE en
   // vez de lanzar, así que el `catch` nunca saltaba: la posición se perdía en
   // silencio, y sin posiciones los viajes no encuentran conductor.
-  await guardarUbicacion({ driverId, lat: pos.lat, lng: pos.lng, heading: pos.heading, speed: pos.speed });
+  await guardarUbicacion({
+    driverId, lat: pos.lat, lng: pos.lng, heading: pos.heading, speed: pos.speed,
+    accuracy: pos.accuracy,
+  });
 }

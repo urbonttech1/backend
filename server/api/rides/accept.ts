@@ -21,6 +21,7 @@ import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg, haversineKm } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
+import { iniciarSiEsPorHora } from '../../services/hourlyTracking';
 
 export function registerAcceptRoutes(router: Router): void {
 router.get("/available", requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -332,6 +333,9 @@ router.post("/:id/verify-pin", requireSupabaseAuth, async (req: Request, res: Re
       .update({ driver_id: resolvedDriverId, ride_status: 'in_progress', pickup_pin: null, started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq('id', rideId);
     if (updateErr2) throw updateErr2;
+
+    // Reserva por hora: con el pasajero a bordo empiezan a contar las millas.
+    void iniciarSiEsPorHora(rideId, resolvedDriverId);
 
     // Instant Socket.IO push so the passenger's TrackingScreen transitions without polling delay
     broadcastRideStatus(rideId, 'in_progress', {

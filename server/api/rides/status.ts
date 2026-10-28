@@ -25,6 +25,8 @@ import { logger } from '../../lib/logger';
 import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg } from './helpers';
 import { calculateRideMetrics } from "../../services/rideMetrics";
+import { adjuntarPorHora, iniciarSeguimientoPorHora } from "../../services/hourlyTracking";
+import { cerrarServicioPorHora, cobrarExtrasPorHora } from "../../services/hourlyExtrasPayment";
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 
 /**
@@ -182,7 +184,8 @@ router.get("/:id", (req: Request, _res: Response, next: (deferToNext?: 'route') 
       } catch { (ride as Record<string, unknown>).passenger_trip_count = 0; }
     }
 
-    res.json(ride);
+    const [conHoras] = await adjuntarPorHora([ride]);
+    res.json(conHoras);
   } catch (err: any) {
     logger.error(`[RIDES] get error:: ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch ride' });
@@ -212,7 +215,7 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       // valet_user_id, valet_commission_paid y valet_surcharge: el bloque que
       // paga al valet al completar el viaje los lee, y no venían en el select,
       // así que llegaban undefined y esa transferencia no se hacía nunca.
-      .select('passenger_id, driver_id, ride_status, payment_intent_id, fare, locked_fare, wait_started_at, started_at, accepted_at, pickup_pin, vehicle_type, scheduled_at, dispatched_by_valet, valet_user_id, valet_commission_paid, valet_surcharge')
+      .select('passenger_id, driver_id, ride_status, payment_intent_id, fare, locked_fare, wait_started_at, started_at, accepted_at, pickup_pin, vehicle_type, scheduled_at, dispatched_by_valet, valet_user_id, valet_commission_paid, valet_surcharge, booking_type')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -317,6 +320,17 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       });
     }
 
+    // Un servicio por hora lo termina el chofer: el pasajero que quiere acabar
+    // antes se lo pide a él. Terminarlo desde la app del pasajero cerraría la
+    // medición de millas con el coche todavía en marcha.
+    const esPorHora = r.booking_type === 'hourly';
+    if (esPorHora && finalStatus === 'completed' && !isDriver && role !== 'admin') {
+      return res.status(403).json({
+        error: 'The chauffeur ends an hourly booking.',
+        errorCode: 'HOURLY_DRIVER_ENDS',
+      });
+    }
+
     // State machine validation
     const transition = validateTransition(currentStatus, finalStatus as RideStatus, role);
     if (!transition.allowed) {
@@ -410,7 +424,8 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       // llegue antes: llegar temprano no puede costarle al pasajero. Los viajes
       // de valet no pagan espera.
       const rideData = r as Record<string, unknown>;
-      if (rideData.wait_started_at) {
+      // En una reserva por hora el tiempo de espera ya está pagado en el bloque.
+      if (rideData.wait_started_at && !esPorHora) {
         let waitStart = new Date(rideData.wait_started_at as string).getTime();
         const horaReserva = rideData.scheduled_at ? new Date(rideData.scheduled_at as string).getTime() : NaN;
         if (Number.isFinite(horaReserva)) waitStart = Math.max(waitStart, horaReserva);
@@ -498,6 +513,33 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
     }
 
     logger.info(`[RIDES] Status updated: ${req.params.id} ${currentStatus}→${finalStatus} by ${role}/${uid}`);
+
+    // ── Reserva por hora ─────────────────────────────────────────────────────
+    // Al subir el pasajero empieza la medición de millas. Al terminar se cierra,
+    // se calcula el extra y se cobra aparte, sin esperar: el chofer recibe el
+    // resumen ya, y el resultado del cobro le llega al pasajero por push.
+    let hourlySummary: Record<string, unknown> | null = null;
+    if (esPorHora && finalStatus === 'in_progress') {
+      const chofer = String(r.driver_id || updates.driver_id || (isDriver ? uid : ''));
+      if (chofer) void iniciarSeguimientoPorHora(req.params.id, chofer);
+    }
+    if (esPorHora && finalStatus === 'completed') {
+      try {
+        const cierre = await cerrarServicioPorHora(req.params.id, now);
+        if (cierre) {
+          const { driver_share: _parte, ...publico } = cierre.resumen;
+          hourlySummary = { booked_hours: cierre.terminos.booked_hours, ...publico, extras_status: cierre.estado };
+          if (cierre.estado === 'pending') {
+            void cobrarExtrasPorHora(req.params.id).catch((e: unknown) =>
+              logger.error(`[POR_HORA] ${req.params.id}: cobro del extra: ${errMsg(e)}`));
+          }
+        }
+      } catch (e: unknown) {
+        // El viaje ya está terminado: un fallo aquí deja el extra sin calcular
+        // (queda en el log), pero no puede devolverle un error al chofer.
+        logger.error(`[POR_HORA] ${req.params.id}: no se pudo cerrar el servicio: ${errMsg(e)}`);
+      }
+    }
 
     // ── Stripe capture on ride completion ─────────────────────────────────────
     // When using capture_method: 'manual', the PI is authorized but not charged.
@@ -763,7 +805,7 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       }).catch(() => {});
     }
 
-    res.json({ success: true });
+    res.json(hourlySummary ? { success: true, hourly_summary: hourlySummary } : { success: true });
   } catch (err: any) {
     logger.error(`[RIDES] status update error:: ${err.message}`);
     res.status(500).json({ error: 'Failed to update ride status' });

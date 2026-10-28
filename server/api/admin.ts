@@ -1905,9 +1905,11 @@ adminRouter.put("/fares", async (req: Request, res: Response) => {
   const allowed = [
     'minFare', 'perMileTier1', 'perMileTier2', 'perMileTier3',
     'perMin', 'waitPerMin', 'serviceFee', 'perHour', 'minHours',
+    // Reserva por hora
+    'maxHours', 'milesPerHour', 'extraMileFee',
   ] as const satisfies readonly (keyof FareClass)[];
 
-  const applied: Record<string, number> = {};
+  const applied: Record<string, number | boolean> = {};
   const actualizada: FareClass = { ...fares[vehicleClass] };
   for (const key of allowed) {
     if (updates[key] === undefined) continue;
@@ -1917,11 +1919,29 @@ adminRouter.put("/fares", async (req: Request, res: Response) => {
       applied[key] = val;
     }
   }
+  // El interruptor de la reserva por hora es el único campo que no es un importe.
+  if (typeof updates?.hourlyEnabled === 'boolean') {
+    actualizada.hourlyEnabled = updates.hourlyEnabled;
+    applied.hourlyEnabled = updates.hourlyEnabled;
+  }
+  // Las horas se reservan enteras, y el mínimo nunca por encima del máximo: con
+  // 4 de mínimo y 3 de máximo no se podría reservar nada.
+  for (const k of ['minHours', 'maxHours'] as const) {
+    if (applied[k] !== undefined && !Number.isInteger(actualizada[k])) {
+      return res.status(400).json({ error: 'Las horas mínimas y máximas deben ser números enteros.', errorCode: 'HOURS_NOT_INTEGER', field: k });
+    }
+  }
+  if (actualizada.minHours < 1 || actualizada.minHours > actualizada.maxHours) {
+    return res.status(400).json({
+      error: 'Las horas mínimas deben ser al menos 1 y no pueden superar las máximas.',
+      errorCode: 'HOURS_RANGE_INVALID',
+    });
+  }
   fares[vehicleClass] = actualizada;
 
   // Lo que el panel mandó y no se guardó, para que pueda avisarlo en vez de dar
   // por hecho que se aplicó todo.
-  const permitidos: readonly string[] = allowed;
+  const permitidos: readonly string[] = [...allowed, 'hourlyEnabled'];
   const rejected = Object.keys(updates ?? {}).filter(k => !permitidos.includes(k));
 
   try {

@@ -175,6 +175,47 @@ export const passengerNotif = {
       data: { type: 'promo_applied', ride_id: rideId, screen: 'ride_tracking' },
     };
   },
+
+  // ── Reserva por hora ──────────────────────────────────────────────────────
+  hourlyEndingSoon(rideId: string, minutes: number): PushTemplate {
+    return {
+      title: `${minutes} minutes left`,
+      body: `Your hourly booking ends in ${minutes} minutes. Extra time is charged in 15-minute blocks.`,
+      data: { type: 'hourly_ending_soon', ride_id: rideId, screen: 'ride_tracking' },
+    };
+  },
+
+  hourlyOvertimeStarted(rideId: string, blockPrice: number, blockMinutes: number): PushTemplate {
+    return {
+      title: 'Your booked time is over',
+      body: `Extra time is now $${blockPrice.toFixed(2)} every ${blockMinutes} minutes.`,
+      data: { type: 'hourly_overtime_started', ride_id: rideId, screen: 'ride_tracking' },
+    };
+  },
+
+  hourlyMilesReached(rideId: string, includedMiles: number, extraMileFee: number): PushTemplate {
+    return {
+      title: 'Included miles used',
+      body: `You have used the ${includedMiles} miles included. Each extra mile is $${extraMileFee.toFixed(2)}.`,
+      data: { type: 'hourly_miles_reached', ride_id: rideId, screen: 'ride_tracking' },
+    };
+  },
+
+  hourlyExtrasCharged(rideId: string, amount: number): PushTemplate {
+    return {
+      title: 'Extra time and miles charged',
+      body: `$${amount.toFixed(2)} for extra time and miles was charged to your card.`,
+      data: { type: 'hourly_extras_charged', ride_id: rideId, screen: 'ride_summary' },
+    };
+  },
+
+  hourlyExtrasFailed(rideId: string, amount: number): PushTemplate {
+    return {
+      title: 'Payment needed',
+      body: `We could not charge $${amount.toFixed(2)} for extra time and miles. Tap to pay with another card.`,
+      data: { type: 'hourly_extras_failed', ride_id: rideId, screen: 'ride_summary' },
+    };
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -266,6 +307,14 @@ export const driverNotif = {
       title: 'Trip complete — nice work!',
       body: earnings > 0 ? `You earned $${earnings.toFixed(2)} on this trip.` : 'Trip completed successfully.',
       data: { type: 'trip_earnings', ride_id: rideId, screen: 'driver_earnings' },
+    };
+  },
+
+  hourlyEndingSoon(rideId: string, minutes: number): PushTemplate {
+    return {
+      title: `${minutes} minutes left on this booking`,
+      body: `The hourly booking ends in ${minutes} minutes. Check with your passenger before the time runs out.`,
+      data: { type: 'hourly_ending_soon', ride_id: rideId, screen: 'driver_home' },
     };
   },
 
