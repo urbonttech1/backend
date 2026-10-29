@@ -3,6 +3,8 @@ import { supabaseAdmin } from '../db/client';
 import { recordRideOffers } from './driverRideHistory';
 import { audienciaDelViaje, RADIO_KM } from './dispatchAudience';
 import { ensureZonesFresh, getZones, resolveZone } from './serviceZones';
+import { pool } from '../db/pool';
+import { enIdioma, resolverIdioma, type Idioma, type Texto } from './pushLanguage';
 
 const log = createContextLogger('FCM');
 
@@ -41,10 +43,73 @@ async function getMessaging(): Promise<FirebaseMessaging | null> {
 }
 
 export interface PushPayload {
+  /** Inglés. Es lo que recibe quien no tiene otro idioma o si falta `es`. */
   title: string;
   body: string;
+  /** Español. Se elige por teléfono al enviar; ver `pushLanguage.ts`. */
+  es?: Texto;
   data?: Record<string, string>;
   imageUrl?: string;
+}
+
+// ── Idioma de cada destinatario ──────────────────────────────────────────────
+// Por SQL directo y no por el cliente de Supabase: un aviso masivo lleva miles
+// de tokens, y `.in()` los pondría en la URL de la petición.
+//
+// Ante cualquier fallo —por ejemplo, la columna `language` aún no migrada— se
+// devuelve vacío y todo sale en inglés, que es lo que pasaba antes.
+
+async function idiomasDeTokens(tokens: string[]): Promise<Map<string, Idioma>> {
+  const idiomas = new Map<string, Idioma>();
+  try {
+    const { rows } = await pool.query<{ token: string; language: string | null; preferencia: string | null; phone: string | null }>(
+      `SELECT t.token, t.language, p.preferences->>'language' AS preferencia, p.phone
+         FROM user_push_tokens t
+         LEFT JOIN profiles p ON p.id = t.user_id
+        WHERE t.token = ANY($1)`,
+      [tokens],
+    );
+    for (const r of rows) {
+      idiomas.set(r.token, resolverIdioma({ token: r.language, preferencia: r.preferencia, telefono: r.phone }));
+    }
+  } catch (err: any) {
+    log.warn({ err: err.message }, 'push: no se pudo leer el idioma de los tokens; se envía en inglés');
+  }
+  return idiomas;
+}
+
+/** Idioma del usuario para lo que no va por token: el historial de la app. */
+async function idiomaDeUsuario(userId: string): Promise<Idioma> {
+  try {
+    const { rows } = await pool.query<{ language: string | null; preferencia: string | null; phone: string | null }>(
+      `SELECT (SELECT t.language FROM user_push_tokens t
+                WHERE t.user_id = p.id AND t.active AND t.language IS NOT NULL
+                ORDER BY t.updated_at DESC LIMIT 1) AS language,
+              p.preferences->>'language' AS preferencia,
+              p.phone
+         FROM profiles p
+        WHERE p.id = $1`,
+      [userId],
+    );
+    const r = rows[0];
+    return resolverIdioma({ token: r?.language, preferencia: r?.preferencia, telefono: r?.phone });
+  } catch {
+    return 'en';
+  }
+}
+
+/** Los tokens agrupados por idioma. Sin versión en español no hace falta preguntar. */
+async function agruparPorIdioma(tokens: string[], payload: PushPayload): Promise<Map<Idioma, string[]>> {
+  if (!payload.es) return new Map([['en', tokens]]);
+  const idiomas = await idiomasDeTokens(tokens);
+  const grupos = new Map<Idioma, string[]>();
+  for (const token of tokens) {
+    const idioma = idiomas.get(token) ?? 'en';
+    const grupo = grupos.get(idioma);
+    if (grupo) grupo.push(token);
+    else grupos.set(idioma, [token]);
+  }
+  return grupos;
 }
 
 // ── Per-notification delivery tuning ─────────────────────────────────────────
@@ -167,16 +232,19 @@ export async function sendToToken(token: string, payload: PushPayload): Promise<
   const fcm = await getMessaging();
   if (!fcm) return false;
 
+  const [idioma] = (await agruparPorIdioma([token], payload)).keys();
+  const mensaje = enIdioma(payload, idioma ?? 'en');
+
   try {
     await fcm.send({
       token,
       notification: {
-        title: payload.title,
-        body: payload.body,
-        ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}),
+        title: mensaje.title,
+        body: mensaje.body,
+        ...(mensaje.imageUrl ? { imageUrl: mensaje.imageUrl } : {}),
       },
-      data: payload.data ?? {},
-      ...deliveryOptions(payload),
+      data: mensaje.data ?? {},
+      ...deliveryOptions(mensaje),
     });
     return true;
   } catch (err: any) {
@@ -195,26 +263,30 @@ export async function sendMulticast(tokens: string[], payload: PushPayload): Pro
   const fcm = await getMessaging();
   if (!fcm) return { sent: 0, failed: 0 };
 
-  // FCM sendEachForMulticast handles up to 500 tokens per batch
-  const chunks: string[][] = [];
-  for (let i = 0; i < tokens.length; i += 500) {
-    chunks.push(tokens.slice(i, i + 500));
+  // FCM sendEachForMulticast handles up to 500 tokens per batch; one set of
+  // batches per language, each with its own text.
+  const lotes: Array<{ chunk: string[]; mensaje: PushPayload }> = [];
+  for (const [idioma, grupo] of await agruparPorIdioma(tokens, payload)) {
+    const mensaje = enIdioma(payload, idioma);
+    for (let i = 0; i < grupo.length; i += 500) {
+      lotes.push({ chunk: grupo.slice(i, i + 500), mensaje });
+    }
   }
 
   let sent = 0;
   let failed = 0;
   const staleTokens: string[] = [];
 
-  for (const chunk of chunks) {
+  for (const { chunk, mensaje } of lotes) {
     const response = await fcm.sendEachForMulticast({
       tokens: chunk,
       notification: {
-        title: payload.title,
-        body: payload.body,
-        ...(payload.imageUrl ? { imageUrl: payload.imageUrl } : {}),
+        title: mensaje.title,
+        body: mensaje.body,
+        ...(mensaje.imageUrl ? { imageUrl: mensaje.imageUrl } : {}),
       },
-      data: payload.data ?? {},
-      ...deliveryOptions(payload),
+      data: mensaje.data ?? {},
+      ...deliveryOptions(mensaje),
     });
 
     sent += response.successCount;
@@ -362,15 +434,17 @@ export async function notifyNearbyDrivers(
 // Persist a notification to the in-app notifications table (fire-and-forget)
 async function persistNotification(userId: string, payload: PushPayload): Promise<void> {
   try {
+    // Se guarda ya traducido: el historial lo lee la app tal cual.
+    const mensaje = enIdioma(payload, payload.es ? await idiomaDeUsuario(userId) : 'en');
     await supabaseAdmin.from('notifications').insert({
       user_id:    userId,
-      title:      payload.title,
-      body:       payload.body,
-      notif_type: payload.data?.type ?? 'system',
-      type:       payload.data?.type ?? 'system',
+      title:      mensaje.title,
+      body:       mensaje.body,
+      notif_type: mensaje.data?.type ?? 'system',
+      type:       mensaje.data?.type ?? 'system',
       read:       false,
       is_read:    false,
-      data:    payload.data ?? {},
+      data:    mensaje.data ?? {},
     });
   } catch { /* non-critical — never throw */ }
 }

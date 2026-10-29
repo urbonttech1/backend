@@ -46,6 +46,9 @@ export function paraValet(payload: PushPayload, ctx: ContextoValet = {}): PushPa
   const body  = texto ? texto.body(quien) : payload.body;
   return {
     ...payload,
+    // El español del original es el texto del pasajero: con el aviso
+    // reescrito para el valet, mandarlo le diría otra cosa.
+    ...(texto ? { es: undefined } : {}),
     title,
     body,
     data: {

@@ -735,7 +735,7 @@ router.post("/", requireSupabaseAuth, async (req: Request, res: Response) => {
         pickupLat: typeof pLat === 'number' ? pLat : null,
         pickupLng: typeof pLng === 'number' ? pLng : null,
         scheduledAt: sa,
-        childSeatLine: textoSillas(childSeatRow),
+        childSeatLine: { en: textoSillas(childSeatRow, 'en'), es: textoSillas(childSeatRow, 'es') },
       }).catch((err: unknown) => {
         logger.error(`[RIDES] scheduled offer failed for ${rideRecord.id}: ${err instanceof Error ? err.message : String(err)}`);
       });

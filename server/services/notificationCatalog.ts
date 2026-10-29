@@ -29,6 +29,9 @@ export interface CatalogEntry {
   audience: Audience;
   title:    string;
   body:     string;
+  /** Lo que recibe quien tiene el teléfono en español. Null si la plantilla no lo trae. */
+  titleEs:  string | null;
+  bodyEs:   string | null;
   type:     string | null;
   screen:   string | null;
   trigger:  string;
@@ -37,6 +40,8 @@ export interface CatalogEntry {
 }
 
 const RIDE = 'ride-0000';
+/** Martes 9:00 a. m. en Miami. */
+const MUESTRA_FECHA = '2026-11-03T14:00:00Z';
 
 function entry(
   key: string,
@@ -51,6 +56,8 @@ function entry(
     audience,
     title:  tpl.title,
     body:   tpl.body,
+    titleEs: tpl.es?.title ?? null,
+    bodyEs:  tpl.es?.body ?? null,
     type:   tpl.data?.type   ?? null,
     screen: tpl.data?.screen ?? null,
     trigger,
@@ -67,10 +74,16 @@ export function buildNotificationCatalog(): CatalogEntry[] {
     // ── Pasajero ─────────────────────────────────────────────────────────────
     entry('welcome', 'passenger', p.welcome('Ana'),
       'Al completar el registro de un pasajero nuevo.', 'template', 'api/users.ts'),
-    entry('chauffeurReserved', 'passenger', p.chauffeurReserved(RIDE, 'Carlos', 'mañana a las 9:00'),
+    entry('chauffeurReserved', 'passenger', p.chauffeurReserved(RIDE, 'Carlos', MUESTRA_FECHA),
       'Cuando un conductor reserva una carrera programada.', 'template', 'services/scheduledOffer.ts'),
     entry('rideScheduled', 'passenger', p.rideScheduled(RIDE),
       'Al crear una carrera programada, antes de que nadie la acepte.', 'inline', 'api/rides/create.ts, cancel.ts'),
+    entry('scheduled24h', 'passenger', p.scheduled24h(RIDE, MUESTRA_FECHA),
+      'Recordatorio la víspera de una carrera programada.', 'template', 'jobs/cron.ts'),
+    entry('scheduled1h', 'passenger', p.scheduled1h(RIDE, MUESTRA_FECHA),
+      'Recordatorio una hora antes de una carrera programada.', 'template', 'jobs/cron.ts'),
+    entry('scheduled15min', 'passenger', p.scheduled15min(RIDE, 15),
+      'Cuando faltan minutos para la recogida de una carrera programada.', 'template', 'jobs/cron.ts'),
     entry('rideSearching', 'passenger', p.rideSearching(RIDE),
       'Mientras se busca conductor para una carrera inmediata.', 'inline', 'api/rides/create.ts'),
     entry('driverConfirmed', 'passenger', p.driverConfirmed(RIDE, 'Carlos'),
@@ -119,11 +132,11 @@ export function buildNotificationCatalog(): CatalogEntry[] {
       'Al completar el registro de un conductor nuevo.', 'template', 'api/users.ts'),
     entry('newRideRequest', 'driver', d.newRideRequest(RIDE, 'executive', 'Calle 82 #45'),
       'Oferta de carrera inmediata a los conductores conectados.', 'inline', 'services/fcm.ts'),
-    entry('scheduledRideOffer', 'driver', d.scheduledRideOffer(RIDE, 'executive', 'Calle 82 #45', 'mañana a las 9:00'),
+    entry('scheduledRideOffer', 'driver', d.scheduledRideOffer(RIDE, 'executive', 'Calle 82 #45', MUESTRA_FECHA),
       'Oferta de carrera programada a los conductores cercanos.', 'template', 'services/scheduledOffer.ts'),
-    entry('reservationTomorrow', 'driver', d.reservationTomorrow(RIDE, '9:00'),
+    entry('reservationTomorrow', 'driver', d.reservationTomorrow(RIDE, MUESTRA_FECHA),
       'Recordatorio la víspera de una reserva aceptada.', 'template', 'jobs/cron.ts'),
-    entry('reservationInOneHour', 'driver', d.reservationInOneHour(RIDE, '9:00'),
+    entry('reservationInOneHour', 'driver', d.reservationInOneHour(RIDE, MUESTRA_FECHA),
       'Recordatorio una hora antes de una reserva aceptada.', 'template', 'jobs/cron.ts'),
     entry('tripEarnings', 'driver', d.tripEarnings(RIDE, 24.5),
       'Al cerrarse un trayecto, con lo ganado.', 'template', 'api/rides/status.ts'),
@@ -143,7 +156,7 @@ export function buildNotificationCatalog(): CatalogEntry[] {
       'Avance parcial de un reto semanal.', 'template', 'api/rides/status.ts'),
     entry('questComplete', 'driver', d.questComplete('25 viajes', '50 USD'),
       'Al completar un reto semanal.', 'template', 'api/rides/status.ts'),
-    entry('weeklyEarnings', 'driver', d.weeklyEarnings(640, 38, 'esta semana'),
+    entry('weeklyEarnings', 'driver', d.weeklyEarnings(640, 38, new Date('2026-11-01T12:00:00'), new Date('2026-11-07T12:00:00')),
       'Resumen semanal de ingresos.', 'template', 'jobs/cron.ts'),
     entry('surgeActive', 'driver', d.surgeActive(1.6),
       'Cuando se activa un multiplicador de tarifa por demanda.', 'template', 'jobs/cron.ts'),

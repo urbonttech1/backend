@@ -807,9 +807,6 @@ async function sendScheduledRideReminders() {
         .lte('scheduled_at', win1hHigh),
     ]);
 
-    const format = (iso: string) =>
-      new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-
     let count24h = 0;
     for (const ride of (res24h.data ?? []) as Array<{ id: string; passenger_id: string | null; driver_id: string | null; scheduled_at: string }>) {
       if (!ride.passenger_id) continue;
@@ -824,11 +821,10 @@ async function sendScheduledRideReminders() {
       if (!claimed || claimed.length === 0) continue;
 
       count24h++;
-      const timeLabel = format(ride.scheduled_at);
-      notifyUser(String(ride.passenger_id), passengerNotif.scheduled24h(ride.id, timeLabel)).catch(() => {});
+      notifyUser(String(ride.passenger_id), passengerNotif.scheduled24h(ride.id, ride.scheduled_at)).catch(() => {});
       // The assigned chauffeur gets the same lead time as the passenger.
       if (ride.driver_id) {
-        notifyUser(String(ride.driver_id), driverNotif.reservationTomorrow(ride.id, timeLabel)).catch(() => {});
+        notifyUser(String(ride.driver_id), driverNotif.reservationTomorrow(ride.id, ride.scheduled_at)).catch(() => {});
       }
     }
 
@@ -846,10 +842,9 @@ async function sendScheduledRideReminders() {
       if (!claimed || claimed.length === 0) continue;
 
       count1h++;
-      const timeLabel = format(ride.scheduled_at);
-      notifyUser(String(ride.passenger_id), passengerNotif.scheduled1h(ride.id, timeLabel)).catch(() => {});
+      notifyUser(String(ride.passenger_id), passengerNotif.scheduled1h(ride.id, ride.scheduled_at)).catch(() => {});
       if (ride.driver_id) {
-        notifyUser(String(ride.driver_id), driverNotif.reservationInOneHour(ride.id, timeLabel)).catch(() => {});
+        notifyUser(String(ride.driver_id), driverNotif.reservationInOneHour(ride.id, ride.scheduled_at)).catch(() => {});
         // A partir de aquí corre el plazo para que confirme; si no, salta la
         // alarma en el panel. Ver services/reservationConfirm.
         await pedirConfirmacionAlChofer(ride.id);
@@ -944,16 +939,14 @@ async function sendWeeklyEarningsSummary() {
       byDriver[r.driver_id].trips    += 1;
     }
 
-    const weekLabel = `${lastSunday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}–${lastSaturday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
-
     let notified = 0;
     for (const [driverId, { earnings, trips }] of Object.entries(byDriver)) {
       if (trips === 0) continue;
-      notifyUser(driverId, driverNotif.weeklyEarnings(earnings, trips, weekLabel)).catch(() => {});
+      notifyUser(driverId, driverNotif.weeklyEarnings(earnings, trips, lastSunday, lastSaturday)).catch(() => {});
       notified++;
     }
 
-    if (notified > 0) log.info(`[CRON] Weekly earnings summary sent to ${notified} driver(s) for week ${weekLabel}.`);
+    if (notified > 0) log.info(`[CRON] Weekly earnings summary sent to ${notified} driver(s) for week ${lastSunday.toISOString().slice(0, 10)}–${lastSaturday.toISOString().slice(0, 10)}.`);
   } catch (err: any) {
     log.error({ err: err }, '[CRON] sendWeeklyEarningsSummary error');
   }

@@ -17,6 +17,9 @@ const registerTokenSchema = z.object({
   token: z.string().min(10, 'Invalid FCM token'),
   platform: z.enum(['ios', 'android', 'web']).default('web'),
   deviceId: z.string().max(200).optional(),
+  // Idioma de la app en ese teléfono ('es', 'en', 'es-CO'…). Las apps
+  // anteriores no lo mandan; ver services/pushLanguage.ts.
+  language: z.string().max(10).optional(),
 });
 
 // POST /api/notifications/token — register or refresh an FCM push token
@@ -26,7 +29,7 @@ notificationsRouter.post(
   validate(registerTokenSchema),
   async (req: Request, res: Response) => {
     const user_id = req.supabaseUid!;
-    const { token, platform, deviceId } = req.body;
+    const { token, platform, deviceId, language } = req.body;
 
     try {
       const { error } = await supabaseAdmin
@@ -37,6 +40,9 @@ notificationsRouter.post(
             token,
             platform,
             device_id: deviceId || null,
+            // Sólo si viene: una app vieja que refresca su token no debe borrar
+            // el idioma que guardó otra versión.
+            ...(language ? { language } : {}),
             active: true,
             updated_at: new Date().toISOString(),
           },

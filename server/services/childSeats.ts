@@ -44,19 +44,33 @@ export function leerSillas(raw: unknown): { ok: true; seats: ChildSeats | null }
   return { ok: true, seats };
 }
 
-/** Texto corto, en inglés, para la oferta que ve el chofer. */
-export function textoSillas(seats: ChildSeats | null | undefined): string {
+const NOMBRES_SILLAS = {
+  en: {
+    rear_facing:    ['rear-facing seat', 'rear-facing seats'],
+    forward_facing: ['forward-facing seat', 'forward-facing seats'],
+    booster:        ['booster seat', 'booster seats'],
+    necesita: 'Needs', y: 'and',
+  },
+  es: {
+    rear_facing:    ['silla a contramarcha', 'sillas a contramarcha'],
+    forward_facing: ['silla mirando al frente', 'sillas mirando al frente'],
+    booster:        ['asiento elevador', 'asientos elevadores'],
+    necesita: 'Necesita', y: 'y',
+  },
+} as const;
+
+/** Texto corto para la oferta que ve el chofer. */
+export function textoSillas(seats: ChildSeats | null | undefined, idioma: 'en' | 'es' = 'en'): string {
   if (!seats) return '';
+  const nombres = NOMBRES_SILLAS[idioma];
   const partes: string[] = [];
-  const agregar = (n: number, uno: string, varios: string) => {
-    if (n === 1) partes.push(`1 ${uno}`);
-    else if (n > 1) partes.push(`${n} ${varios}`);
-  };
-  agregar(seats.rear_facing, 'rear-facing seat', 'rear-facing seats');
-  agregar(seats.forward_facing, 'forward-facing seat', 'forward-facing seats');
-  agregar(seats.booster, 'booster seat', 'booster seats');
+  for (const tipo of ['rear_facing', 'forward_facing', 'booster'] as const) {
+    const n = seats[tipo];
+    if (n === 1) partes.push(`1 ${nombres[tipo][0]}`);
+    else if (n > 1) partes.push(`${n} ${nombres[tipo][1]}`);
+  }
   if (partes.length === 0) return '';
-  if (partes.length === 1) return `Needs ${partes[0]}`;
+  if (partes.length === 1) return `${nombres.necesita} ${partes[0]}`;
   const ultima = partes.pop();
-  return `Needs ${partes.join(', ')} and ${ultima}`;
+  return `${nombres.necesita} ${partes.join(', ')} ${nombres.y} ${ultima}`;
 }

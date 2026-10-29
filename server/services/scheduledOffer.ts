@@ -5,6 +5,7 @@ import { notifyUser, sendMulticast } from './fcm';
 import { broadcastScheduledOffer, SCHEDULED_OFFER_RADIUS_KM } from './socketService';
 import { recordRideOffers } from './driverRideHistory';
 import { driverNotif, passengerNotif } from './notificationTemplates';
+import type { Bilingue } from './pushLanguage';
 import { admiteRelevo } from './reservationConfirm';
 
 const log = createContextLogger('SCHEDULED');
@@ -41,12 +42,6 @@ export function scheduledStartableAt(scheduledAt: string | null | undefined, lea
   return new Date(ms - leadMinutes * 60 * 1000);
 }
 
-function whenLabel(iso: string): string {
-  return new Date(iso).toLocaleString('en-US', {
-    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-}
-
 /** Tell every nearby chauffeur, at once, that a passenger reserved a future pickup. */
 export async function offerScheduledRide(args: {
   rideId: string;
@@ -55,7 +50,7 @@ export async function offerScheduledRide(args: {
   pickupLat?: number | null;
   pickupLng?: number | null;
   scheduledAt: string;
-  childSeatLine?: string;
+  childSeatLine?: string | Bilingue;
 }): Promise<void> {
   const driverIds = await broadcastScheduledOffer({
     ...args,
@@ -75,7 +70,7 @@ export async function offerScheduledRide(args: {
   const tokens = (tokenRows ?? []).map((r: { token: string }) => r.token);
   if (tokens.length === 0) return;
 
-  const note = driverNotif.scheduledRideOffer(args.rideId, args.vehicleType, args.pickupAddress, whenLabel(args.scheduledAt), args.childSeatLine);
+  const note = driverNotif.scheduledRideOffer(args.rideId, args.vehicleType, args.pickupAddress, args.scheduledAt, args.childSeatLine);
   await sendMulticast(tokens, note);
   recordRideOffers(
     args.rideId,
@@ -193,12 +188,12 @@ export async function claimScheduledRide(rideId: string, driverId: string): Prom
       .select('first_name, last_name')
       .eq('id', driverId)
       .maybeSingle();
-    const name = [`${profile?.first_name || ''}`, `${profile?.last_name || ''}`].join(' ').trim() || 'Your chauffeur';
-    const when = ride.scheduled_at ? whenLabel(ride.scheduled_at) : 'your pickup';
+    const fullName = [`${profile?.first_name || ''}`, `${profile?.last_name || ''}`].join(' ').trim();
+    const name = fullName || 'Your chauffeur';
     notifyUser(
       ride.passenger_id,
       keepScheduled
-        ? passengerNotif.chauffeurReserved(rideId, name, when)
+        ? passengerNotif.chauffeurReserved(rideId, fullName || undefined, ride.scheduled_at ?? null)
         : {
             title: 'Driver on the way!',
             body: `${name} accepted and is heading to you.`,

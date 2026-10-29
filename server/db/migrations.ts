@@ -435,6 +435,10 @@ export async function runMigrations() {
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_complaints_status ON complaints(comp_status)`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_push_tokens_user ON user_push_tokens(user_id) WHERE active = true`);
     await safeIndex(`CREATE INDEX IF NOT EXISTS idx_push_tokens_token ON user_push_tokens(token)`);
+    // Idioma con el que la app registró el token: cada teléfono recibe las
+    // notificaciones en el suyo. NULL en los tokens de apps que aún no lo envían.
+    // Ver services/pushLanguage.ts.
+    await safeAlter(`ALTER TABLE user_push_tokens ADD COLUMN IF NOT EXISTS language VARCHAR(10)`);
 
     // ─── PostGIS: Geospatial driver search ────────────────────────────────────
 
