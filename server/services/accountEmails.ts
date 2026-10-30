@@ -117,6 +117,33 @@ export function rechazoValetHtml(target: AccountEmailTarget, reason?: string | n
   });
 }
 
+/**
+ * El alta del conductor va en dos tandas: primero lo esencial y, cuando se le
+ * aprueba, el resto. Este correo es el que abre la segunda.
+ */
+export function fase1AprobadaHtml(target: AccountEmailTarget, pendientes: string[] = []): string {
+  const lista = pendientes.length
+    ? panel(`<p style="margin:0 0 6px;font-family:${FONT};font-size:13px;font-weight:700;
+        color:${brand.navyDeep};">Lo que te pediremos ahora</p>
+      <ul style="margin:0;padding-left:18px;font-family:${FONT};font-size:14px;line-height:1.6;
+        color:${brand.navyDeep};">${pendientes.map(d => `<li>${d}</li>`).join('')}</ul>`)
+    : '';
+  return emailShell({
+    eyebrow: 'Documentos del conductor',
+    content: section(`
+      ${parrafo(saludo(target.name))}
+      ${parrafo(`Revisamos los primeros documentos que nos enviaste y están <strong>aprobados</strong>.`)}
+      <div style="margin:4px 0 18px;">${badge('Primera fase aprobada', brand.green)}</div>
+      ${parrafo(`Ya puedes subir los documentos que faltan para terminar tu registro. Abre la app,
+        entra a <strong>Documentos</strong> y verás los nuevos que se te piden.`)}
+      ${lista}
+      ${parrafo(`Si tienes dudas, escríbenos a
+        <a href="mailto:${SOPORTE}" style="color:${brand.navyMid};">${SOPORTE}</a>.`, '0')}
+    `),
+    footerNote: 'Este mensaje se envió porque tus documentos fueron revisados.',
+  });
+}
+
 export function documentoValetHtml(target: AccountEmailTarget, docLabel: string, reason?: string | null): string {
   return emailShell({
     eyebrow: 'Solicitud de valet',
@@ -283,6 +310,10 @@ export function enviarAvisoRechazoValet(target: AccountEmailTarget, reason?: str
 
 export function enviarAvisoDocumentoValet(target: AccountEmailTarget, docLabel: string, reason?: string | null): Promise<ResultadoAviso> {
   return avisar(target, 'Necesitamos que vuelvas a enviar un documento', documentoValetHtml(target, docLabel, reason));
+}
+
+export function enviarAvisoFase1Aprobada(target: AccountEmailTarget, pendientes: string[] = []): Promise<ResultadoAviso> {
+  return avisar(target, 'Tus primeros documentos fueron aprobados', fase1AprobadaHtml(target, pendientes));
 }
 
 export function enviarAvisoCambioContrasena(target: AccountEmailTarget): Promise<ResultadoAviso> {

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { documentosVigentes, catalogoCompleto } from '../services/docCatalogStore';
 import { esRolValet } from '../services/docCatalog';
+import { bloqueoDeFase, fasesDelConductor } from '../services/docPhases';
 import { marcarRutaW9 } from '../services/valetDocumentation';
 import { nombreDeConductor, type PerfilConductor } from '../services/driverName';
 import { supabaseAdmin, verifySupabaseToken } from '../db/client';
@@ -251,8 +252,14 @@ chauffeurDocsRouter.get('/required-docs', async (req: Request, res: Response) =>
     country: 'US',
     /** `valet` cuando se pidió la lista reducida; `default` en los demás casos. */
     scope: esRolValet(rol) ? 'valet' : 'default',
-    docs: activos.map(({ key, label, category, hint, expires }) => ({ key, label, category, hint, expires })),
+    // `phase` dice en qué tanda del alta se pide cada uno: la 2 no se le deja
+    // subir hasta que el admin le apruebe la 1. Ver services/docPhases.ts.
+    docs: activos.map(({ key, label, category, hint, expires, phase }) => ({ key, label, category, hint, expires, phase })),
     totalRequired: activos.length,
+    phases: {
+      1: activos.filter((d) => d.phase === 1).length,
+      2: activos.filter((d) => d.phase === 2).length,
+    },
     // Todo lo que el servidor acepta guardar, más allá de lo que exige. Incluye
     // los permisos de condado y los papeles de empresa del esquema anterior, y
     // los documentos que el panel haya desactivado.
@@ -309,6 +316,12 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       field: 'docKey',
       acceptedDocKeys: clavesAceptadas,
     });
+
+  // El alta va en dos fases: lo de la segunda no se acepta hasta que el admin
+  // apruebe la primera. Se comprueba en el servidor y no solo en la app, que es
+  // lo único que impide saltárselo.
+  const bloqueo = await bloqueoDeFase(uid, role, docKey);
+  if (bloqueo) return res.status(409).json(bloqueo);
 
   if (!ALLOWED_MIME_TYPES.includes(mimeType.toLowerCase()))
     return res.status(400).json({
@@ -560,11 +573,24 @@ chauffeurDocsRouter.get('/verification-status', requireSupabaseAuth, async (req:
       }
     }
 
+    // En qué tanda del alta está: la app enseña bloqueados los de la fase 2
+    // hasta que el admin apruebe la 1.
+    const { fases, disponibles } = await fasesDelConductor(uid, role);
+
     return res.json({
       verificationStatus: (profile?.verification_status as string) || 'pending_documents',
       rejectionReason:    profile?.rejection_reason  || null,
       operatingCity:      profile?.operating_city    || null,
       uploadedDocs,
+      phase:         fases.fase,
+      phaseUnlocked: fases.desbloqueada,
+      /** Claves de la fase 2 que todavía no puede subir. Vacío si ya está abierta. */
+      lockedDocs:    fases.bloqueados,
+      /** De la fase 1: lo que le falta y lo que está esperando revisión. */
+      missingPhase1:    fases.faltanFase1,
+      pendingPhase1:    fases.pendientesFase1,
+      /** Las claves que puede subir ahora mismo. */
+      availableDocKeys: disponibles.map((d) => d.key),
     });
   } catch (err) {
     logger.error(`[VerifStatus] Error: ${errMsg(err)}`);
@@ -736,9 +762,16 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
 
   const results: Record<string, { success: boolean; storageUrl?: string; error?: string }> = {};
 
+  // Los de la segunda fase no se guardan hasta que el admin apruebe la primera.
+  const { fases } = await fasesDelConductor(uid, role);
+
   // Run all uploads in parallel — Uber-style fast batch
   await Promise.all(
     Object.entries(documents).map(async ([docKey, entrada]) => {
+      if (fases.bloqueados.includes(docKey)) {
+        results[docKey] = { success: false, error: 'Not yet: this document belongs to the second step.' };
+        return;
+      }
       // Esta ruta no comprobaba el tipo de documento, a diferencia de
       // /upload-doc. Por aquí entró un juego de once documentos con nombres que
       // no existen en la lista requerida, y ese conductor quedó imposible de

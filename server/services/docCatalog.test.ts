@@ -10,6 +10,9 @@ import {
   WEB_DOC_KEYS,
   catalogoSemilla,
   normalizarDocumentoAdmin,
+
+  estadoDeFases, documentosDeLaFase, faseValida,
+  type DocumentoCatalogo, type EstadoDoc,
 } from './docCatalog';
 
 /**
@@ -161,5 +164,74 @@ describe('normalizarDocumentoAdmin', () => {
     expect(error({ sortOrder: -1 }).errorCode).toBe('INVALID_SORT_ORDER');
     expect(error({ active: 'quizá' }).errorCode).toBe('INVALID_FLAG');
     expect(error({}).errorCode).toBe('NOTHING_TO_UPDATE');
+  });
+});
+
+describe('estadoDeFases — el alta en dos tandas', () => {
+  const doc = (key: string, phase: 1 | 2): DocumentoCatalogo =>
+    ({ key, label: key, category: 'Other', hint: '', expires: false, active: true, sortOrder: 10, phase });
+
+  // Fase 1: identidad y vehículo. Fase 2: permisos y papeles de empresa.
+  const CATALOGO = [doc('license', 1), doc('photo', 1), doc('registration', 1), doc('limoPermit', 2), doc('w9', 2)];
+  const estados = (m: Record<string, EstadoDoc>) => new Map(Object.entries(m));
+  const FASE1_OK = { license: 'aprobado', photo: 'aprobado', registration: 'aprobado' } as const;
+
+  it('recién llegado: solo ve la fase 1 y la 2 le queda bloqueada', () => {
+    const f = estadoDeFases(CATALOGO, estados({}));
+    expect(f).toMatchObject({ fase: 1, desbloqueada: false, motivo: 'espera_aprobacion' });
+    expect(f.faltanFase1).toEqual(['license', 'photo', 'registration']);
+    expect(f.bloqueados).toEqual(['limoPermit', 'w9']);
+    expect(documentosDeLaFase(CATALOGO, f).map(d => d.key)).toEqual(['license', 'photo', 'registration']);
+  });
+
+  it('subida pero sin revisar: sigue bloqueada, y se sabe qué espera revisión', () => {
+    const f = estadoDeFases(CATALOGO, estados({ license: 'pendiente', photo: 'pendiente', registration: 'pendiente' }));
+    expect(f).toMatchObject({ desbloqueada: false });
+    expect(f.faltanFase1).toEqual([]);
+    expect(f.pendientesFase1).toEqual(['license', 'photo', 'registration']);
+  });
+
+  it('aprobada la fase 1 entera, se abre la 2', () => {
+    const f = estadoDeFases(CATALOGO, estados(FASE1_OK));
+    expect(f).toMatchObject({ fase: 2, desbloqueada: true, motivo: 'fase_1_aprobada' });
+    expect(f.bloqueados).toEqual([]);
+    expect(documentosDeLaFase(CATALOGO, f)).toHaveLength(5);
+  });
+
+  it('con uno solo sin aprobar la fase 2 no se abre', () => {
+    const f = estadoDeFases(CATALOGO, estados({ ...FASE1_OK, registration: 'pendiente' }));
+    expect(f.desbloqueada).toBe(false);
+  });
+
+  it('quien ya entregó documentos de la fase 2 no los pierde de vista', () => {
+    // Los conductores anteriores a las fases: esconderles lo que ya subieron
+    // les haría creer que se perdió.
+    const f = estadoDeFases(CATALOGO, estados({ license: 'pendiente', w9: 'aprobado' }));
+    expect(f).toMatchObject({ desbloqueada: true, motivo: 'ya_tiene_fase_2' });
+  });
+
+  it('un rechazo de la fase 1 no vuelve a cerrar la fase 2', () => {
+    const abierta = estadoDeFases(CATALOGO, estados({ ...FASE1_OK, w9: 'pendiente' }));
+    expect(abierta.desbloqueada).toBe(true);
+    const tras = estadoDeFases(CATALOGO, estados({ ...FASE1_OK, photo: 'rechazado', w9: 'pendiente' }));
+    expect(tras.desbloqueada).toBe(true);
+  });
+
+  it('sin documentos en la fase 2, no hay nada que bloquear', () => {
+    const soloFase1 = CATALOGO.filter(d => d.phase === 1);
+    expect(estadoDeFases(soloFase1, estados({}))).toMatchObject({ desbloqueada: true, motivo: 'sin_fase_2' });
+  });
+
+  it('los desactivados no cuentan: quien llama pasa solo los activos', () => {
+    const f = estadoDeFases([doc('license', 1), doc('w9', 2)], estados({ license: 'aprobado' }));
+    expect(f.desbloqueada).toBe(true);
+  });
+});
+
+describe('faseValida', () => {
+  it('solo la 2 es la 2; lo demás es fase 1', () => {
+    expect(faseValida(2)).toBe(2);
+    expect(faseValida('2')).toBe(2);
+    for (const v of [1, null, undefined, 0, 3, 'x']) expect(faseValida(v)).toBe(1);
   });
 });

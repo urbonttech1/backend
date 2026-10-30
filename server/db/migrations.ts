@@ -607,6 +607,23 @@ export async function runMigrations() {
       );
     }
 
+    // ─── Alta en dos fases ──────────────────────────────────────────────────
+    //
+    // El conductor sube primero los documentos de la fase 1 y no puede subir el
+    // resto hasta que el admin se los apruebe. Todo nace en la fase 1, así que
+    // mientras el panel no mueva ningún documento a la 2 el alta se comporta
+    // exactamente como antes.
+    await safeAlter(`ALTER TABLE document_catalog ADD COLUMN IF NOT EXISTS phase SMALLINT NOT NULL DEFAULT 1`);
+    await safeAlter(`ALTER TABLE valet_document_catalog ADD COLUMN IF NOT EXISTS phase SMALLINT NOT NULL DEFAULT 1`);
+    for (const tabla of ['document_catalog', 'valet_document_catalog']) {
+      await safeAlter(
+        `ALTER TABLE ${tabla} ADD CONSTRAINT ${tabla}_phase_check CHECK (phase IN (1, 2))`,
+      );
+    }
+    // Cuándo se le avisó de que su fase 1 quedó aprobada. Sirve de sello: el
+    // correo y el push salen una sola vez por conductor.
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS docs_phase1_notified_at TIMESTAMPTZ`);
+
     // Catálogo propio del valet: mismas columnas, tabla aparte, para que el panel
     // lo administre en su pestaña sin tocar el del conductor.
     await client.query(`

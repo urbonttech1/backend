@@ -7,6 +7,8 @@ import { logger } from '../lib/logger';
 import { getMemory, getCpu } from '../services/systemMetrics';
 import { getIntegrationChecks, checkDatabase, checkSupabase, checkRedis, refreshTranslationCheck } from '../services/integrationChecks';
 import { recalcularVerificacion, normalizarEstadoDoc, ACCEPTED_DOC_KEYS } from '../services/driverVerification';
+import { avisarFase1Aprobada } from '../services/docPhases';
+import { estadoDeFases, type EstadoDeFases, type EstadoDoc } from '../services/docCatalog';
 import { catalogoCompleto, invalidarCatalogo, tablaCatalogo } from '../services/docCatalogStore';
 import type { AudienciaCatalogo } from '../services/docCatalog';
 import { notifyUser } from '../services/fcm';
@@ -338,6 +340,20 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       documentos.set(id, d);
     }
     for (const d of documentos.values()) d.lista.sort((a, b) => a.docKey.localeCompare(b.docKey));
+
+    // El alta va en dos fases: el panel necesita ver en cuál está cada conductor
+    // para saber a quién le toca una revisión que desbloquea la siguiente tanda.
+    const catalogoActivo = (await catalogoCompleto('driver')).filter(d => d.active);
+    const fasesDe = (doc: Docs | undefined): EstadoDeFases => {
+      const estados = new Map<string, EstadoDoc>();
+      for (const x of doc?.lista ?? []) {
+        const previo = estados.get(x.docKey);
+        if (previo === 'aprobado') continue;
+        if (previo === 'pendiente' && x.state === 'rechazado') continue;
+        estados.set(x.docKey, x.state);
+      }
+      return estadoDeFases(catalogoActivo, estados);
+    };
     /**
      * Resumen de caducidades de un conductor. El cron diario ya avisa y suspende
      * (ver `checkDocumentExpiry`), pero el panel no recibía nada de esto, así que
@@ -413,6 +429,7 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
     const via = conteo.get(String(d.id));
     const doc = documentos.get(String(d.id));
     const estadoDocs = estadoDocumentos(doc);
+    const fases = fasesDe(doc);
     const caducidad = caducidadDocumentos(doc);
     const necesitaRevision = d.needs_review === true;
     const bgStatus = (d.background_check as Record<string, unknown> | undefined)?.status as string | undefined;
@@ -488,6 +505,13 @@ adminRouter.get("/drivers", async (_req: Request, res: Response) => {
       // tenga que pedir /documents aparte y filtrar por conductor.
       documents: doc?.lista ?? [],
       verificationStatus: d.verification_status || 'pending_documents',
+      // En qué tanda del alta está. `docsPhase: 1` con `docsPhaseUnlocked: false`
+      // es quien espera que se le apruebe la fase 1 para poder seguir.
+      docsPhase: fases.fase,
+      docsPhaseUnlocked: fases.desbloqueada,
+      docsPhase1Missing: fases.faltanFase1,
+      docsPhase1Pending: fases.pendientesFase1,
+      docsPhase2Locked: fases.bloqueados,
       backgroundCheckStatus: bgStatus || 'not_submitted',
       rejectionReason: d.rejection_reason || null,
       // true = el perfil dice una cosa y sus documentos dicen otra.
@@ -748,6 +772,7 @@ adminRouter.post("/drivers/:id/recalculate-verification", async (req: Request, r
     if (!antes) return res.status(404).json({ error: 'Conductor no encontrado.', errorCode: 'DRIVER_NOT_FOUND' });
 
     const estado = await recalcularVerificacion(driverId);
+    void avisarFase1Aprobada(driverId);
     const previo = (antes as { verification_status?: string }).verification_status ?? null;
 
     return res.json({
@@ -1545,6 +1570,9 @@ adminRouter.post("/documents/:id/approve", async (req: Request, res: Response) =
     if (docError || !doc) return res.status(404).json({ error: 'Document not found.' });
     const driverId = String((doc as Record<string, unknown>).driver_id);
     await recalcularVerificacion(driverId);
+    // Si esta aprobación es la que completa la fase 1, se le avisa por correo y
+    // por push de que ya puede subir el resto. Una sola vez por conductor.
+    void avisarFase1Aprobada(driverId);
     void notes;
     return res.json({ success: true, document: { id, status: 'approved', driverName: nombreDeConductor({ copia: (doc as Record<string, unknown>).driver_name as string, id: (doc as Record<string, unknown>).driver_id as string }), type: (doc as Record<string, unknown>).doc_key || 'document', fileName: (doc as Record<string, unknown>).file_name || 'document', uploadDate: (doc as Record<string, unknown>).created_at, expiryDate: (doc as Record<string, unknown>).expiry_date ?? null, imageUrl: (doc as Record<string, unknown>).storage_url || null, updatedAt: new Date().toISOString() } });
   } catch {
@@ -2827,6 +2855,7 @@ adminRouter.patch('/document-catalog/:key', async (req: Request, res: Response) 
   if (doc.expires !== undefined)   fila.expires = doc.expires;
   if (doc.active !== undefined)    fila.active = doc.active;
   if (doc.sortOrder !== undefined) fila.sort_order = doc.sortOrder;
+  if (doc.phase !== undefined)     fila.phase = doc.phase;
 
   try {
     const audiencia = audienciaDe(req);
@@ -2861,6 +2890,7 @@ adminRouter.post('/document-catalog', async (req: Request, res: Response) => {
       expires:    doc.expires ?? false,
       active:     doc.active ?? true,
       sort_order: doc.sortOrder ?? ultimo + 10,
+      phase:      doc.phase ?? 1,
     });
     if (error?.code === '23505') {
       return res.status(409).json({ error: 'Ya existe un documento con esa clave.', errorCode: 'DOC_EXISTS', field: 'key' });

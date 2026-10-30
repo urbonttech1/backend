@@ -13,7 +13,10 @@
  */
 import pino from 'pino';
 import { supabaseAdmin } from '../db/client';
-import { catalogoSemilla, catalogoSemillaValet, audienciaDeRol, type AudienciaCatalogo, type DocumentoCatalogo } from './docCatalog';
+import {
+  catalogoSemilla, catalogoSemillaValet, audienciaDeRol, faseValida,
+  type AudienciaCatalogo, type DocumentoCatalogo,
+} from './docCatalog';
 
 const log = pino({ level: 'info' });
 
@@ -38,6 +41,8 @@ export function invalidarCatalogo(audiencia?: AudienciaCatalogo): void {
 type Fila = {
   doc_key: string; label: string; category: string; hint: string | null;
   expires: boolean | null; active: boolean | null; sort_order: number | null;
+  /** Nula en las filas anteriores a las dos fases: cuentan como fase 1. */
+  phase: number | null;
 };
 
 const deFila = (f: Fila): DocumentoCatalogo => ({
@@ -48,6 +53,7 @@ const deFila = (f: Fila): DocumentoCatalogo => ({
   expires: !!f.expires,
   active: f.active !== false,
   sortOrder: f.sort_order ?? 0,
+  phase: faseValida(f.phase),
 });
 
 /** Todo el catálogo, activos e inactivos, en orden. Nunca lanza. */
@@ -55,11 +61,21 @@ export async function catalogoCompleto(audiencia: AudienciaCatalogo = 'driver'):
   const guardado = cache[audiencia];
   if (guardado && Date.now() - guardado.at < TTL_MS) return guardado.docs;
 
+  const COLUMNAS = 'doc_key, label, category, hint, expires, active, sort_order';
   try {
-    const { data, error } = await supabaseAdmin
+    const leer = (cols: string) => supabaseAdmin
       .from(tablaCatalogo(audiencia))
-      .select('doc_key, label, category, hint, expires, active, sort_order')
+      .select(cols)
       .order('sort_order', { ascending: true });
+
+    // `phase` la añade la migración. Si este proceso arranca antes de que haya
+    // corrido, se relee sin ella en vez de caer a la semilla, que reactivaría
+    // los documentos que el panel tiene desactivados.
+    let { data, error } = await leer(`${COLUMNAS}, phase`) as unknown as { data: unknown; error: { message?: string; code?: string } | null };
+    if (error && (error.code === '42703' || String(error.message).includes('phase'))) {
+      log.warn('document_catalog sin la columna `phase` todavía — todo cuenta como fase 1');
+      ({ data, error } = await leer(COLUMNAS) as unknown as { data: unknown; error: { message?: string; code?: string } | null });
+    }
     if (error) throw error;
     const docs = (data ?? []) as Fila[];
     if (docs.length === 0) throw new Error('catálogo vacío');

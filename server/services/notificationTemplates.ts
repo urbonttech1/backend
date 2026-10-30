@@ -395,6 +395,15 @@ export const driverNotif = {
     );
   },
 
+  /** Los documentos de la primera fase quedaron aprobados: ya puede subir el resto. */
+  docsPhase1Approved(): Plantilla {
+    return push(
+      { title: 'First documents approved', body: 'You can now upload the rest of your documents to finish signing up.' },
+      { title: 'Primeros documentos aprobados', body: 'Ya puedes subir los documentos que faltan para terminar tu registro.' },
+      { type: 'docs_phase1_approved', screen: 'driver_profile' },
+    );
+  },
+
   hourlyEndingSoon(rideId: string, minutes: number): Plantilla {
     return push(
       { title: `${minutes} minutes left on this booking`, body: `The hourly booking ends in ${minutes} minutes. Check with your passenger before the time runs out.` },

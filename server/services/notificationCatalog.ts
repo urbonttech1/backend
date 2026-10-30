@@ -140,6 +140,8 @@ export function buildNotificationCatalog(): CatalogEntry[] {
       'Recordatorio una hora antes de una reserva aceptada.', 'template', 'jobs/cron.ts'),
     entry('tripEarnings', 'driver', d.tripEarnings(RIDE, 24.5),
       'Al cerrarse un trayecto, con lo ganado.', 'template', 'api/rides/status.ts'),
+    entry('docsPhase1Approved', 'driver', d.docsPhase1Approved(),
+      'Cuando el admin aprueba los documentos de la primera fase del alta.', 'template', 'services/docPhases.ts'),
     entry('hourlyEndingSoonDriver', 'driver', d.hourlyEndingSoon(RIDE, 15),
       'Reserva por hora: faltan 15 minutos para que se acabe el tiempo reservado.', 'template', 'jobs/cron.ts'),
     entry('rideCancelledByPassenger', 'driver', d.rideCancelledByPassenger(RIDE),

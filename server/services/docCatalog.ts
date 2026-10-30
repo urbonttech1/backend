@@ -224,11 +224,24 @@ export interface DocumentoCatalogo extends DocMeta {
   /** false: sigue aceptándose si ya está subido, pero no se le pide a nadie. */
   active: boolean;
   sortOrder: number;
+  /**
+   * En qué fase del alta se le pide. Todo lo que existía nace en la 1, así que
+   * un catálogo sin fase 2 se comporta exactamente como antes: una sola tanda.
+   */
+  phase: FaseDocumento;
+}
+
+/** Las dos tandas del alta. La 2 se abre cuando el admin aprueba la 1. */
+export type FaseDocumento = 1 | 2;
+
+/** Una fase válida, con 1 por defecto: una fila vieja o un valor raro no bloquea nada. */
+export function faseValida(v: unknown): FaseDocumento {
+  return Number(v) === 2 ? 2 : 1;
 }
 
 /** La semilla del catálogo del valet, con la misma forma que la del conductor. */
 export function catalogoSemillaValet(): DocumentoCatalogo[] {
-  return VALET_DOC_KEYS.map((key, i) => ({ key, ...VALET_DOC_SEED[key], active: true, sortOrder: (i + 1) * 10 }));
+  return VALET_DOC_KEYS.map((key, i) => ({ key, ...VALET_DOC_SEED[key], active: true, sortOrder: (i + 1) * 10, phase: 1 }));
 }
 
 /** La semilla: el catálogo del código, en el orden del esquema vigente. */
@@ -238,7 +251,86 @@ export function catalogoSemilla(): DocumentoCatalogo[] {
     ...docMeta(key),
     active: ESQUEMA_GLOBAL.includes(key as never) && !(DESACTIVADOS_INICIALES as readonly string[]).includes(key),
     sortOrder: (i + 1) * 10,
+    // Todo arranca en la fase 1: el admin decide en el panel qué pasa a la 2.
+    phase: 1 as FaseDocumento,
   }));
+}
+
+/* ── Alta en dos fases ─────────────────────────────────────────────────────
+ *
+ * El conductor sube primero los documentos de la fase 1. Hasta que el admin se
+ * los apruebe no puede subir los de la fase 2: así se revisa lo esencial —la
+ * identidad y el vehículo— antes de pedirle que reúna permisos y papeles de
+ * empresa, que es la parte cara de conseguir.
+ *
+ * Nada de esto se activa solo: mientras el panel no ponga ningún documento en
+ * la fase 2, todo está en la 1 y el alta se comporta como siempre.
+ */
+
+/** El estado de un documento del conductor, ya normalizado. */
+export type EstadoDoc = 'aprobado' | 'rechazado' | 'pendiente';
+
+export interface EstadoDeFases {
+  /** La fase más alta que puede subir ahora mismo. */
+  fase: FaseDocumento;
+  /** true: ya puede subir los de la fase 2. */
+  desbloqueada: boolean;
+  /** Por qué está como está, para poder explicárselo y para los tests. */
+  motivo: 'sin_fase_2' | 'fase_1_aprobada' | 'ya_tiene_fase_2' | 'espera_aprobacion';
+  /** De la fase 1: lo que falta por subir. */
+  faltanFase1: string[];
+  /** De la fase 1: subidos y aún sin revisar. */
+  pendientesFase1: string[];
+  /** De la fase 2: lo que todavía no puede subir. Vacío cuando está desbloqueada. */
+  bloqueados: string[];
+}
+
+/**
+ * En qué punto del alta está el conductor.
+ *
+ * Se desbloquea la fase 2 cuando todos los documentos activos de la fase 1
+ * están aprobados. También si el conductor YA tiene subido algo de la fase 2:
+ * son los que se dieron de alta antes de que existieran las fases, y
+ * esconderles lo que ya entregaron sería hacerles creer que se perdió.
+ *
+ * Un documento rechazado de la fase 1 no vuelve a cerrar la fase 2: se le pide
+ * que lo corrija, pero no se le quita lo que ya tenía delante.
+ */
+export function estadoDeFases(
+  activos: readonly DocumentoCatalogo[],
+  estados: ReadonlyMap<string, EstadoDoc>,
+): EstadoDeFases {
+  const fase1 = activos.filter((d) => faseValida(d.phase) === 1);
+  const fase2 = activos.filter((d) => faseValida(d.phase) === 2);
+
+  const faltanFase1     = fase1.filter((d) => !estados.has(d.key)).map((d) => d.key);
+  const pendientesFase1 = fase1.filter((d) => estados.get(d.key) === 'pendiente').map((d) => d.key);
+  const fase1Aprobada   = fase1.every((d) => estados.get(d.key) === 'aprobado');
+  const yaTieneFase2    = fase2.some((d) => estados.has(d.key));
+
+  const motivo: EstadoDeFases['motivo'] =
+    fase2.length === 0 ? 'sin_fase_2'
+    : fase1Aprobada    ? 'fase_1_aprobada'
+    : yaTieneFase2     ? 'ya_tiene_fase_2'
+    : 'espera_aprobacion';
+
+  const desbloqueada = motivo !== 'espera_aprobacion';
+  return {
+    fase: desbloqueada ? 2 : 1,
+    desbloqueada,
+    motivo,
+    faltanFase1,
+    pendientesFase1,
+    bloqueados: desbloqueada ? [] : fase2.map((d) => d.key),
+  };
+}
+
+/** Los documentos que el conductor puede subir ahora mismo. */
+export function documentosDeLaFase(
+  activos: readonly DocumentoCatalogo[],
+  fases: Pick<EstadoDeFases, 'desbloqueada'>,
+): DocumentoCatalogo[] {
+  return fases.desbloqueada ? [...activos] : activos.filter((d) => faseValida(d.phase) === 1);
 }
 
 export interface ErrorCampo { errorCode: string; field: string; error: string }
@@ -291,6 +383,14 @@ export function normalizarDocumentoAdmin(
       return { errorCode: 'INVALID_HINT', field: 'hint', error: 'La ayuda no puede pasar de 200 caracteres.' };
     }
     doc.hint = hint;
+  }
+
+  if (body.phase !== undefined) {
+    const n = Number(body.phase);
+    if (n !== 1 && n !== 2) {
+      return { errorCode: 'INVALID_PHASE', field: 'phase', error: 'La fase tiene que ser 1 o 2.' };
+    }
+    doc.phase = n as FaseDocumento;
   }
 
   for (const campo of ['expires', 'active'] as const) {

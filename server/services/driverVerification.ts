@@ -21,13 +21,16 @@ import { logger } from '../lib/logger';
  * variables de entorno. Se re-exportan aquí para que quien ya importaba desde
  * este módulo no tenga que cambiar nada.
  */
-import { esquemaVigente } from './docCatalogStore';
+import { documentosVigentes } from './docCatalogStore';
 import { bloqueoPorRevision } from './vehicleInspectionStore';
 import {
   REQUIRED_DOC_KEYS,
+  documentosDeLaFase,
   esRolValet,
+  estadoDeFases,
   normalizarEstadoDoc,
   type DocKey,
+  type FaseDocumento,
   type VerificationStatus,
 } from './docCatalog';
 
@@ -41,8 +44,11 @@ export {
   elegirEsquema,
   esRolValet,
   normalizarEstadoDoc,
+  estadoDeFases,
+  documentosDeLaFase,
+  faseValida,
 } from './docCatalog';
-export type { DocKey, DocMeta, VerificationStatus } from './docCatalog';
+export type { DocKey, DocMeta, VerificationStatus, FaseDocumento, DocumentoCatalogo } from './docCatalog';
 
 export interface EstadoVerificacion {
   status: VerificationStatus;
@@ -54,6 +60,14 @@ export interface EstadoVerificacion {
   pendingDocs: DocKey[];
   hasVehicle: boolean;
   reason: string | null;
+  /** La fase del alta que puede subir ahora: 1, o 2 cuando el admin aprobó la 1. */
+  phase: FaseDocumento;
+  /** true cuando ya puede subir los documentos de la fase 2. */
+  phaseUnlocked: boolean;
+  /** De la fase 2: lo que todavía no se le deja subir. Vacío si está desbloqueada. */
+  lockedDocs: DocKey[];
+  /** Todo lo que le falta de las dos fases, lo pueda subir ahora o no. Para el panel. */
+  allMissingDocs: DocKey[];
 }
 
 /** Un vehículo cuenta como cargado cuando el JSONB trae algo. */
@@ -76,6 +90,10 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
     pendingDocs: [],
     hasVehicle: false,
     reason: 'No se pudo verificar el estado del conductor.',
+    phase: 1,
+    phaseUnlocked: false,
+    lockedDocs: [],
+    allMissingDocs: [...REQUIRED_DOC_KEYS] as DocKey[],
   };
 
   try {
@@ -114,11 +132,23 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
     // usara su criterio, el endpoint le pediría documentos distintos de los que
     // el servidor comprueba. Un documento que el panel desactiva deja de
     // faltar, aunque el conductor nunca lo haya subido.
-    const esquema = await esquemaVigente(perfilRes.data?.role as string | undefined);
+    const activos = await documentosVigentes(perfilRes.data?.role as string | undefined);
+    const esquema = activos.map(d => d.key);
 
-    const missingDocs  = esquema.filter(k => !porTipo.has(k)) as DocKey[];
-    const rejectedDocs = esquema.filter(k => porTipo.get(k) === 'rechazado') as DocKey[];
-    const pendingDocs  = esquema.filter(k => porTipo.get(k) === 'pendiente') as DocKey[];
+    // El alta va en dos fases: hasta que el admin apruebe la 1, los documentos
+    // de la 2 ni se le piden ni se le dejan subir. Sin fase 2 configurada, esto
+    // deja la lista entera accesible y todo funciona como antes.
+    const fases = estadoDeFases(activos, porTipo);
+    const accesibles = documentosDeLaFase(activos, fases).map(d => d.key);
+
+    // `missingDocs` es lo que el conductor puede resolver AHORA. Lo que le falta
+    // de la fase bloqueada va aparte: pedírselo sería mandarlo a una pantalla
+    // que no le deja subir nada.
+    const allMissingDocs = esquema.filter(k => !porTipo.has(k)) as DocKey[];
+    const missingDocs  = accesibles.filter(k => !porTipo.has(k)) as DocKey[];
+    const rejectedDocs = accesibles.filter(k => porTipo.get(k) === 'rechazado') as DocKey[];
+    const pendingDocs  = accesibles.filter(k => porTipo.get(k) === 'pendiente') as DocKey[];
+    const lockedDocs   = fases.bloqueados as DocKey[];
 
     let status: VerificationStatus;
     let reason: string | null = null;
@@ -131,6 +161,15 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
       reason = `Faltan documentos: ${missingDocs.join(', ')}.`;
     } else if (pendingDocs.length > 0) {
       status = 'pending_review';
+    } else if (lockedDocs.length > 0) {
+      // Entregó la fase 1 entera y espera a que la revisen. No es que le falten
+      // documentos: es que todavía no se le deja subir los que faltan.
+      status = 'pending_review';
+      reason = 'Fase 1 entregada. Al aprobarla se le piden los demás documentos.';
+    } else if (allMissingDocs.length > 0) {
+      // Red de seguridad: la fase está abierta pero queda algo sin subir.
+      status = 'pending_documents';
+      reason = `Faltan documentos: ${allMissingDocs.join(', ')}.`;
     } else if (!hasVehicle) {
       // Los papeles están completos pero sin vehículo no puede operar, así que
       // no se aprueba: aprobar aquí era lo que dejaba conductores habilitados
@@ -153,10 +192,13 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
     if (updErr) {
       logger.error(`[VERIFICACION] No se pudo guardar el estado de ${driverId}: ${updErr.message}`);
     } else {
-      logger.info(`[VERIFICACION] ${driverId} → ${status} (faltan ${missingDocs.length}, rechazados ${rejectedDocs.length}, vehículo ${hasVehicle ? 'sí' : 'no'})`);
+      logger.info(`[VERIFICACION] ${driverId} → ${status} (fase ${fases.fase}${fases.desbloqueada ? '' : ', bloqueada'}, faltan ${missingDocs.length}, rechazados ${rejectedDocs.length}, vehículo ${hasVehicle ? 'sí' : 'no'})`);
     }
 
-    return { status, missingDocs, rejectedDocs, pendingDocs, hasVehicle, reason };
+    return {
+      status, missingDocs, rejectedDocs, pendingDocs, hasVehicle, reason,
+      phase: fases.fase, phaseUnlocked: fases.desbloqueada, lockedDocs, allMissingDocs,
+    };
   } catch (err) {
     logger.error(`[VERIFICACION] Error recalculando ${driverId}: ${(err as Error)?.message}`);
     return vacio;
