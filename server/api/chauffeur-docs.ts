@@ -304,11 +304,17 @@ chauffeurDocsRouter.post('/upload-doc', requireSupabaseAuth, async (req: Request
       field: faltaDoc,
     });
 
-  // El valet solo puede subir lo que está en su propio catálogo (incluido lo que
-  // el panel añada después); el conductor, lo que acepta el servidor.
+  // Cada uno sube lo que hay en SU catálogo, incluido lo que el panel añada
+  // después. `ACCEPTED_DOC_KEYS` se suma para el conductor porque lleva las
+  // claves de esquemas anteriores que ya no están en la tabla.
+  //
+  // Antes el conductor sólo podía subir `ACCEPTED_DOC_KEYS`, la lista fija del
+  // código: un documento creado desde el panel se rechazaba con «is not a
+  // document we ask for». El panel lo pedía y el servidor no lo aceptaba, así
+  // que el conductor no podía terminar su alta por mucho que lo intentara.
   const clavesAceptadas = esValet
     ? (await catalogoCompleto('valet')).map((d) => d.key)
-    : ACCEPTED_DOC_KEYS;
+    : [...new Set([...(await catalogoCompleto('driver')).map((d) => d.key), ...ACCEPTED_DOC_KEYS])];
   if (!clavesAceptadas.includes(docKey))
     return res.status(400).json({
       error: `"${docKey}" is not a document we ask for. Please upload it in the matching slot.`,
@@ -764,6 +770,10 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
 
   // Los de la segunda fase no se guardan hasta que el admin apruebe la primera.
   const { fases } = await fasesDelConductor(uid, role);
+  // Igual que en /upload-doc: lo que el panel pida, más las claves antiguas.
+  const clavesDelAlta = [
+    ...new Set([...(await catalogoCompleto('driver')).map((d) => d.key), ...ACCEPTED_DOC_KEYS]),
+  ];
 
   // Run all uploads in parallel — Uber-style fast batch
   await Promise.all(
@@ -776,7 +786,7 @@ chauffeurDocsRouter.post('/documents', requireSupabaseAuth, async (req: Request,
       // /upload-doc. Por aquí entró un juego de once documentos con nombres que
       // no existen en la lista requerida, y ese conductor quedó imposible de
       // evaluar: tenía todo cargado y aun así le faltaba todo.
-      if (!ACCEPTED_DOC_KEYS.includes(docKey)) {
+      if (!clavesDelAlta.includes(docKey)) {
         results[docKey] = { success: false, error: 'Unknown document type' };
         return;
       }
