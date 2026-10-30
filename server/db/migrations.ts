@@ -1468,6 +1468,36 @@ export async function runMigrations() {
     await safeAlter(`CREATE INDEX IF NOT EXISTS cleaning_charges_driver_status_idx ON cleaning_charges (driver_id, status)`);
     await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS cleaning_policy_accepted_at TIMESTAMPTZ`);
 
+    // Revisión de limpieza del vehículo cada 48 h (services/vehicleInspection).
+    // `collecting` es la sesión de 15 min en la que se toman las fotos.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vehicle_inspections (
+        id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        driver_id         UUID NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+        status            VARCHAR(20) NOT NULL DEFAULT 'collecting'
+                          CHECK (status IN ('collecting', 'submitted', 'approved', 'rejected', 'expired')),
+        photos            JSONB NOT NULL DEFAULT '[]',
+        flags             JSONB NOT NULL DEFAULT '[]',
+        odometer          INTEGER,
+        lat               DOUBLE PRECISION,
+        lng               DOUBLE PRECISION,
+        expires_at        TIMESTAMPTZ NOT NULL,
+        submitted_at      TIMESTAMPTZ,
+        reviewed_at       TIMESTAMPTZ,
+        reviewed_by       TEXT,
+        rejection_reason  TEXT,
+        created_at        TIMESTAMPTZ DEFAULT NOW(),
+        updated_at        TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    await safeAlter(`CREATE INDEX IF NOT EXISTS vehicle_inspections_driver_idx ON vehicle_inspections (driver_id, submitted_at DESC)`);
+    await safeAlter(`CREATE INDEX IF NOT EXISTS vehicle_inspections_status_idx ON vehicle_inspections (status)`);
+    // Para no repetir el aviso de "vence pronto" del mismo plazo.
+    await safeAlter(`ALTER TABLE profiles ADD COLUMN IF NOT EXISTS inspection_reminded_for TIMESTAMPTZ`);
+    // Desde cuándo se exige. Sin revisiones previas, el plazo cuenta desde aquí:
+    // así la flota tiene 48 h el día que se activa, en vez de quedar bloqueada.
+    await safeAlter(`INSERT INTO app_config (key, value, updated_at) VALUES ('vehicle_inspection_start', NOW()::text, NOW()) ON CONFLICT (key) DO NOTHING`);
+
     // Confirmación del chofer en una reserva (services/reservationConfirm).
     // El recordatorio de 1 h le pide que confirme; si no responde en unos
     // minutos se abre una alarma en el panel y la reserva se ofrece a otros.

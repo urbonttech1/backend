@@ -499,6 +499,32 @@ export const driverNotif = {
     );
   },
 
+  // ── Revisión de limpieza del vehículo ──────────────────────────────────────
+  inspectionDueSoon(dueAt: string): Plantilla {
+    return push(
+      { title: 'Vehicle check due soon', body: `Take your vehicle cleanliness photos before ${diaYHora(dueAt, 'en')} to keep accepting rides.` },
+      { title: 'Tu revisión de limpieza vence pronto', body: `Toma las fotos de limpieza de tu vehículo antes del ${diaYHora(dueAt, 'es')} para seguir aceptando viajes.` },
+      { type: 'vehicle_inspection_due_soon', screen: 'vehicle_inspection' },
+    );
+  },
+
+  inspectionRequired(): Plantilla {
+    return push(
+      { title: 'Vehicle check required', body: 'Your cleanliness check is due. Take the photos to go back online.' },
+      { title: 'Revisión de limpieza pendiente', body: 'Venció tu revisión de limpieza. Toma las fotos para volver a conectarte.' },
+      { type: 'vehicle_inspection_due', screen: 'vehicle_inspection' },
+    );
+  },
+
+  inspectionRejected(reason?: string | null): Plantilla {
+    const motivo = reason?.trim();
+    return push(
+      { title: 'Vehicle photos rejected', body: `${motivo ? `${motivo}. ` : ''}Take new photos to keep accepting rides.` },
+      { title: 'Fotos del vehículo rechazadas', body: `${motivo ? `${motivo}. ` : ''}Toma fotos nuevas para seguir aceptando viajes.` },
+      { type: 'vehicle_inspection_rejected', screen: 'vehicle_inspection' },
+    );
+  },
+
   lowRatingWarning(rating: number): Plantilla {
     return push(
       { title: 'Rating alert', body: `Your current rating is ${rating.toFixed(2)} stars. Stay above 4.5 to keep good standing.` },

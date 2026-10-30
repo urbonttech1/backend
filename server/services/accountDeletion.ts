@@ -59,7 +59,7 @@ const DATOS_PERSONALES: { tabla: string; columna: string }[] = [
 ];
 
 /** Carpetas `<uid>/` en Storage: documentos y fotos de perfil o del vehículo. */
-const BUCKETS = ['chauffeur-docs', 'avatars'];
+const BUCKETS = ['chauffeur-docs', 'avatars', 'vehicle-inspections'];
 
 function errMsg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
 

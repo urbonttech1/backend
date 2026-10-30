@@ -27,6 +27,7 @@ import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN
 import { calculateRideMetrics } from "../../services/rideMetrics";
 import { adjuntarPorHora, iniciarSeguimientoPorHora } from "../../services/hourlyTracking";
 import { cerrarServicioPorHora, cobrarExtrasPorHora } from "../../services/hourlyExtrasPayment";
+import { bloqueoPorRevision } from "../../services/vehicleInspectionStore";
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 
 /**
@@ -235,6 +236,15 @@ router.patch("/:id/status", requireSupabaseAuth, async (req: Request, res: Respo
       !(isDriver && finalStatus === 'confirmed') // drivers can accept unassigned rides
     ) {
       return res.status(403).json({ error: 'Access denied. You are not a participant in this ride.' });
+    }
+
+    // Aceptar un viaje nuevo exige la revisión de limpieza al día. Empezar una
+    // reserva que ya es suya no: dejaría plantado al pasajero.
+    if (isDriver && finalStatus === 'confirmed' && r.driver_id !== uid) {
+      const revision = await bloqueoPorRevision(uid);
+      if (revision.bloqueado) {
+        return res.status(403).json({ error: revision.reason, errorCode: revision.code });
+      }
     }
 
     // The chauffeur who already reserved this ride is heading to the pickup.

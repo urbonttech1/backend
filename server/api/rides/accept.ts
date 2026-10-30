@@ -22,6 +22,7 @@ import { randomInt } from 'crypto';
 import { getStripe, updateDriverStreak, pinAttemptTracker, MAX_PIN_ATTEMPTS, PIN_LOCKOUT_MS, VALET_COMMISSION_USD, errMsg, haversineKm } from './helpers';
 import type { PickupDropoff, RideRow, DriverStats } from './types';
 import { iniciarSiEsPorHora } from '../../services/hourlyTracking';
+import { bloqueoPorRevision } from '../../services/vehicleInspectionStore';
 
 export function registerAcceptRoutes(router: Router): void {
 router.get("/available", requireSupabaseAuth, async (req: Request, res: Response) => {
@@ -213,6 +214,10 @@ router.post("/:id/claim", requireSupabaseAuth, async (req: Request, res: Respons
     const role = req.supabaseRole || 'passenger';
     if (role !== 'chauffeur' && role !== 'driver' && role !== 'admin') {
       return res.status(403).json({ error: 'Only chauffeurs can reserve a ride' });
+    }
+    if (role !== 'admin') {
+      const revision = await bloqueoPorRevision(req.supabaseUid!);
+      if (revision.bloqueado) return res.status(403).json({ error: revision.reason, errorCode: revision.code });
     }
     const result = await claimScheduledRide(req.params.id, req.supabaseUid!);
     if (claimFailed(result)) {

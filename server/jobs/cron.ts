@@ -27,6 +27,7 @@ import { precioBloqueExtra, usoEnVivo } from '../services/hourlyBooking';
 import { HOURLY_ENDING_SOON_MINUTES } from '../config/pricing';
 import { gananciaDelChofer } from '../services/driverBalance';
 import { ensureComisionFresh } from '../services/commissionConfig';
+import { revisarVencimientos } from '../services/vehicleInspectionStore';
 import {
   MINUTOS_PARA_CONFIRMAR, TIPO_ALARMA, confirmacionActiva, debeAlarmar, motivoDeCierre,
   textoDeAlarma, type ReservaParaConfirmar,
@@ -1329,6 +1330,16 @@ export async function startCronJobs() {
     checkDocumentExpiry();
   });
   log.info('[CRON] Document expiry check scheduled daily at 08:00.');
+
+  // Revisión de limpieza del vehículo: aviso 4 h antes y desconexión al vencer.
+  cron.schedule('*/15 * * * *', () => {
+    revisarVencimientos()
+      .then(({ avisados, desconectados }) => {
+        if (avisados || desconectados) log.info(`[CRON] Revisión de limpieza: ${avisados} avisado(s), ${desconectados} desconectado(s).`);
+      })
+      .catch((err: unknown) => log.error({ err: err instanceof Error ? err.message : String(err) }, '[CRON] revisión de limpieza falló'));
+  });
+  log.info('[CRON] Vehicle cleanliness check scheduled every 15 minutes.');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

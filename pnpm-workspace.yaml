@@ -2,5 +2,8 @@
 allowBuilds:
   esbuild: true
   '@sentry/cli': true
+  # Trae sus binarios precompilados (también para Alpine) como dependencias
+  # opcionales; su script de instalación sólo compila desde el código fuente.
+  sharp: false
   protobufjs: false
   '@firebase/util': false

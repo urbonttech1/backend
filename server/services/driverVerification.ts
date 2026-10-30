@@ -22,6 +22,7 @@ import { logger } from '../lib/logger';
  * este módulo no tenga que cambiar nada.
  */
 import { esquemaVigente } from './docCatalogStore';
+import { bloqueoPorRevision } from './vehicleInspectionStore';
 import {
   REQUIRED_DOC_KEYS,
   esRolValet,
@@ -165,7 +166,7 @@ export async function recalcularVerificacion(driverId: string): Promise<EstadoVe
 export interface PermisoOperar {
   ok: boolean;
   reason: string | null;
-  code: 'NOT_APPROVED' | 'NO_VEHICLE' | null;
+  code: 'NOT_APPROVED' | 'NO_VEHICLE' | 'INSPECTION_DUE' | null;
 }
 
 /**
@@ -194,5 +195,7 @@ export async function puedeOperar(driverId: string): Promise<PermisoOperar> {
   if (data.verification_status !== 'approved') {
     return { ok: false, reason: 'Tu cuenta aún no está aprobada.', code: 'NOT_APPROVED' };
   }
+  const revision = await bloqueoPorRevision(driverId);
+  if (revision.bloqueado) return { ok: false, reason: revision.reason, code: revision.code };
   return { ok: true, reason: null, code: null };
 }

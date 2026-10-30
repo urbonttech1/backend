@@ -164,6 +164,12 @@ export function buildNotificationCatalog(): CatalogEntry[] {
       'Cuando termina el multiplicador por demanda.', 'none', null),
     entry('backToBackBonus', 'driver', d.backToBackBonus(3),
       'Bonus por encadenar trayectos sin pausa.', 'none', null),
+    entry('inspectionDueSoon', 'driver', d.inspectionDueSoon(MUESTRA_FECHA),
+      'Revisión de limpieza: faltan 4 horas para que venza.', 'template', 'jobs/cron.ts'),
+    entry('inspectionRequired', 'driver', d.inspectionRequired(),
+      'Revisión de limpieza vencida: se desconecta al chofer hasta que mande fotos.', 'template', 'jobs/cron.ts'),
+    entry('inspectionRejected', 'driver', d.inspectionRejected('Asientos traseros sucios'),
+      'Un admin rechazó las fotos de limpieza.', 'template', 'api/vehicleInspections.ts'),
     entry('lowRatingWarning', 'driver', d.lowRatingWarning(4.2),
       'Aviso cuando la valoración media baja del umbral.', 'none', null),
   ];
