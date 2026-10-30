@@ -60,8 +60,20 @@ DATABASE_URL=... ADMIN_EMAIL=admin@urbont.com ADMIN_PASSWORD=... \
 | `pnpm dev` | `tsx watch server.ts` |
 | `pnpm build` | Bundle con esbuild a `dist/server.js` |
 | `pnpm start` | `node dist/server.js` |
+| `pnpm migrate` | Aplica las migraciones sin arrancar el servidor |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm test` | Tests de vitest (`server/**/*.test.ts`) |
+
+### Migraciones
+
+Viven en `server/db/migrations.ts` y **se aplican solas al arrancar el
+servidor**, así que un deploy ya las corre: no hay un paso aparte. El puerto no
+se abre hasta que terminan, para que el código nuevo no consulte una columna que
+todavía no existe; pasados 60 s (`MIGRATIONS_WAIT_MS`) se arranca igual, porque
+unas migraciones atascadas no deben dejar el servicio caído.
+
+`pnpm migrate` hace lo mismo sin arrancar nada, para tener el esquema listo
+antes de desplegar. Es seguro repetirlo: cada sentencia es idempotente.
 
 ## CORS
 

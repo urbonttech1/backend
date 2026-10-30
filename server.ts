@@ -1070,7 +1070,16 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
   // Set RUN_DEMO_SETUP=true in env if you need them refreshed on a specific deploy.
   const shouldSetupDemo = process.env.NODE_ENV !== 'production' || process.env.RUN_DEMO_SETUP === 'true';
   const shouldApproveDriver = process.env.APPROVE_DRIVER_ON_BOOT === 'true';
-  runMigrations()
+  /**
+   * El esquema y la configuración que las rutas dan por hecha. Se espera antes
+   * de abrir el puerto (más abajo): el servidor atendía peticiones EN PARALELO a
+   * las migraciones, así que durante unos segundos el código recién desplegado
+   * podía consultar una columna que todavía no existía.
+   *
+   * Nunca rechaza. Un fallo aquí deja el esquema viejo y se sirve igual: cortar
+   * el arranque convertiría un error de migración en una caída del servicio.
+   */
+  const esquemaListo = runMigrations()
     // Force PostgREST to reload its schema cache on every server startup so
     // columns added by migrations (guest_phone, etc.) are immediately visible.
     .then(() => pool.query("NOTIFY pgrst, 'reload schema'").catch(() => {}))
@@ -1081,6 +1090,14 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
     // Área de servicio desde service_zones. Nunca lanza: si falla se opera
     // con el círculo de Miami por defecto.
     .then(() => loadZones(true))
+    .catch(err => logger.warn({ err: err?.message }, 'Migrations skipped'));
+
+  /**
+   * Lo que necesita el esquema pero no condiciona la primera petición. Va aparte
+   * para que las cuentas demo —lentas, y sólo fuera de producción— no retrasen
+   * la apertura del puerto.
+   */
+  void esquemaListo
     // Reembolsos y contracargos que Stripe tiene y aqui faltan. Va despues de
     // las migraciones por la misma razon: la tabla tiene que existir, y si no
     // existe `registrarEvento` solo lo loguea y no se escribiria nada, en
@@ -1102,7 +1119,7 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
         await approveDriverIfNeeded('7864165121', 'cvc@oohg.org');
       }
     })
-    .catch(err => logger.warn({ err: err.message }, 'Migrations skipped'));
+    .catch(err => logger.warn({ err: err?.message }, 'Arranque: tareas posteriores a las migraciones'));
 
   // Este servidor es solo API + WebSocket. Antes de la separacion en repos
   // tambien servia el dist/ del frontend desde el mismo origen, que es por lo
@@ -1117,6 +1134,26 @@ app.get('/api/healthz', async (_req: Request, res: Response) => {
 
   supabaseAdmin.storage.createBucket('avatars', { public: true }).catch(() => {});
 
+  /**
+   * Con tope de tiempo: unas migraciones atascadas —un lock de otra instancia
+   * que no suelta— dejarían el puerto cerrado, y ECS mataría la task una y otra
+   * vez. Pasado el tope se arranca igual y la cadena sigue por su cuenta.
+   */
+  const ESPERA_MIGRACIONES_MS = Number(process.env.MIGRATIONS_WAIT_MS ?? 60_000);
+  if (ESPERA_MIGRACIONES_MS > 0) {
+    let aTiempo: ReturnType<typeof setTimeout> | undefined;
+    const tope = new Promise<'tope'>((resolve) => {
+      aTiempo = setTimeout(() => resolve('tope'), ESPERA_MIGRACIONES_MS);
+    });
+    const cual = await Promise.race([esquemaListo.then(() => 'listo' as const), tope]);
+    if (aTiempo) clearTimeout(aTiempo);
+    if (cual === 'tope') {
+      logger.warn({ ms: ESPERA_MIGRACIONES_MS }, 'Migraciones aún en curso — se abre el puerto igualmente');
+    }
+  }
+
+  // Después de las migraciones: antes corría en paralelo y podía avisar de
+  // columnas que la migración estaba creando en ese mismo momento.
   await verifySupabaseSchema().catch((err) => {
     logger.error({ err }, '[Schema] Unexpected failure during schema verification');
   });
